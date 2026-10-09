@@ -3,16 +3,19 @@
 //! Wave 3 scope (docs/specs/requirements.md §6): naming tokens
 //! ($mesh/$textureSet/$udim/$colorSpace/$srcMap/$layerName), channel
 //! packing, engine presets (glTF/Unreal/Unity/Blender), normal-convention
-//! conversion, PNG 8/16 + EXR 16F/32F.
+//! conversion, PNG 8/16 + EXR 16F/32F + TIFF/JPEG.
 //!
 //! Wave 1 scope: the naming-token substitution engine — pure string
 //! logic, fully testable headless, and the natural first real code here.
-//! Wave 2 adds PNG encoding ([`png`]) of paint-target readbacks.
+//! Wave 2 adds PNG encoding ([`png`]) of paint-target readbacks. Wave 3
+//! adds EXR float export ([`exr`]) and TIFF/JPEG ([`formats`]).
 
 pub mod exr;
+pub mod formats;
 pub mod png;
 pub mod presets;
 
+pub use formats::{write_jpeg_rgba8, write_tiff_rgba8, JpegError, TiffError};
 pub use presets::{
     convert_normal, pack_texel, ChannelSlot, ExportPreset, ExportPresetError, MapKind,
     NormalConvention, OutputFormat, OutputSpec, Texel,

@@ -125,6 +125,82 @@ fn linear_to_srgb_u8(linear: u8) -> u8 {
     (s * 255.0 + 0.5).clamp(0.0, 255.0) as u8
 }
 
+/// Linear (0..65535) → sRGB (0..65535): the same IEC 61966-2-1 curve
+/// at 16-bit precision (the 8-bit version's exact sibling).
+fn linear_to_srgb_u16(linear: u16) -> u16 {
+    let l = linear as f32 / 65_535.0;
+    let s = if l <= 0.003_130_8 {
+        l * 12.92
+    } else {
+        1.055 * l.powf(1.0 / 2.4) - 0.055
+    };
+    (s * 65_535.0 + 0.5).clamp(0.0, 65_535.0) as u16
+}
+
+/// Encodes `rgba` (width×height×4 **u16**, row-major) into a 16-bit
+/// PNG at `path` — the `Png16` half of the bit-depth requirement
+/// (§6: "Bit depths 8/16/32F").
+///
+/// The u16 values are written as-is under [`Transfer::Linear`]; under
+/// [`Transfer::Srgb`] the RGB channels take the 16-bit sRGB curve
+/// (alpha untouched), mirroring [`write_png`]'s contract.
+///
+/// # Errors
+///
+/// [`PngError::SizeMismatch`] when the slice doesn't match the
+/// dimensions; see the other variants for encode/io failures.
+pub fn write_png16(
+    path: &Path,
+    width: u32,
+    height: u32,
+    rgba: &[u16],
+    transfer: Transfer,
+) -> Result<(), PngError> {
+    let expected = width as usize * height as usize * 4;
+    if rgba.len() != expected {
+        return Err(PngError::SizeMismatch {
+            actual: rgba.len(),
+            expected,
+            width,
+            height,
+        });
+    }
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+
+    let file = File::create(path)?;
+    let w = BufWriter::new(file);
+
+    let mut encoder = png::Encoder::new(w, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Sixteen);
+    if transfer == Transfer::Srgb {
+        encoder.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+    }
+    let mut writer = encoder
+        .write_header()
+        .map_err(|e| PngError::Encode(e.to_string()))?;
+
+    let mut data = rgba.to_vec();
+    if transfer == Transfer::Srgb {
+        for px in data.chunks_exact_mut(4) {
+            px[0] = linear_to_srgb_u16(px[0]);
+            px[1] = linear_to_srgb_u16(px[1]);
+            px[2] = linear_to_srgb_u16(px[2]);
+        }
+    }
+    // png crate takes 16-bit data as native-endian u8 pairs.
+    let bytes: Vec<u8> = bytemuck::cast_slice(&data).to_vec();
+    writer
+        .write_image_data(&bytes)
+        .map_err(|e| PngError::Encode(e.to_string()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +218,52 @@ mod tests {
         assert_eq!(linear_to_srgb_u8(128), 188);
         // Below the linear-segment threshold stays linear: 1/255*12.92*255
         assert_eq!(linear_to_srgb_u8(1), 13);
+    }
+
+    #[test]
+    fn u16_srgb_matches_the_u8_curve_at_scale() {
+        // Same anchor logic at 16-bit: ends fixed, mid boosted.
+        assert_eq!(linear_to_srgb_u16(0), 0);
+        assert_eq!(linear_to_srgb_u16(65_535), 65_535);
+        // 0.5 linear ≈ 0.7354 sRGB ≈ 48_267.
+        let mid = linear_to_srgb_u16(32_768);
+        assert!((47_000..=49_500).contains(&mid), "mid: {mid}");
+    }
+
+    #[test]
+    fn png16_roundtrips_a_tiny_map() {
+        // Write 2x2 distinct u16 texels, read the header back: the
+        // png crate's decoder reports the right depth + dimensions.
+        let path = temp_png("roundtrip16");
+        let rgba: Vec<u16> = vec![
+            0, 10_000, 20_000, 65_535, 30_000, 40_000, 50_000, 60_000, 1, 2, 3, 4, 65_535, 0,
+            32_768, 16_384,
+        ];
+        write_png16(&path, 2, 2, &rgba, Transfer::Linear).unwrap();
+        let decoder = png::Decoder::new(File::open(&path).unwrap());
+        let mut reader = decoder.read_info().unwrap();
+        let info = reader.info();
+        assert_eq!(info.width, 2);
+        assert_eq!(info.height, 2);
+        assert_eq!(info.bit_depth, png::BitDepth::Sixteen);
+        // Byte length: 2x2 texels * 4 channels * 2 bytes.
+        let mut bytes = vec![0u8; reader.output_buffer_size()];
+        let _ = reader.next_frame(&mut bytes).unwrap();
+        // First texel's red reads back as the same u16 (little-endian
+        // native order on this platform).
+        let r0 = u16::from_le_bytes([bytes[0], bytes[1]]);
+        assert_eq!(r0, 0);
+        let g0 = u16::from_le_bytes([bytes[2], bytes[3]]);
+        assert_eq!(g0, 10_000);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn png16_rejects_mismatched_size() {
+        let path = temp_png("mismatch16");
+        let short = vec![0u16; 15]; // 2x2x4 = 16 needed
+        let err = write_png16(&path, 2, 2, &short, Transfer::Linear).unwrap_err();
+        assert!(matches!(err, PngError::SizeMismatch { .. }));
     }
 
     #[test]

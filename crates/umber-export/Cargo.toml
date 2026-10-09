@@ -11,4 +11,6 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 exr = { workspace = true }
+bytemuck = { workspace = true }
+image = { workspace = true }
 png = "0.17"

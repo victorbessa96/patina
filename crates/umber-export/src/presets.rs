@@ -123,6 +123,8 @@ pub enum OutputFormat {
     Exr32F,
     /// JPEG (8-bit, lossy — thumbnails/quick previews).
     Jpeg,
+    /// 8-bit lossless RGBA TIFF.
+    Tiff,
 }
 
 /// One packed output file an export produces.
