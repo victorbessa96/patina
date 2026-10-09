@@ -76,17 +76,9 @@ impl UvView {
         // texture-display callback, clipped to the UV square. Drawn
         // beneath the wireframe so strokes show through.
         if let Some(paint) = paint {
-            let resolution = {
-                let pts = ui.ctx().pixels_per_point();
-                let rect = ui.ctx().input(|i| i.viewport_rect());
-                [rect.width() * pts, rect.height() * pts]
-            };
-            let callback = gpu.texture_display().callback(
-                &gpu.device,
-                paint.paint_target(),
-                resolution,
-                square,
-            );
+            let callback =
+                gpu.texture_display()
+                    .callback(&gpu.device, paint.paint_target(), square);
             let shape = umber_gpu::texture_display::texture_display_shape(square, callback);
             painter.add(shape);
         }
