@@ -13,11 +13,13 @@
 //! paint-thread + ring-buffer architecture (docs/specs/architecture.md)
 //! lands with the paint engine.
 
+mod bakes_panel;
 mod document;
 mod paint_state;
 mod uv_view;
 mod viewport;
 
+use bakes_panel::{BakesContext, BakesPanel};
 use egui::containers::menu::{MenuBar, MenuButton};
 use egui::{CentralPanel, Id, Ui, WidgetText};
 use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
@@ -36,6 +38,7 @@ pub enum Panel {
     Assets,
     History,
     TextureSets,
+    Bakes,
 }
 
 /// Implements the egui_dock tab interface. Built fresh each frame, borrowing
@@ -45,7 +48,9 @@ pub enum Panel {
 struct PanelViewer<'a> {
     viewport: &'a mut Viewport,
     uv_view: &'a mut UvView,
+    bakes: &'a mut BakesPanel,
     mesh: Option<&'a umber_mesh::MeshData>,
+    mesh_path: Option<&'a std::path::Path>,
     gpu: &'a GpuContext,
     paint: Option<&'a mut paint_state::PaintState>,
     doc: &'a mut document::Document,
@@ -67,6 +72,7 @@ impl TabViewer for PanelViewer<'_> {
             Panel::Assets => "Assets".into(),
             Panel::History => "History".into(),
             Panel::TextureSets => "Texture Sets".into(),
+            Panel::Bakes => "Bakes".into(),
         }
     }
 
@@ -85,6 +91,14 @@ impl TabViewer for PanelViewer<'_> {
             Panel::TextureSets => {
                 ui.label("Texture sets (Wave 2)");
             }
+            Panel::Bakes => {
+                let ctx = BakesContext {
+                    gpu: Some(self.gpu),
+                    mesh: self.mesh,
+                    mesh_path: self.mesh_path,
+                };
+                self.bakes.show(ui, ctx);
+            }
         }
     }
 }
@@ -101,6 +115,8 @@ pub struct AppState {
     pub paint: Option<paint_state::PaintState>,
     /// The open document: layers + undo journal.
     pub doc: document::Document,
+    /// The bakes panel: mesh-map bake settings + last-bake status.
+    pub bakes: BakesPanel,
 }
 
 /// The eframe app.
@@ -139,7 +155,7 @@ impl UmberApp {
             let [left, _] = tree.split_left(
                 NodeIndex::root(),
                 0.25,
-                vec![Panel::LayerStack, Panel::TextureSets],
+                vec![Panel::LayerStack, Panel::TextureSets, Panel::Bakes],
             );
             let [_top, _bottom] =
                 tree.split_below(left, 0.4, vec![Panel::Properties, Panel::Assets]);
@@ -253,7 +269,9 @@ impl eframe::App for UmberApp {
             let mut viewer = PanelViewer {
                 viewport: &mut self.state.viewport,
                 uv_view: &mut self.state.uv_view,
+                bakes: &mut self.state.bakes,
                 mesh: self.state.mesh.as_ref(),
+                mesh_path: self.state.mesh_path.as_deref(),
                 gpu: &self.gpu,
                 paint: self.state.paint.as_mut(),
                 doc: &mut self.state.doc,

@@ -3773,6 +3773,7 @@ dependencies = [
  "rfd",
  "stylus",
  "thiserror 2.0.21",
+ "umber-bake",
  "umber-brush",
  "umber-color",
  "umber-core",
