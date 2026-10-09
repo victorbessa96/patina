@@ -1,0 +1,11 @@
+[package]
+name = "umber-brush"
+description = "Umber brush engine: libmypaint-semantics state machine, dab batching, stroke jobs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+glam = { workspace = true }
+thiserror = { workspace = true }

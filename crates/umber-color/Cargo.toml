@@ -1,0 +1,10 @@
+[package]
+name = "umber-color"
+description = "Umber color management: OCIO display transforms, per-channel CM flags"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }

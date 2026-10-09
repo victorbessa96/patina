@@ -1,0 +1,11 @@
+[package]
+name = "umber-core"
+description = "Umber document model: texture sets, layers, channels, undo journal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+glam = { workspace = true }
+thiserror = { workspace = true }

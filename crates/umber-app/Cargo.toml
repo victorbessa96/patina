@@ -1,0 +1,28 @@
+[package]
+name = "umber-app"
+description = "Umber — open-source Rust-native 3D texture painting (Substance Painter class)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "umber"
+path = "src/main.rs"
+
+[dependencies]
+umber-core = { workspace = true }
+umber-mesh = { workspace = true }
+umber-gpu = { workspace = true }
+umber-brush = { workspace = true }
+umber-export = { workspace = true }
+umber-color = { workspace = true }
+stylus = { workspace = true }
+eframe = { workspace = true }
+egui = { workspace = true }
+egui_dock = { workspace = true }
+glam = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+anyhow = { workspace = true }
+rfd = "0.15"

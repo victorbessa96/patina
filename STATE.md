@@ -4,10 +4,12 @@
 
 ## Status line
 
-Current wave: **0 of 6** (IN-PROGRESS — consolidation complete, awaiting ratification)
-State: WAVE-0-CONSOLIDATED — research corpus landed; SPEC v1.0 DRAFT packaged for Bessa
-Last checkpoint: not yet (fires when Bessa ratifies SPEC v1.0)
-Last green commit: see git log — docs/specs consolidation + report 05
+Current wave: **1 of 6** (IN-PROGRESS)
+State: WAVE-1-ACTIVE — workspace skeleton + mesh import + PBR viewport
+Last checkpoint: pending (Wave 0 checkpoint fires when Bessa ratifies SPEC v1.0)
+Last green commit: fb29d7c (Wave 0 close-out)
+
+**WAVE-1-ACTIVATION (2026-10-09 03:25):** Bessa's /loop instruction ("continue working autonomously... writing the code and expanding until 11am") explicitly authorizes implementation past the ratification gate. Wave 1 opened under loop authorization with SPEC v1.0 as the working contract — ratification still pending; any Bessa edits at ratification rescope per the spec-change rule. Full trail: DECISIONS.md [03:25].
 
 **RENAME 2026-10-09 02:41:** Patina → **Umber** (name-collision sweep found live USPTO marks + in-category Patina® Mac paint app; claw recommended Umber — no software trademark, no in-category product, on-theme: raw earth pigment containing iron oxide). Repo: **github.com/victorbessa96/umber** (old URL 301-redirects). Executed under overnight grant; **Bessa can revert on wake** — full trail in DECISIONS.md [02:41].
 
@@ -15,15 +17,16 @@ Last green commit: see git log — docs/specs consolidation + report 05
 
 ## Active wave
 
-**Name:** Wave 0 — Research + spec ratification
-**Goal:** Five research claws (Substance Painter feature inventory, competitor autopsy incl. ArmorPaint + name-collision sweep, Rust graphics ecosystem stack, next-gen capability bar, brush-engine architecture) return; findings merge into docs/research/; adversarial review of the consolidation; SPEC.md goes DRAFT → v1.0 with Bessa review.
-**Exit criteria:**
-- [x] All five claw reports landed in docs/research/ (01–05)
-- [x] Name-collision sweep executed — Patina→Umber rename done (DECISIONS.md [02:41])
-- [x] Requirements + tech-stack + component-architecture documents written from claw findings
-- [x] Adversarial review of SPEC + consolidation docs run; 26 findings reconciled, fixes applied (docs/research/06)
-- [x] Roadmap validated against research
-- [ ] Bessa reviews + approves SPEC.md v1.0
+**Name:** Wave 1 — Workspace skeleton + mesh import + PBR viewport
+**Goal:** 11-crate workspace builds green on Linux+Windows CI; umber-app boots (eframe/wgpu + egui_dock shell); glTF/OBJ/FBX import in umber-mesh; basic PBR viewport with camera; THIRD_PARTY.md license manifest; stylus crate skeleton. Dev GPU note: Intel HD 530 + Vulkan 1.4 Mesa — correctness dev target only; 60fps reference-class validation happens on other hardware.
+**Exit criteria (from SPEC Wave 1):**
+- [ ] Workspace builds on Windows+Linux CI (fmt/build/test/clippy gates)
+- [ ] App boots with dockable shell
+- [ ] Loads glTF/OBJ/FBX
+- [ ] IBL-lit viewport using bundled env maps, camera controls
+- [ ] Stylus crate skeleton (Windows Ink path = feature-gated backend)
+- [ ] Dependency license audit gate: THIRD_PARTY.md before first claw-authored merge
+- [ ] Claws: opencode → umber-mesh importers; claude → umber-gpu + viewport integration; cross-review per standing rule
 
 ## Blocked / waiting
 

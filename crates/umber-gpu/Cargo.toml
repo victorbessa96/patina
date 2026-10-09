@@ -1,0 +1,11 @@
+[package]
+name = "umber-gpu"
+description = "Umber GPU layer: wgpu device context, render graph, tile pool, shaders"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+log = { workspace = true }

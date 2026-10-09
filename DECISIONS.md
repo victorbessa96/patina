@@ -65,3 +65,10 @@ Context: The [01:40] decision pre-committed the revisit trigger ("research claw 
 Options rejected: Impasto (runner-up; generic-term trademark weakness, and a 310★ active Linux desktop shell shares the name), Hematite (1,920★ canonical Rust Minecraft clone + crates.io collision), keeping Patina (legal exposure + brand confusion in-category from day one).
 Owner: Razul under overnight-autonomy delegation; **reversible by Bessa on wake — one `gh repo rename` + git mv if he overrides.**
 Revisit when: Bessa overrides on wake (pre-agreed revert path), or a Umber trademark/collision surfaces before 0.1 branding investment begins.
+
+## [2026-10-09 03:25] wave1-loop-activation
+Decision: Wave 1 implementation opened under Bessa's /loop instruction (03:23: "continue working autonomously on the project and writing the code and expanding until 11am... use Claude code and opencode... plan and implement the next steps"), with **SPEC v1.0 as the working contract pending ratification**. Claw usage reconfirmed: opencode + claude dispatched with cross-review.
+Context: The brainstorming hard-gate said "no implementation before spec approval," but Bessa's explicit loop instruction to write code until 11am supersedes the wait. Ratification remains the Wave-0 close gate; any edits he makes at ratification rescope Wave 1 work per the spec-change rule (name it, fix the spec, then the work, in that order).
+Options rejected: continue waiting for ratification (contradicts explicit loop instruction); treating SPEC as fully ratified (it is not — DRAFT-as-working-contract is the honest middle).
+Owner: Bessa (loop instruction) + Razul (execution)
+Revisit when: Bessa wakes and either ratifies (Wave 0 checkpoint fires) or edits (rescope).

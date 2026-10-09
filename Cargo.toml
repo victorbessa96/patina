@@ -1,0 +1,67 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/umber-core",
+    "crates/umber-gpu",
+    "crates/umber-mesh",
+    "crates/umber-brush",
+    "crates/umber-bake",
+    "crates/umber-graph",
+    "crates/umber-export",
+    "crates/umber-color",
+    "crates/stylus",
+    "crates/umber-cli",
+    "crates/umber-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/victorbessa96/umber"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# GPU trio — pinned together per docs/specs/tech-stack.md version policy
+wgpu = "30"
+naga = "30"
+naga_oil = "0.23"
+
+# UI
+eframe = "0.36"
+egui = "0.36"
+egui_dock = "0.21"
+
+# Foundations
+glam = "0.34"
+thiserror = "2"
+anyhow = "1"
+rayon = "1"
+parking_lot = "0.12"
+crossbeam = "0.8"
+log = "0.4"
+env_logger = "0.11"
+
+# Mesh import
+gltf = "1"
+tobj = "4"
+ufbx = "0.11"
+
+# Internal crates
+umber-core = { path = "crates/umber-core" }
+umber-gpu = { path = "crates/umber-gpu" }
+umber-mesh = { path = "crates/umber-mesh" }
+umber-brush = { path = "crates/umber-brush" }
+umber-bake = { path = "crates/umber-bake" }
+umber-graph = { path = "crates/umber-graph" }
+umber-export = { path = "crates/umber-export" }
+umber-color = { path = "crates/umber-color" }
+stylus = { path = "crates/stylus" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev.package."*"]
+opt-level = 1 # keep debug builds usable with heavy GPU deps

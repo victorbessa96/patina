@@ -6,10 +6,7 @@ __pycache__/
 # Rust
 /target/
 **/*.rs.bk
-# Library crates: Cargo.lock stays untracked (cargo convention for libs).
-# When the app crate lands (Wave 1), REMOVE this line — apps commit their lockfile
-# for reproducible builds. A reminder lives in SPEC.md constraints.
-Cargo.lock
+# App workspace: Cargo.lock IS committed (apps need reproducible builds).
 
 # IDE / OS
 .idea/

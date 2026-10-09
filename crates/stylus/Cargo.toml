@@ -1,0 +1,11 @@
+[package]
+name = "stylus"
+description = "Umber stylus input: Windows Ink + Wintab (Windows), Wayland/X11 tablets (Linux)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+log = { workspace = true }
