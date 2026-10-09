@@ -61,7 +61,9 @@ impl Viewport {
         if let Some(mesh) = &self.mesh {
             let aspect = rect.width() / rect.height();
             let view_proj = self.camera.view_proj(aspect);
-            let light_dir = glam::Vec3::new(-0.4, -1.0, -0.3);
+            // Normalized once here (review #6): the shader re-normalizes
+            // per-fragment defensively, but the uniform arrives clean.
+            let light_dir = glam::Vec3::new(-0.4, -1.0, -0.3).normalize();
             let uniform = umber_gpu::CameraUniform::new(view_proj, light_dir);
             let callback = mesh.paint_callback(gpu, uniform);
             let shape = umber_gpu::mesh_paint_shape(rect, callback);
