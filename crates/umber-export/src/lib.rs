@@ -10,6 +10,12 @@
 //! Wave 2 adds PNG encoding ([`png`]) of paint-target readbacks.
 
 pub mod png;
+pub mod presets;
+
+pub use presets::{
+    convert_normal, pack_texel, ChannelSlot, ExportPreset, ExportPresetError, MapKind,
+    NormalConvention, OutputFormat, OutputSpec, Texel,
+};
 
 /// Substitute `$token` placeholders in an export path template.
 ///
