@@ -92,6 +92,9 @@ pub struct GpuContext {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     depth_format: Option<wgpu::TextureFormat>,
+    /// Textured-quad display pipeline for paint-target presentation
+    /// (built once; see `texture_display`).
+    texture_display: crate::texture_display::TextureDisplay,
 }
 
 /// Depth format used by the viewport mesh pipeline when depth is enabled.
@@ -110,6 +113,11 @@ impl GpuContext {
     /// `GpuContext::new` without naming a wgpu type.
     pub fn depth_format(&self) -> Option<wgpu::TextureFormat> {
         self.depth_format
+    }
+
+    /// The texture-display pipeline for presenting paint targets.
+    pub fn texture_display(&self) -> &crate::texture_display::TextureDisplay {
+        &self.texture_display
     }
 
     /// `adapter`/`device`/`queue` must come from eframe's
@@ -210,6 +218,8 @@ impl GpuContext {
             cache: None,
         });
 
+        let texture_display = crate::texture_display::TextureDisplay::new(&device, color_format);
+
         Self {
             device,
             queue,
@@ -217,6 +227,7 @@ impl GpuContext {
             pipeline,
             bind_group_layout,
             depth_format,
+            texture_display,
         }
     }
 }

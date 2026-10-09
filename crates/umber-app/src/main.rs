@@ -71,7 +71,7 @@ impl TabViewer for PanelViewer<'_> {
     fn ui(&mut self, ui: &mut Ui, tab: &mut Self::Tab) {
         match tab {
             Panel::Viewport => self.viewport.ui(ui, self.gpu),
-            Panel::UvView => self.uv_view.ui(ui, self.mesh, self.paint.take()),
+            Panel::UvView => self.uv_view.ui(ui, self.mesh, self.gpu, self.paint.take()),
             Panel::LayerStack => {
                 ui.label("Layer stack (Wave 2)");
             }

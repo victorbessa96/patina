@@ -25,7 +25,8 @@ impl UvView {
         &mut self,
         ui: &mut Ui,
         mesh: Option<&MeshData>,
-        paint: Option<&mut crate::paint_state::PaintState>,
+        gpu: &umber_gpu::GpuContext,
+        mut paint: Option<&mut crate::paint_state::PaintState>,
     ) {
         let rect = ui.available_rect_before_wrap();
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -44,7 +45,7 @@ impl UvView {
         // Stroke input: primary-button drag inside the UV square maps to
         // UV space and feeds the paint conditioner. Left-drag orbits in
         // the 3D view; here left-drag paints.
-        if let Some(paint) = paint {
+        if let Some(paint) = paint.as_deref_mut() {
             let interact = ui.interact(
                 square,
                 ui.id().with("uv-paint"),
@@ -70,6 +71,25 @@ impl UvView {
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, PAD_COLOR);
         painter.rect_filled(square, 0.0, UV_BG_COLOR);
+
+        // Live paint canvas: the paint target presented through the
+        // texture-display callback, clipped to the UV square. Drawn
+        // beneath the wireframe so strokes show through.
+        if let Some(paint) = paint {
+            let resolution = {
+                let pts = ui.ctx().pixels_per_point();
+                let rect = ui.ctx().input(|i| i.viewport_rect());
+                [rect.width() * pts, rect.height() * pts]
+            };
+            let callback = gpu.texture_display().callback(
+                &gpu.device,
+                paint.paint_target(),
+                resolution,
+                square,
+            );
+            let shape = umber_gpu::texture_display::texture_display_shape(square, callback);
+            painter.add(shape);
+        }
 
         // UV-space -> screen-space: v is flipped (UV origin is bottom-left,
         // screen origin is top-left).
