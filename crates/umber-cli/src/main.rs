@@ -198,6 +198,30 @@ fn bake_all_cmd(args: &[String]) -> Result<()> {
     )?;
     println!("wrote {}", pos_path.display());
 
+    // Thickness map: <set>_thickness.png.
+    let thickness_params = umber_bake::thickness::ThicknessParams {
+        rays: flags.rays,
+        ..umber_bake::thickness::ThicknessParams::default()
+    };
+    let thickness = umber_bake::thickness::bake_thickness_mesh(
+        &ctx.device,
+        &ctx.queue,
+        &mesh,
+        flags.size,
+        flags.size,
+        &thickness_params,
+    )?;
+    let thick_path =
+        umber_mesh::format_mesh_map(out_dir, &set, umber_mesh::MeshMapKind::Thickness, "png");
+    umber_export::png::write_png(
+        &thick_path,
+        flags.size,
+        flags.size,
+        &thickness,
+        umber_export::png::Transfer::Srgb,
+    )?;
+    println!("wrote {}", thick_path.display());
+
     println!("bake-all complete for texture set '{set}'");
     Ok(())
 }
