@@ -95,10 +95,24 @@ mod tests {
         // Whether texel0 lands 128 (err +0.5) or 129 (err -0.5),
         // the RIGHT neighbor must feel it: its own 128.5 shifts off
         // the .5 boundary.
-        assert!(
-            out[4] == 128 || out[4] == 129,
-            "diffused value in range, got {}",
-            out[4]
+        //
+        // Deterministic pin (probe-verified 2026-10-09): texel0's
+        // 128.5 rounds half-away-from-zero to 129 (error -0.5), 7/16
+        // of that (-0.21875) diffuses right, so texel1 sits at
+        // 128.5 - 0.21875 = 128.28 -> 128. Without diffusion both
+        // texels would be 129; the pinned pair (129, 128) is reachable
+        // ONLY through error diffusion, so deleting the diffusion
+        // lines fails this test.
+        assert_eq!(
+            out[0..2],
+            [129, 0],
+            "texel0 red quantizes 128.5 -> 129 (half-away-from-zero)"
+        );
+        assert_eq!(out[4], 128, "right neighbor absorbs 7/16 of the -0.5 error");
+        assert_eq!(
+            out[0] as u32 + out[4] as u32,
+            257,
+            "twin .5-boundary texels preserve total energy: 129 + 128"
         );
     }
 
