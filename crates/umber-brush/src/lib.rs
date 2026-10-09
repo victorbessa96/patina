@@ -26,6 +26,16 @@ pub struct StrokeEvent {
     pub contact: bool,
 }
 
+pub mod lazy_mouse;
+pub mod one_euro;
+pub mod spacing;
+pub mod wiring;
+
+pub use lazy_mouse::LazyMouse;
+pub use one_euro::{OneEuroError, OneEuroFilter, OneEuroScalar};
+pub use spacing::{DabPlan, SpacingAccumulator, SpacingError};
+pub use wiring::{ConditionerError, StrokeConditioner};
+
 /// One-euro filter parameters (Casiez CHI'12 — docs/research/05 §4).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OneEuroParams {

@@ -4,20 +4,33 @@
 //! masks, and the undo journal. Everything here must be testable headless
 //! in CI (SPEC.md acceptance criterion: CPU-path round-trip determinism).
 //!
-//! Wave 1 scope: type skeletons. Wave 2 fills the real model
-//! (docs/specs/requirements.md §2).
+//! Wave 2 fills in the layer stack ([`layers`]), the command-pattern undo
+//! journal ([`undo`]), and the `.umber` project format ([`project`]) on top
+//! of the Wave 1 texture-set/channel skeleton below
+//! (docs/specs/requirements.md §2, §8).
 
 use glam::Vec3;
+use serde::{Deserialize, Serialize};
+
+pub mod layers;
+pub mod project;
+pub mod undo;
+
+pub use layers::{BlendMode, Layer, LayerCommand, LayerKind, LayerMask, LayerStack};
+pub use project::{
+    ProjectError, ProjectModel, ProjectSettings, TextureSetLayers, CURRENT_PROJECT_VERSION,
+};
+pub use undo::{Command, UndoStack};
 
 /// A named channel of a texture set (e.g. baseColor, roughness, normal).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Channel {
     pub name: String,
     pub kind: ChannelKind,
 }
 
 /// How a channel's values are stored and color-managed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChannelKind {
     /// sRGB-encoded color data (baseColor, emissive color).
     Color,
@@ -27,7 +40,7 @@ pub enum ChannelKind {
 
 /// One texture set: a resolution plus a stack of channels.
 /// Wave 1: model skeleton; painting + per-channel blending land in Wave 2.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextureSet {
     pub name: String,
     pub resolution: u32,
