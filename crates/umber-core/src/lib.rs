@@ -12,9 +12,12 @@
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 
+pub mod assets;
 pub mod layers;
 pub mod project;
 pub mod undo;
+
+pub use assets::{AssetError, AssetRef, AssetStore};
 
 pub use layers::{BlendMode, Layer, LayerCommand, LayerKind, LayerMask, LayerStack};
 pub use project::{
