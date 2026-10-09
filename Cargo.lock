@@ -3685,8 +3685,15 @@ dependencies = [
 name = "umber-gpu"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "egui-wgpu",
+ "epaint",
+ "glam",
  "log",
+ "pollster 1.0.1",
  "thiserror 2.0.21",
+ "umber-mesh",
+ "wgpu",
 ]
 
 [[package]]

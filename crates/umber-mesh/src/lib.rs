@@ -6,6 +6,12 @@
 
 use glam::Vec3;
 
+pub mod fbx;
+pub mod gltf;
+
+pub use fbx::load_fbx;
+pub use gltf::load_gltf;
+
 /// Interleaved mesh data as imported, before any GPU upload.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MeshData {
@@ -19,10 +25,12 @@ pub struct MeshData {
 }
 
 impl MeshData {
+    /// Number of vertices (length of the parallel attribute vectors).
     pub fn vertex_count(&self) -> usize {
         self.positions.len()
     }
 
+    /// Number of triangles (one third of the index count).
     pub fn triangle_count(&self) -> usize {
         self.indices.len() / 3
     }
@@ -67,7 +75,7 @@ pub fn detect_format(path: &std::path::Path) -> Result<Format, ImportError> {
         .as_deref()
     {
         Some("obj") => Ok(Format::Obj),
-        Some("gltf") | Some("glb") => Ok(Format::Gltf),
+        Some("gltf" | "glb") => Ok(Format::Gltf),
         Some("fbx") => Ok(Format::Fbx),
         Some(other) => Err(ImportError::Unsupported(other.to_string())),
         None => Err(ImportError::Unsupported("(no extension)".into())),
@@ -82,20 +90,23 @@ pub enum Format {
     Fbx,
 }
 
-/// Load a mesh from disk, dispatching on format.
+/// Load a mesh from disk, dispatching on file extension.
+///
+/// Supports `.obj` ([`load_obj`]), `.gltf`/`.glb` ([`load_gltf`]) and `.fbx`
+/// ([`load_fbx`]). Returns [`ImportError::Unsupported`] for anything else.
 pub fn load(path: &std::path::Path) -> Result<MeshData, ImportError> {
     match detect_format(path)? {
         Format::Obj => load_obj(path),
-        Format::Gltf => Err(ImportError::Gltf(
-            "glTF loader lands with the Wave-1 claw pass".into(),
-        )),
-        Format::Fbx => Err(ImportError::Fbx(
-            "FBX loader lands with the Wave-1 claw pass".into(),
-        )),
+        Format::Gltf => load_gltf(path),
+        Format::Fbx => load_fbx(path),
     }
 }
 
 /// OBJ import via tobj (Wave 1 baseline; claw hardening in flight).
+///
+/// Missing normals/UVs are left as whatever tobj produced (possibly short of
+/// `positions`); only the glTF/FBX loaders zero-fill. Returns
+/// [`ImportError::Obj`] when the file cannot be parsed.
 pub fn load_obj(path: &std::path::Path) -> Result<MeshData, ImportError> {
     let (models, materials) = tobj::load_obj(
         path,
@@ -118,6 +129,20 @@ pub fn load_obj(path: &std::path::Path) -> Result<MeshData, ImportError> {
     };
     for model in models {
         let mesh = model.mesh;
+        // Validate attribute lengths before chunking: tobj does not guarantee
+        // exact multiples for malformed files (review #1 — silent-drop risk).
+        if mesh.positions.len() % 3 != 0
+            || mesh.normals.len() % 3 != 0
+            || mesh.texcoords.len() % 2 != 0
+        {
+            return Err(ImportError::Obj(format!(
+                "malformed OBJ '{}': non-multiple attribute lengths (pos {}, nrm {}, uv {})",
+                model.name,
+                mesh.positions.len(),
+                mesh.normals.len(),
+                mesh.texcoords.len()
+            )));
+        }
         data.positions
             .extend(mesh.positions.chunks_exact(3).map(|c| [c[0], c[1], c[2]]));
         data.normals

@@ -59,11 +59,17 @@ mod tests {
     }
 
     #[test]
-    fn slashes_pass_through_as_separators_on_unix() {
-        // template_to_path only maps separators; token expansion is a
-        // separate step (expand_template). Test what each function does.
-        assert_eq!(template_to_path("out/$mesh/color"), "out/$mesh/color");
-        let expanded = expand_template(&template_to_path("out/$mesh/color"), &[("mesh", "sword")]);
-        assert_eq!(expanded, "out/sword/color");
+    fn template_separator_and_token_expansion_compose() {
+        // template_to_path maps '/' to the platform separator (no-op on
+        // Unix, '\' on Windows); token expansion composes after it. Assert
+        // the composed contract against the platform's own separator.
+        let pathed = template_to_path("out/$mesh/color");
+        let expanded = expand_template(&pathed, &[("mesh", "sword")]);
+        let expected = format!(
+            "out{}sword{}color",
+            std::path::MAIN_SEPARATOR,
+            std::path::MAIN_SEPARATOR
+        );
+        assert_eq!(expanded, expected);
     }
 }
