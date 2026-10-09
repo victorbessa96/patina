@@ -4,7 +4,7 @@
 
 Umber is a ground-up reimagining of the 3D texture-painting DCC: paint PBR materials directly on your meshes, build non-destructive layer stacks, bake mesh maps, and export engine-ready texture sets — fast, local-first, and free forever. Built completely in Rust for **Windows and Linux**.
 
-> Status: **Wave 0 — research & design.** Requirements, tech stack, and architecture are being assembled from a full Substance Painter feature inventory, competitor autopsies (ArmorPaint, Blender, Mari, Marmoset…), and a 2026 Rust graphics ecosystem survey. No releases yet. Watch the repo or join the design conversation.
+> Status: **Wave 3 — bake & export pipeline landed.** Mesh-map bakers (AO, position, world normal, curvature, thickness, tangent normal), UV-seam dilation, engine presets (glTF / Unreal / Unity / Blender), the export driver, a headless CLI (`inspect` / `bake-ao` / `bake-all` / `export`), and the egui app with Bakes panel, Export dialog, and `.umber` project save/load are all in. 250+ workspace tests green, CI on both platforms every commit. Painting, the node graph, and a first release are ahead — watch the repo.
 
 ## Why
 
@@ -31,6 +31,21 @@ Substance Painter is the industry standard for game/film texturing — and it is
 | Sandboxed plugins (WASM/WASI), headless CLI, v0.1 release | 6 |
 
 
+## Try it
+
+```bash
+# headless: bake every P0 mesh map from a mesh, seam-padded
+cargo run -p umber-cli -- bake-all sword.obj out/ --size 1024 --rays 16 --dilate 16
+# -> sword_ambient_occlusion.png, sword_curvature.png, sword_position.png,
+#    sword_world_space_normal.png, sword_normal_base.png, sword_thickness.png
+
+# headless: pack through an engine preset (DirectX normals for Unreal)
+cargo run -p umber-cli -- export sword.obj out/ --preset unreal
+
+# the app: viewport, layer stack, Bakes panel, Export dialog
+cargo run -p umber-app
+```
+
 ## License
 
 GPL-3.0-or-later for the application. Standalone library crates extracted from Umber may be released under MIT where it helps the ecosystem.
@@ -45,7 +60,7 @@ umber/
 ├── docs/
 │   ├── research/      # claw research reports (Painter inventory, competitors, ecosystem)
 │   └── specs/         # design specs per subsystem
-└── crates/            # Rust workspace (lands Wave 1)
+└── crates/            # Rust workspace — 9 crates, 250+ tests, CI green
 ```
 
 ## Contributing
