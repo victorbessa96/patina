@@ -10,11 +10,15 @@
 //! Wave 2 adds PNG encoding ([`png`]) of paint-target readbacks. Wave 3
 //! adds EXR float export ([`exr`]) and TIFF/JPEG ([`formats`]).
 
+pub mod driver;
 pub mod exr;
 pub mod formats;
 pub mod png;
 pub mod presets;
 
+pub use driver::{
+    run_preset, ExportError, MapSet, DEFAULT_JPEG_QUALITY, WORKING_NORMAL_CONVENTION,
+};
 pub use formats::{write_jpeg_rgba8, write_tiff_rgba8, JpegError, TiffError};
 pub use presets::{
     convert_normal, pack_texel, ChannelSlot, ExportPreset, ExportPresetError, MapKind,
