@@ -24,6 +24,9 @@ where upstream licenses permit relicensing.
 | ufbx | 0.11 | MIT | ✅ | FBX import (C lib, official bindings) |
 | thiserror / anyhow | 2 / 1 | MIT OR Apache-2.0 | ✅ | errors |
 | rfd | 0.15.4 | MIT | ✅ | native file dialogs (umber-app; added Wave 1 — recorded after the fact, gate audit caught it) |
+| egui-wgpu / epaint | 0.36 | MIT OR Apache-2.0 | ✅ | egui wgpu bindings (umber-gpu, claw pass) |
+| bytemuck | 1.x | MIT OR Zlib OR Apache-2.0 | ✅ | pod casting for GPU buffers |
+| pollster | 1.x | MIT OR Apache-2.0 | ✅ | adapter blocking in gpu-feature tests (optional dep) |
 | log / env_logger | 0.4 / 0.11 | MIT OR Apache-2.0 | ✅ | logging |
 | rayon / parking_lot / crossbeam | (W2+) | MIT OR Apache-2.0 | ✅ | concurrency |
 

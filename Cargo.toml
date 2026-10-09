@@ -31,6 +31,10 @@ naga_oil = "0.23"
 eframe = "0.36"
 egui = "0.36"
 egui_dock = "0.21"
+egui-wgpu = "0.36"
+epaint = "0.36"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "1"
 
 # Foundations
 glam = "0.34"
