@@ -10,4 +10,5 @@ repository.workspace = true
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+exr = { workspace = true }
 png = "0.17"
