@@ -244,3 +244,58 @@ pub enum GoldenError {
     #[error("device poll failed: {0}")]
     PollFailed(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compare_accepts_identical_buffers() {
+        let a = vec![10u8, 20, 30, 255, 0, 1, 2, 3];
+        assert!(compare_rgba8(&a, &a.clone(), 0).is_ok());
+    }
+
+    #[test]
+    fn compare_accepts_deltas_within_tolerance() {
+        let a = vec![100u8, 100, 100, 255];
+        let b = vec![103u8, 97, 102, 254];
+        assert!(compare_rgba8(&a, &b, 3).is_ok());
+    }
+
+    #[test]
+    fn compare_rejects_delta_exceeding_tolerance() {
+        let a = vec![100u8, 100, 100, 255];
+        let b = vec![104u8, 100, 100, 255];
+        let err = compare_rgba8(&a, &b, 3).unwrap_err();
+        assert!(matches!(
+            err,
+            GoldenError::PixelMismatch {
+                worst_channel_delta: 4,
+                tolerance: 3
+            }
+        ));
+    }
+
+    #[test]
+    fn compare_rejects_size_mismatch() {
+        let a = vec![0u8; 4];
+        let b = vec![0u8; 8];
+        let err = compare_rgba8(&a, &b, 0).unwrap_err();
+        assert!(matches!(
+            err,
+            GoldenError::SizeMismatch {
+                actual: 4,
+                expected: 8
+            }
+        ));
+    }
+
+    #[test]
+    fn compare_tolerance_zero_is_bit_equality() {
+        let a = vec![1u8, 2, 3, 4];
+        let mut b = a.clone();
+        assert!(compare_rgba8(&a, &b, 0).is_ok());
+        b[0] = 2;
+        assert!(compare_rgba8(&a, &b, 0).is_err());
+    }
+}
