@@ -13,6 +13,9 @@
 
 use std::fmt;
 
+#[cfg(all(windows, feature = "winink"))]
+pub mod winink;
+
 /// A raw tablet event, normalized across backends.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TabletEvent {

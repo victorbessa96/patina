@@ -9,3 +9,14 @@ repository.workspace = true
 [dependencies]
 thiserror = { workspace = true }
 log = { workspace = true }
+
+# windows-future / windows_threading (pulled in transitively) are only
+# buildable for windows targets, unlike the `windows` crate's own generated
+# bindings (which compile to nothing off-Windows via their own
+# `#![cfg(windows)]`) — so this must be target-gated, not just feature-gated,
+# or `--features winink` breaks the build on non-Windows hosts outright.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", optional = true, features = ["Win32_UI_Input_Pointer", "Win32_UI_WindowsAndMessaging", "Win32_Foundation"] }
+
+[features]
+winink = ["dep:windows"]

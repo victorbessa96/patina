@@ -25,6 +25,7 @@ where upstream licenses permit relicensing.
 | thiserror / anyhow | 2 / 1 | MIT OR Apache-2.0 | ✅ | errors |
 | rfd | 0.15.4 | MIT | ✅ | native file dialogs (umber-app; added Wave 1 — recorded after the fact, gate audit caught it) |
 | egui-wgpu / epaint | 0.36 | MIT OR Apache-2.0 | ✅ | egui wgpu bindings (umber-gpu, claw pass) |
+| windows | 0.62 (optional, target-gated to Windows) | MIT OR Apache-2.0 | ✅ | Win32 WM_POINTER/pen API for the stylus Windows Ink backend |
 | bytemuck | 1.x | MIT OR Zlib OR Apache-2.0 | ✅ | pod casting for GPU buffers |
 | pollster | 1.x | MIT OR Apache-2.0 | ✅ | adapter blocking in gpu-feature tests (optional dep) |
 | log / env_logger | 0.4 / 0.11 | MIT OR Apache-2.0 | ✅ | logging |

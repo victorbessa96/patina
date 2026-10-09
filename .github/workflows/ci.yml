@@ -49,5 +49,12 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
+      # Windows Ink backend: feature-gated behind `winink` (target-gated dep —
+      # inert on Linux). Only windows-latest can actually compile+run the
+      # WM_POINTER decode tests; this step is the backend's only real executor.
+      - name: Stylus winink feature tests (Windows only)
+        if: runner.os == 'Windows'
+        run: cargo test -p stylus --features winink
+
       - name: Build release smoke
         run: cargo build --release --workspace
