@@ -271,6 +271,29 @@ fn bake_all_cmd(args: &[String]) -> Result<()> {
     )?;
     println!("wrote {}", wnormal_path.display());
 
+    // Tangent-space normal map: <set>_normal_base.png — the TBN pass
+    // over the position pair (OpenGL convention; Substance-style
+    // naming: the BAKED normal is normal_base, distinct from a user
+    // painted normal map).
+    let tnormal = umber_bake::normal_map::bake_tangent_normal_mesh(
+        &ctx.device,
+        &ctx.queue,
+        &mesh,
+        flags.size,
+        flags.size,
+        &umber_bake::normal_map::TangentNormalParams::default(),
+    )?;
+    let tnormal_path =
+        umber_mesh::format_mesh_map(out_dir, &set, umber_mesh::MeshMapKind::NormalBase, "png");
+    umber_export::png::write_png(
+        &tnormal_path,
+        flags.size,
+        flags.size,
+        &tnormal,
+        umber_export::png::Transfer::Linear,
+    )?;
+    println!("wrote {}", tnormal_path.display());
+
     // Thickness map: <set>_thickness.png.
     let thickness_params = umber_bake::thickness::ThicknessParams {
         rays: flags.rays,
@@ -307,6 +330,7 @@ fn bake_all_cmd(args: &[String]) -> Result<()> {
             (curvature, umber_mesh::MeshMapKind::Curvature),
             (position, umber_mesh::MeshMapKind::Position),
             (wnormal, umber_mesh::MeshMapKind::WorldSpaceNormal),
+            (tnormal, umber_mesh::MeshMapKind::NormalBase),
             (thickness, umber_mesh::MeshMapKind::Thickness),
         ];
         for (map, kind) in &to_dilate {
