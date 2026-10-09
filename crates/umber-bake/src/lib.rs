@@ -6,9 +6,11 @@
 //! Compute passes share the umber-gpu tile pool.
 
 pub mod ao;
+pub mod curvature;
 pub mod position;
 
 pub use ao::{AoBakeError, AoBakeParams, BakeTarget, PlaneDesc};
+pub use curvature::{CurvatureBakeError, CurvatureParams};
 
 /// The bake map types, named per Substance conventions for the
 /// `TextureSetName_map` import naming (requirements §7).

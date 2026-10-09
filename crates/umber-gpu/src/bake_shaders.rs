@@ -512,3 +512,139 @@ fn cs_main(
     }
 }
 "#;
+
+/// Screen-space curvature estimation from a position/normal map: one
+/// workgroup per output texel, reading the 4-neighborhood's normals and
+/// positions to estimate signed directional curvature.
+///
+/// # Estimator
+///
+/// Per covered texel, over the in-bounds, covered 4-neighbors (`+x`, `-x`,
+/// `+y`, `-y`):
+///
+/// ```text
+/// k_i = dot(n_i - n_0, normalize(p_i - p_0)) / max(length(p_i - p_0), 1e-6)
+/// curv = clamp(-strength * mean(k_i), -1, 1)
+/// ```
+///
+/// This is the discrete directional-curvature estimator used by screen-space
+/// bakers (e.g. Blender's pointiness-adjacent cavity approximations and
+/// various "curvature from normal buffer" post passes): where the surface
+/// bends, neighboring normals differ along the direction of travel, and
+/// dividing by the travel distance turns that difference into a
+/// curvature-scale quantity. Averaging the four axis directions makes it
+/// rotation-tolerant without a full multi-ring fit (see
+/// `umber-bake/LANDING_NOTES_CURVATURE.md` for sources and limits).
+///
+/// # Sign convention (MeshLab: convex = negative = darker)
+///
+/// The raw `dot(dn, dir) / len` term is *positive* on an outward bulge
+/// (sphere check: `n(p) = p/R`, so `n_i - n_0 = (p_i - p_0)/R` points along
+/// the travel direction and the dot product is `|dp|/R > 0`). The leading
+/// minus flips it so convex (outward-bulge) regions read *negative* and
+/// bake *darker*, concave crevices positive/brighter — MeshLab's
+/// convention, where mean curvature is negative on convex parts. Documented
+/// here (not just in the landing notes) because the minus is otherwise an
+/// inviting "simplification" for a future reader to delete.
+///
+/// # Layout contracts
+///
+/// - `CurvatureParams` must match `umber_bake::curvature`'s private
+///   `CurvatureUniform` byte-for-byte (`width`, `height`, `strength`, one
+///   `f32` pad — 16 bytes, already a multiple of WGSL's 16-byte
+///   uniform-struct alignment, so no further padding is needed).
+/// - `position_tex`/`normal_tex` are the two `Rgba32Float` outputs of
+///   `POSITION_BAKE_SHADER`'s `cs_main`, bound read-only and sampled with
+///   `textureLoad` at integer texel coordinates (no sampler, no filtering
+///   — filtering would smear normals across UV seams; see the landing
+///   notes). `position_tex`'s alpha is the position pass's coverage flag:
+///   `0.0` means no UV triangle covered that texel.
+/// - `out_tex` is a write-only `Rgba8Unorm` storage texture (core WebGPU,
+///   no device feature — the same reason `AO_BAKE_SHADER` uses `write`,
+///   not `read_write`): `rgb` is `(curv + 1) / 2` grayscale, `a` is
+///   coverage (`1.0` covered, `0.0` uncovered).
+///
+/// # Dispatch + edge behavior
+///
+/// One workgroup (`@workgroup_size(1)`) per texel, dispatched as
+/// `dispatch_workgroups(width, height, 1)`, so `workgroup_id.xy` is
+/// directly the texel coordinate into all three textures — the same
+/// "one workgroup per texel" shape as `AO_BAKE_SHADER`'s
+/// `cs_main_from_position`, minus the ray loop (each texel's work here is
+/// four neighbor loads, so the 64-invocation workgroup would sit idle).
+/// Neighbor coordinates are clamped explicitly against `params.width` /
+/// `params.height` (never sampled out of bounds); out-of-bounds and
+/// uncovered neighbors are *skipped, not zero-filled* (a hole must not
+/// flatten a neighboring ridge), and a covered texel with no valid
+/// neighbors at all (isolated single-texel island) bakes mid-gray
+/// (`curv = 0`). Uncovered texels write `(0, 0, 0, 0)`, distinguishable
+/// from a flat-but-covered texel (`(~0.5, ~0.5, ~0.5, 1)`) by alpha alone
+/// — the same alpha convention `cs_main_from_position` uses, which is why
+/// `curvature::bake_curvature_mesh` returns full RGBA8.
+pub const CURVATURE_BAKE_SHADER: &str = r#"
+struct CurvatureParams {
+    width: u32,
+    height: u32,
+    strength: f32,
+    _pad: f32,
+};
+
+@group(0) @binding(0) var out_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(1) var<uniform> params: CurvatureParams;
+@group(0) @binding(2) var position_tex: texture_2d<f32>;
+@group(0) @binding(3) var normal_tex: texture_2d<f32>;
+
+const CURV_EPS: f32 = 1e-6;
+
+@compute @workgroup_size(1)
+fn cs_main(@builtin(workgroup_id) workgroup_id: vec3<u32>) {
+    let coord = vec2<i32>(workgroup_id.xy);
+    let center = textureLoad(position_tex, coord, 0);
+    if (center.w <= 0.5) {
+        textureStore(out_tex, coord, vec4<f32>(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    let p0 = center.xyz;
+    let n0 = normalize(textureLoad(normal_tex, coord, 0).xyz);
+    let dims = vec2<i32>(i32(params.width), i32(params.height));
+
+    var sum = 0.0;
+    var count = 0u;
+    for (var k = 0u; k < 4u; k = k + 1u) {
+        var off = vec2<i32>(1, 0);
+        if (k == 1u) {
+            off = vec2<i32>(-1, 0);
+        } else if (k == 2u) {
+            off = vec2<i32>(0, 1);
+        } else if (k == 3u) {
+            off = vec2<i32>(0, -1);
+        }
+        let nc = coord + off;
+        if (nc.x < 0 || nc.y < 0 || nc.x >= dims.x || nc.y >= dims.y) {
+            continue;
+        }
+        let s = textureLoad(position_tex, nc, 0);
+        if (s.w <= 0.5) {
+            continue;
+        }
+        let dp = s.xyz - p0;
+        let len = length(dp);
+        let dir = dp / max(len, CURV_EPS);
+        let dn = textureLoad(normal_tex, nc, 0).xyz - n0;
+        sum = sum + dot(dn, dir) / max(len, CURV_EPS);
+        count = count + 1u;
+    }
+
+    var curv = 0.0;
+    if (count > 0u) {
+        // Negated: the raw estimator is positive on outward bulges (see
+        // this constant's doc comment); MeshLab convention wants convex
+        // negative (= darker).
+        curv = -sum / f32(count) * params.strength;
+    }
+    curv = clamp(curv, -1.0, 1.0);
+    let g = (curv + 1.0) * 0.5;
+    textureStore(out_tex, coord, vec4<f32>(g, g, g, 1.0));
+}
+"#;
