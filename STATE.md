@@ -4,10 +4,10 @@
 
 ## Status line
 
-Current wave: **0 of 6** (IN-PROGRESS)
-State: WAVE-0-ACTIVE — research consolidation phase
-Last checkpoint: not yet (first checkpoint fires when all 5 reports land + SPEC v1.0 ratified)
-Last green commit: 967fb99 (docs: security policy, issue/PR templates, research index)
+Current wave: **0 of 6** (IN-PROGRESS — consolidation complete, awaiting ratification)
+State: WAVE-0-CONSOLIDATED — research corpus landed; SPEC v1.0 DRAFT packaged for Bessa
+Last checkpoint: not yet (fires when Bessa ratifies SPEC v1.0)
+Last green commit: see git log — docs/specs consolidation + report 05
 
 **RENAME 2026-10-09 02:41:** Patina → **Umber** (name-collision sweep found live USPTO marks + in-category Patina® Mac paint app; claw recommended Umber — no software trademark, no in-category product, on-theme: raw earth pigment containing iron oxide). Repo: **github.com/victorbessa96/umber** (old URL 301-redirects). Executed under overnight grant; **Bessa can revert on wake** — full trail in DECISIONS.md [02:41].
 
@@ -38,6 +38,8 @@ See DECISIONS.md for all-time log. Last 3 inline:
 
 ## Handoff note (what the next session must know)
 
-Wave 0 in flight. Four research claws dispatched (deleg_a2943965): (1) Substance Painter exhaustive feature inventory, (2) competitor landscape incl. ArmorPaint deep-dive + Umber name-collision sweep, (3) Rust graphics/DCC crate stack survey, (4) next-gen capability bar (P0/P1/P2). When their results land: save each report to docs/research/<topic>.md, cross-check name collision, then write the consolidated REQUIREMENTS + TECH-STACK + COMPONENTS doc and bring SPEC.md DRAFT → v1.0 for Bessa review. Do NOT start Wave 1 coding — brainstorming skill hard-gate: no implementation before spec approval. Alignment decisions already locked in DECISIONS.md (name, license, wave-1 shape, GPU, UI).
+**Wave 0 is functionally complete.** All 5 research reports in docs/research/ (01 Painter inventory, 02 competitors + name sweep, 03 Rust ecosystem, 04 next-gen P0/P1/P2, 05 brush-engine architecture). Consolidation docs written: docs/specs/requirements.md (12 sections, P0/P1/P2 + wave tags), tech-stack.md (crate table + 3 budget-to-own bets + workspace shape), architecture.md (threading model, paint data flow, VT, project format, bus-factor defense). SPEC.md is at **v1.0 DRAFT with a ratification block for Bessa** — DO NOT start Wave 1 coding until he ticks the block. Do not re-run research; it is done.
 
-**Public repo live: https://github.com/victorbessa96/umber** (origin, master, GPL-3.0 LICENSE + README + docs tree pushed 2026-10-09 ~02:15). Bessa authorized repo + full claw usage (opencode/claude at any moment, subagents at will) — logged in DECISIONS.md [02:10]. Standby for implementation once spec v1.0 ratified: claws will be used for Wave 1 (workspace skeleton via rust-workspace-greenfield skill), cross-reviewed per the standing rule.
+On Bessa's wake: (1) he reads SPEC.md ratification block, (2) any edits → apply → re-check, (3) ratified → dragon-checkpoint umber --wave 0, (4) Wave 1 opens (workspace skeleton via rust-workspace-greenfield skill; claws opencode/claude available for implementation with cross-review per standing rule). Rename Patina→Umber was executed overnight under autonomy grant — he may revert (DECISIONS.md [02:41] has the one-command path).
+
+**Public repo: https://github.com/victorbessa96/umber** (old patina URL 301s). Community files, topics, discussions, wave-tracker issues #1–7 all live. Overnight autonomy grant (2026-10-09 02:15) remains active until Bessa wakes.
