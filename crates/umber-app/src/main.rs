@@ -13,6 +13,7 @@
 //! paint-thread + ring-buffer architecture (docs/specs/architecture.md)
 //! lands with the paint engine.
 
+mod uv_view;
 mod viewport;
 
 use egui::containers::menu::{MenuBar, MenuButton};
@@ -20,12 +21,14 @@ use egui::{CentralPanel, Id, Ui, WidgetText};
 use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
 use std::path::PathBuf;
 use umber_gpu::GpuContext;
+use uv_view::UvView;
 use viewport::Viewport;
 
 /// Every panel the shell can dock.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Panel {
     Viewport,
+    UvView,
     LayerStack,
     Properties,
     Assets,
@@ -39,6 +42,8 @@ pub enum Panel {
 /// context and the camera/mesh state that outlive a single frame.
 struct PanelViewer<'a> {
     viewport: &'a mut Viewport,
+    uv_view: &'a mut UvView,
+    mesh: Option<&'a umber_mesh::MeshData>,
     gpu: &'a GpuContext,
 }
 
@@ -52,6 +57,7 @@ impl TabViewer for PanelViewer<'_> {
     fn title(&mut self, tab: &mut Self::Tab) -> WidgetText {
         match tab {
             Panel::Viewport => "Viewport".into(),
+            Panel::UvView => "2D UV".into(),
             Panel::LayerStack => "Layers".into(),
             Panel::Properties => "Properties".into(),
             Panel::Assets => "Assets".into(),
@@ -63,6 +69,7 @@ impl TabViewer for PanelViewer<'_> {
     fn ui(&mut self, ui: &mut Ui, tab: &mut Self::Tab) {
         match tab {
             Panel::Viewport => self.viewport.ui(ui, self.gpu),
+            Panel::UvView => self.uv_view.ui(ui, self.mesh),
             Panel::LayerStack => {
                 ui.label("Layer stack (Wave 2)");
             }
@@ -88,6 +95,7 @@ pub struct AppState {
     pub mesh: Option<umber_mesh::MeshData>,
     pub mesh_path: Option<PathBuf>,
     pub viewport: Viewport,
+    pub uv_view: UvView,
 }
 
 /// The eframe app.
@@ -119,8 +127,8 @@ impl UmberApp {
             umber_gpu::renderer::depth_format(),
         );
 
-        // Layout: [left column | viewport] with history docked right.
-        let mut dock = DockState::new(vec![Panel::Viewport]);
+        // Layout: [left column | center (3D + 2D UV tabs)] with history docked right.
+        let mut dock = DockState::new(vec![Panel::Viewport, Panel::UvView]);
         {
             let tree = dock.main_surface_mut();
             let [left, _] = tree.split_left(
@@ -167,7 +175,7 @@ impl eframe::App for UmberApp {
             });
             MenuButton::new("Help").ui(ui, |ui| {
                 if ui.button("About Umber").clicked() {
-                    ui.label("Umber v0.1.0 — Wave 1 skeleton");
+                    ui.label("Umber v0.1.0 — Wave 2 in progress");
                 }
             });
         });
@@ -175,6 +183,8 @@ impl eframe::App for UmberApp {
         CentralPanel::default().show(ui, |ui| {
             let mut viewer = PanelViewer {
                 viewport: &mut self.state.viewport,
+                uv_view: &mut self.state.uv_view,
+                mesh: self.state.mesh.as_ref(),
                 gpu: &self.gpu,
             };
             DockArea::new(&mut self.dock)
