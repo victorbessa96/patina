@@ -8,6 +8,13 @@
 //! review finding #2, docs/research/06).
 //!
 //! Wave 1 scope: the node vocabulary skeleton the workspace compiles on.
+//! Wave 3 (this slice): the DAG core — [`topo`] with validation
+//! (dangling refs, duplicate ids) and topological evaluation (Kahn's
+//! algorithm, cycle rejection, inputs resolved before consumers run).
+
+pub mod topo;
+
+pub use topo::{Edge, Graph, GraphError};
 
 /// A node in a graph. The Wave-4 engine evaluates these topologically.
 #[derive(Debug, Clone, PartialEq)]
