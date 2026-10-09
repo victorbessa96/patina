@@ -1,7 +1,14 @@
 {
   "name": "umber",
   "created_at": "2026-10-09T05:06:48.476566+00:00",
-  "last_wave_completed": null,
-  "waves": [],
+  "last_wave_completed": 1,
+  "waves": [
+    {
+      "n": 1,
+      "closed_at": "2026-10-09T09:28:00+00:00",
+      "checkpoint_exit": 0,
+      "note": "Wave 1 complete: 11-crate workspace CI-green both platforms; glTF/GLB/FBX/OBJ loaders with real fixtures; wgpu viewport (orbit camera, depth, IBL hemispherical env light) verified on real adapter; stylus Windows-Ink backend Windows-CI-verified (winink tests pass on windows-latest); THIRD_PARTY manifest complete; claws cross-reviewed throughout"
+    }
+  ],
   "active": true
 }

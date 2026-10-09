@@ -4,10 +4,10 @@
 
 ## Status line
 
-Current wave: **1 of 6** (IN-PROGRESS)
-State: WAVE-1-ACTIVE — workspace skeleton + mesh import + PBR viewport
-Last checkpoint: pending (Wave 0 checkpoint fires when Bessa ratifies SPEC v1.0)
-Last green commit: fb29d7c (Wave 0 close-out)
+Current wave: **2 of 6** (READY — Wave 1 closed at checkpoint 905a389, 2026-10-09 09:28 UTC)
+State: WAVE-1-CLOSED / WAVE-2-READY
+Last checkpoint: Wave 1 @ 905a389 (exit 0, clean — 2026-10-09 09:28 UTC)
+Last green commit: 905a389 (both platforms green incl. winink tests on windows-latest)
 
 **WAVE-1-ACTIVATION (2026-10-09 03:25):** Bessa's /loop instruction ("continue working autonomously... writing the code and expanding until 11am") explicitly authorizes implementation past the ratification gate. Wave 1 opened under loop authorization with SPEC v1.0 as the working contract — ratification still pending; any Bessa edits at ratification rescope per the spec-change rule. Full trail: DECISIONS.md [03:25].
 
@@ -17,16 +17,10 @@ Last green commit: fb29d7c (Wave 0 close-out)
 
 ## Active wave
 
-**Name:** Wave 1 — Workspace skeleton + mesh import + PBR viewport
-**Goal:** 11-crate workspace builds green on Linux+Windows CI; umber-app boots (eframe/wgpu + egui_dock shell); glTF/OBJ/FBX import in umber-mesh; basic PBR viewport with camera; THIRD_PARTY.md license manifest; stylus crate skeleton. Dev GPU note: Intel HD 530 + Vulkan 1.4 Mesa — correctness dev target only; 60fps reference-class validation happens on other hardware.
-**Exit criteria (from SPEC Wave 1):**
-- [ ] Workspace builds on Windows+Linux CI (fmt/build/test/clippy gates)
-- [ ] App boots with dockable shell
-- [ ] Loads glTF/OBJ/FBX
-- [ ] IBL-lit viewport using bundled env maps, camera controls
-- [ ] Stylus crate skeleton (Windows Ink path = feature-gated backend)
-- [ ] Dependency license audit gate: THIRD_PARTY.md before first claw-authored merge
-- [ ] Claws: opencode → umber-mesh importers; claude → umber-gpu + viewport integration; cross-review per standing rule
+**Name:** Wave 2 — Painting core (THE BIG ONE)
+**Goal:** Full brush engine (libmypaint-documented-semantics dynamics, one-euro + lazy mouse); seam-aware UV-rasterization stamping + golden-image harness; 3D-space stroke evaluation; layer stack + masks + per-channel blending (core 12 blend modes); undo journal; OCIO viewport; OpenPBR über-shader + conformance suite; bundled brush presets; tile-pool memory architecture foundation; .umber project format with CPU-path deterministic round-trip; HDR image import; history window; Windows dual stylus path (Ink + Wintab); 2D UV view; wireframe/grid overlays.
+**Entry state:** Wave 1 closed clean — see git log 342e8f1..905a389 and the checkpoint manifest.
+**Exit criteria (from SPEC Wave 2):** every item above lands with CI-green gates + cross-review; golden-image harness running on lavapipe/WARP; project round-trip byte-identical in CI.
 
 **Wave-1 progress (2026-10-09 03:25–05:57):**
 - [x] 11-crate workspace scaffolded — builds clean, clippy 0 warnings, fmt clean (ba9fecc)
