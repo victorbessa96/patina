@@ -204,13 +204,29 @@ fn rfd_pick_mesh() -> Option<PathBuf> {
 
 fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    log::info!("umber — starting (wave-1 skeleton)");
+    log::info!("umber — starting (wave-2: paint core)");
+
+    // Paint-compositor requirement (umber-gpu paint claw reviewer checklist
+    // item #1): read_write storage textures need the adapter-specific format
+    // features requested on the device, or the compute splat pass panics at
+    // first real stroke. eframe owns the device, so the requirement must be
+    // injected here — through the device descriptor closure.
+    let mut wgpu_options = eframe::egui_wgpu::WgpuConfiguration::default();
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(ref mut create_new) = wgpu_options.wgpu_setup {
+        create_new.device_descriptor =
+            std::sync::Arc::new(|_adapter| eframe::egui_wgpu::wgpu::DeviceDescriptor {
+                required_features:
+                    eframe::egui_wgpu::wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+                ..Default::default()
+            });
+    }
 
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])
             .with_title("Umber"),
         renderer: eframe::Renderer::Wgpu,
+        wgpu_options,
         // Gives the egui renderer's render pass a depth attachment matching
         // umber-gpu's pipeline (review #1). Value sourced from umber-gpu so
         // this crate stays free of direct wgpu types.
