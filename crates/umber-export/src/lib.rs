@@ -10,12 +10,15 @@
 //! Wave 2 adds PNG encoding ([`png`]) of paint-target readbacks. Wave 3
 //! adds EXR float export ([`exr`]) and TIFF/JPEG ([`formats`]).
 
+pub mod dither;
 pub mod driver;
 pub mod exr;
 pub mod formats;
 pub mod icc;
 pub mod png;
 pub mod presets;
+
+pub use dither::dither_quantize_rgba8;
 
 pub use driver::{
     run_preset, ExportError, MapSet, DEFAULT_JPEG_QUALITY, WORKING_NORMAL_CONVENTION,
