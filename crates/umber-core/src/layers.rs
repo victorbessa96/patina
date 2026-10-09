@@ -26,7 +26,10 @@ pub enum LayerKind {
     /// and that result blends with layers below using the folder layer's
     /// own `blend_mode`/`opacity`. See [`BlendMode::Passthrough`] for how
     /// this flag relates to the blend-mode enum.
-    Folder { passthrough: bool },
+    Folder {
+        /// See the variant's own doc comment above.
+        passthrough: bool,
+    },
 }
 
 /// The core 12 blend modes (requirements.md §2: "P0 core 12, full set 4").
@@ -44,18 +47,31 @@ pub enum LayerKind {
 /// is left open for Wave 2's compositor work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum BlendMode {
+    /// Top layer fully replaces what's below it, modulated by opacity.
     #[default]
     Normal,
+    /// Folder-only: children blend directly with layers below the folder,
+    /// as if the folder were not there. See [`LayerKind::Folder`].
     Passthrough,
+    /// Result × base — darkens; black stays black, white is a no-op.
     Multiply,
+    /// Inverse-multiply — lightens; white stays white, black is a no-op.
     Screen,
+    /// Multiply below 0.5 result luminance, Screen above — contrast boost.
     Overlay,
+    /// Per-channel minimum of result and base.
     Darken,
+    /// Per-channel maximum of result and base.
     Lighten,
+    /// Linear-light additive blend; clamps at white.
     Add,
+    /// Linear-light subtractive blend; clamps at black.
     Subtract,
+    /// Absolute difference between result and base.
     Difference,
+    /// Low-contrast Overlay variant (Photoshop/Substance-style soft light).
     SoftLight,
+    /// Higher-contrast Overlay variant (roles of result/base swapped).
     HardLight,
 }
 
@@ -66,7 +82,9 @@ pub enum BlendMode {
 /// compositing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LayerMask {
+    /// Display name, shown in the layer-stack panel next to the layer's own.
     pub name: String,
+    /// Whether the mask currently affects compositing.
     pub enabled: bool,
 }
 
@@ -76,12 +94,17 @@ pub struct Layer {
     /// Monotonically-allocated within the owning [`LayerStack`]; stable
     /// across save/load (see project.rs).
     pub id: u64,
+    /// Display name, shown in the layer-stack panel.
     pub name: String,
+    /// What this layer contains (paint/fill/folder).
     pub kind: LayerKind,
     /// Clamped to `0.0..=1.0` by every mutator on [`LayerStack`].
     pub opacity: f32,
+    /// Whether this layer contributes to compositing.
     pub visible: bool,
+    /// How this layer's result combines with the layers below it.
     pub blend_mode: BlendMode,
+    /// Attached paint mask, if any.
     pub mask: Option<LayerMask>,
 }
 
@@ -93,6 +116,7 @@ pub struct Layer {
 /// stack afterwards.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayerStack {
+    /// Stack order, bottom (index 0) to top.
     pub layers: Vec<Layer>,
     next_id: u64,
 }
@@ -104,6 +128,7 @@ impl Default for LayerStack {
 }
 
 impl LayerStack {
+    /// An empty stack with id allocation starting at 0.
     pub fn new() -> Self {
         Self {
             layers: Vec::new(),
@@ -130,14 +155,17 @@ impl LayerStack {
         self.next_id
     }
 
+    /// The current stack position of the layer with `id`, if it exists.
     pub fn index_of(&self, id: u64) -> Option<usize> {
         self.layers.iter().position(|l| l.id == id)
     }
 
+    /// Looks up a layer by id.
     pub fn layer(&self, id: u64) -> Option<&Layer> {
         self.layers.iter().find(|l| l.id == id)
     }
 
+    /// Looks up a layer by id, mutably.
     pub fn layer_mut(&mut self, id: u64) -> Option<&mut Layer> {
         self.layers.iter_mut().find(|l| l.id == id)
     }
@@ -243,38 +271,63 @@ impl LayerStack {
 /// a layer stack.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayerCommand {
+    /// Adds a new layer to the top of the stack.
     Add {
+        /// Name of the layer to create.
         name: String,
+        /// Kind of the layer to create.
         kind: LayerKind,
+        /// `None` until the first `apply`; afterwards holds the allocated
+        /// id so redo can restore the exact same one.
         id: Option<u64>,
     },
+    /// Removes an existing layer by id.
     Remove {
+        /// Id of the layer to remove.
         id: u64,
+        /// Captured `(index, Layer)` after `apply`, for `revert`.
         removed: Option<(usize, Layer)>,
     },
+    /// Moves a layer from one stack position to another.
     Reorder {
+        /// Source index.
         from: usize,
+        /// Requested destination index (clamped on apply).
         to: usize,
+        /// The index the layer actually landed at after `apply`.
         applied_to: Option<usize>,
     },
+    /// Sets a layer's opacity.
     SetOpacity {
+        /// Id of the layer to update.
         id: u64,
+        /// New opacity value.
         new: f32,
+        /// Previous opacity, captured by `apply` for `revert`.
         old: Option<f32>,
     },
+    /// Sets a layer's visibility.
     SetVisible {
+        /// Id of the layer to update.
         id: u64,
+        /// New visibility value.
         new: bool,
+        /// Previous visibility, captured by `apply` for `revert`.
         old: Option<bool>,
     },
+    /// Sets a layer's blend mode.
     SetBlendMode {
+        /// Id of the layer to update.
         id: u64,
+        /// New blend mode.
         new: BlendMode,
+        /// Previous blend mode, captured by `apply` for `revert`.
         old: Option<BlendMode>,
     },
 }
 
 impl LayerCommand {
+    /// Builds an [`Add`](LayerCommand::Add) command for a new layer.
     pub fn add(name: impl Into<String>, kind: LayerKind) -> Self {
         LayerCommand::Add {
             name: name.into(),
@@ -283,10 +336,12 @@ impl LayerCommand {
         }
     }
 
+    /// Builds a [`Remove`](LayerCommand::Remove) command for an existing layer.
     pub fn remove(id: u64) -> Self {
         LayerCommand::Remove { id, removed: None }
     }
 
+    /// Builds a [`Reorder`](LayerCommand::Reorder) command.
     pub fn reorder(from: usize, to: usize) -> Self {
         LayerCommand::Reorder {
             from,
@@ -295,6 +350,7 @@ impl LayerCommand {
         }
     }
 
+    /// Builds a [`SetOpacity`](LayerCommand::SetOpacity) command.
     pub fn set_opacity(id: u64, value: f32) -> Self {
         LayerCommand::SetOpacity {
             id,
@@ -303,6 +359,7 @@ impl LayerCommand {
         }
     }
 
+    /// Builds a [`SetVisible`](LayerCommand::SetVisible) command.
     pub fn set_visible(id: u64, value: bool) -> Self {
         LayerCommand::SetVisible {
             id,
@@ -311,6 +368,7 @@ impl LayerCommand {
         }
     }
 
+    /// Builds a [`SetBlendMode`](LayerCommand::SetBlendMode) command.
     pub fn set_blend_mode(id: u64, mode: BlendMode) -> Self {
         LayerCommand::SetBlendMode {
             id,

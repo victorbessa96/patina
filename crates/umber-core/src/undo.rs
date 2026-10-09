@@ -28,6 +28,11 @@ pub trait Command {
     /// Defaults to 0 for commands that only hold small scalars. Commands
     /// wrapping future GPU-tile snapshots should override this so
     /// [`UndoStack`]'s memory budget reflects what is actually pinned in RAM.
+    ///
+    /// Must return the same value for the lifetime of the command: `UndoStack`
+    /// reads it once on `push` and assumes it doesn't change afterwards (in
+    /// particular, don't let `revert` free data that `memory_bytes` still
+    /// counts — the command may be re-applied by a later `redo`).
     fn memory_bytes(&self) -> usize {
         0
     }

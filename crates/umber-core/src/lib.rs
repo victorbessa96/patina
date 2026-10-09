@@ -18,7 +18,8 @@ pub mod undo;
 
 pub use layers::{BlendMode, Layer, LayerCommand, LayerKind, LayerMask, LayerStack};
 pub use project::{
-    ProjectError, ProjectModel, ProjectSettings, TextureSetLayers, CURRENT_PROJECT_VERSION,
+    load_from_dir, save_to_dir, ProjectError, ProjectModel, ProjectSettings, TextureSetLayers,
+    CURRENT_PROJECT_VERSION,
 };
 pub use undo::{Command, UndoStack};
 

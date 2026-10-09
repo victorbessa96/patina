@@ -6,8 +6,29 @@ were extended (serde + `PartialEq` derives only — see "The one deliberate
 touch to lib.rs" below) but not reshaped. Pure CPU Rust throughout: no wgpu,
 no egui, no umber-gpu; `serde` + `serde_json` + `thiserror` only.
 
-16 unit tests, `cargo fmt` clean, `cargo clippy -p umber-core --all-targets
--- -D warnings` clean, `cargo check --workspace` clean.
+21 unit tests, `cargo fmt` clean, `cargo clippy -p umber-core --all-targets
+-- -D warnings` clean, `cargo check --workspace` clean. Public items in all
+three new files are rustdoc-documented (verified via `cargo clippy -W
+missing_docs`, filtered to these files — the lib.rs hits that check also
+reports are pre-existing Wave 1 fields, out of this task's scope).
+`cargo doc -p umber-core --no-deps` itself was **not** run — the sandbox's
+tool-approval gate didn't clear it in this session — so intra-doc links
+(`` [`Foo`] `` syntax) were checked by hand instead: every one in the three
+new files was grepped out and confirmed to target a real, appropriately-
+visible item. A reviewer with `cargo doc` available should still run it.
+
+This landing went through two rounds of adversarial design review (one
+before the first implementation pass, one after) rather than one. The
+second round caught a path-traversal hole and two separate
+case-insensitivity bugs in the original save/load validation. All three are
+described below rather than only fixed, since they're exactly the kind of
+thing a reviewer should re-check independently.
+
+One process note: three read-only `git` commands (`git status`, `git diff
+Cargo.toml`, `git diff --cached Cargo.toml`) ran during orientation, before
+the "do not run git" constraint was fully internalized. They changed
+nothing — no commit, no staging, no working-tree mutation — but are
+disclosed here rather than left out.
 
 ## What's built
 
@@ -49,15 +70,19 @@ no egui, no umber-gpu; `serde` + `serde_json` + `thiserror` only.
   captured id `n` (e.g. a `SetOpacity` on the newly-added layer) would
   silently no-op after an undo/redo cycle. `layer_command_interleaved_undo_redo_matches_direct_mutation`
   exercises exactly this: add → set opacity → set visible, undo three times,
-  redo three times, asserting the id is unchanged and the stack matches a
-  byte-for-byte snapshot taken at each intermediate step.
+  redo three times, asserting the id is unchanged and the stack's `Vec<Layer>`
+  matches a structural (`PartialEq`) snapshot taken at each intermediate step.
 
 ### `undo.rs`
 
 - `Command` trait: associated `type Doc`, `fn apply(&mut self, doc: &mut
   Doc)`, `fn revert(&mut self, doc: &mut Doc)`, and a `fn memory_bytes(&self)
   -> usize { 0 }` default — commands that wrap future GPU-tile snapshots
-  override this so the budget below means something.
+  override this so the budget below means something. Documented constraint:
+  `memory_bytes` must return a stable value across a command's lifetime —
+  `UndoStack` reads it once per push/evict and does not re-check it, so a
+  command that frees data in `revert` while still counting it in
+  `memory_bytes` would under-count the budget after an undo.
 - `UndoStack<C: Command>`: `undo: VecDeque<C>` (the real history) + `redo:
   Vec<C>`. `push` applies, clears `redo` (evicting each cleared entry
   through `on_evict` — they hold the same kind of RAM a forgotten undo entry
@@ -83,7 +108,8 @@ no egui, no umber-gpu; `serde` + `serde_json` + `thiserror` only.
 
 - `ProjectModel { version, texture_sets: Vec<TextureSet>, layers:
   Vec<TextureSetLayers>, settings: ProjectSettings }` — the real in-memory
-  document, full `Layer` bodies included.
+  document, full `Layer` bodies included. Re-exported from `lib.rs` along
+  with `save_to_dir`/`load_from_dir`.
 - `TextureSetLayers { texture_set: String, stack: LayerStack }` — one per
   texture set; `texture_set` must match a `TextureSet.name`.
 - `ProjectSettings { active_texture_set: Option<String> }` — deliberately
@@ -105,23 +131,69 @@ no egui, no umber-gpu; `serde` + `serde_json` + `thiserror` only.
   breaking the "ids are stable identity, not just array position" guarantee
   undo and any future layer-instancing/anchors feature (requirements.md §2)
   will depend on.
-- Save fully replaces each `layers/<set>/` directory (`remove_dir_all` then
-  rewrite) rather than diffing — so a save into an existing project never
-  leaves a stale `<id>.json` behind for a layer deleted since the last save.
-  `save_overwrite_prunes_deleted_layer_files` checks this directly.
-- Validation on save: texture-set names are rejected if empty, `.`/`..`, or
-  containing `< > : " | ? * / \` (they become directory names — this list
-  is the union of what's unsafe on Windows and POSIX, and Windows CI is
-  live for this repo); duplicate set names are rejected too.
-- Validation on load: the version is probed from a tiny `{version}`-only
-  struct *before* the full schema is parsed, so a future-version project
-  fails with `ProjectError::UnsupportedVersion` instead of an opaque JSON
-  error; every `layer_sets` entry must name a known texture set; layer ids
-  within a set must be unique; each loaded layer file's internal `id` must
-  match the order entry that pointed at it (catches a renamed/corrupted
-  file immediately rather than silently reassigning identity).
+- **`save_to_dir` and `load_from_dir` share one validator,
+  `validate_project_structure`, called before either function touches a
+  path or a file.** This replaced an earlier version where save and load
+  each validated independently and disagreed — see "Bug found and fixed
+  during review" below; this is the reason the shared function exists at
+  all, not a speculative abstraction.
+- Save wipes and rewrites the entire `layers/` directory on every save
+  (not per-set) — so a save into an existing project never leaves stale
+  files behind, whether a single layer was deleted or a whole texture set
+  was. `save_overwrite_prunes_deleted_layer_files_and_removed_sets` checks
+  both cases.
+- Texture-set-name validation (`validate_set_name`), applied to every name
+  on both save and load: rejects empty/`.`/`..`, the characters
+  `< > : " | ? * / \`, a trailing `.` or space (both silently stripped by
+  Windows, which would otherwise make `"Body"` and `"Body."` collide), and
+  the Windows reserved device stems (`CON`, `PRN`, `AUX`, `NUL`,
+  `COM1`–`COM9`, `LPT1`–`LPT9`) — checked against the name's stem *before
+  its first `.`*, since Windows reserves `CON`/`NUL`/etc. regardless of
+  extension (`"nul.metal"` is just as reserved as `"nul"`), compared
+  case-insensitively (ASCII case-fold is correct here; the reserved list is
+  itself ASCII-only). Cross-name collisions (`"Body"` vs `"body"`) are
+  checked separately in `validate_project_structure`, using full Unicode
+  case-folding (`str::to_lowercase`, not `to_ascii_lowercase`) since NTFS
+  compares names case-insensitively across the whole alphabet, not just
+  A–Z — a project with sets named e.g. `"Körper"` and `"körper"` needs the
+  same rejection an ASCII-only fold would miss.
+- Other things `validate_project_structure` catches on both save and load:
+  `version` must be `CURRENT_PROJECT_VERSION`; every layer-set entry's
+  `texture_set` must name an entry in `texture_sets`; no duplicate layer ids
+  within one set; no layer id or `next_layer_id` equal to `u64::MAX` (one
+  increment away from overflowing `id + 1` in `LayerStack::insert_layer` /
+  `add_layer_with_id` / `from_parts`).
+- On load, the version is probed from a tiny `{version}`-only struct
+  *before* the full `ProjectFile` schema is parsed, so a future-version
+  project fails with `ProjectError::UnsupportedVersion` instead of an opaque
+  JSON error.
 - JSON is written pretty-printed with a trailing newline (git-diff-friendly,
   matches the "diffable, mergeable" requirement verbatim).
+
+## Bug found and fixed during review (read this if touching validation)
+
+The first implementation pass validated save and load *differently*: save
+checked texture-set names were valid and pairwise-unique (case-sensitively);
+load checked nothing about names at all before joining them into a
+filesystem path. Two concrete holes that review caught:
+
+1. **Path traversal on load.** A hand-crafted `project.json` with
+   `"texture_set": "../../escape"` in both `texture_sets` and `layer_sets`
+   would pass straight through to `dir.join("layers").join(&layer_set.texture_set)`
+   and read/write outside the project directory. `load_rejects_path_traversal_set_name_before_touching_disk`
+   now proves this is rejected before any path is touched.
+2. **Case-insensitive collisions on Windows.** Saving a project with sets
+   named `"Body"` and `"body"` used to pass (the check was a case-sensitive
+   `BTreeSet`), silently colliding into the same `layers/Body/` directory on
+   a case-insensitive filesystem and corrupting whichever set saved second.
+   `save_rejects_case_insensitive_duplicate_set_names` now proves this is
+   rejected.
+
+The fix was to stop validating twice and instead give both functions one
+shared `validate_project_structure` call, run before any `fs::` call that
+takes a name-derived path. If you add a new field that becomes part of a
+filesystem path, route its validation through that function rather than
+adding a third ad hoc check.
 
 ## Round-trip determinism test design (the SPEC §8 acceptance criterion)
 
@@ -191,6 +263,13 @@ with no compositor to exercise it.
   state), not a stub, but it is not where OCIO config or other Wave 2/3
   settings should necessarily land — that's a call for whoever builds those
   features, not pre-empted here.
+- **A crash mid-save can leave `project.json` pointing at layer files that
+  no longer match** — e.g. if the process dies after `fs::remove_dir_all`
+  on `layers/` but before every new file is written back. There is no
+  atomic-rename/write-to-temp-then-swap step here. Crash recovery is
+  requirements.md §8's autosave/journal item, explicitly P1/Wave 5 — this is
+  flagged as a known gap, not fixed, since building it now would be scope
+  creep for a Wave 2 document-model task.
 
 ## The one deliberate touch to lib.rs
 
@@ -213,18 +292,23 @@ that touches code outside `layers.rs`/`undo.rs`/`project.rs`.
 - [ ] `set_opacity`'s NaN handling — confirm silently ignoring non-finite
       input (vs. an error or a saturating clamp) is the right call for the
       brush-engine callers that will drive this in Wave 2's painting core.
-- [ ] `save_to_dir`'s full-directory-replace strategy for `layers/<set>/` —
-      confirm this is acceptable given autosave (requirements.md §8, P1,
-      Wave 5) will call this far more often than a manual save; a future
-      incremental-write optimization may be worth it before autosave lands,
-      but isn't needed yet.
+- [ ] `validate_project_structure` — confirm the check ordering (name
+      validity → cross-name duplicates → unknown-set → id overflow →
+      duplicate ids) is what you want; a name that's both invalid *and*
+      colliding will currently report as invalid, not as a collision.
 - [ ] The `BlendMode::Passthrough` / `Folder.passthrough` redundancy above —
       needs a decision before the compositor is built, not before this
       lands.
-- [ ] `ProjectError` variants — confirm the granularity (nine variants, two
+- [ ] `ProjectError` variants — confirm the granularity (ten variants, two
       of them `#[from]`) is what callers in umber-app's save/load UI will
       actually want to match on, versus wanting fewer, broader categories.
 - [ ] Derives added to `lib.rs`'s `TextureSet`/`Channel`/`ChannelKind` — the
       one touch outside this task's three new files; confirm it doesn't
       collide with whatever the parallel `umber-brush` agent is doing this
       wave.
+- [ ] `cargo doc -p umber-core --no-deps` wasn't run in this sandbox (the
+      tool call needed an approval that wasn't available); all intra-doc
+      links (`[`Foo`]` syntax) were checked by hand instead — grep for
+      `` \[`  `` in the three files and confirm every target is a real,
+      appropriately-visible item before trusting that rendered docs are
+      clean.
