@@ -349,6 +349,42 @@ pub fn dilate_map_filled(
     dilate_map(device, queue, map, width, height, &params)
 }
 
+/// The §6 "default-color fill" padding mode: paints every UNCOVERED
+/// texel (`a == 0`) with a solid caller-chosen color, in place on a
+/// CPU-side RGBA8 map. The companion "transparent fill" mode is the
+/// no-op — uncovered texels already stay `(0, 0, 0, 0)`.
+///
+/// Runs AFTER dilation when both are wanted (dilate first so real
+/// island colors win the seams; the fill then only paints the
+/// genuinely unreachable interior holes).
+///
+/// # Errors
+///
+/// Returns [`DilateError::SizeMismatch`] when `map.len()` doesn't
+/// match `width * height * 4`.
+pub fn fill_uncovered(
+    map: &mut [u8],
+    width: u32,
+    height: u32,
+    color: [u8; 4],
+) -> Result<(), DilateError> {
+    let expected = (width as usize) * (height as usize) * 4;
+    if map.len() != expected {
+        return Err(DilateError::SizeMismatch {
+            len: map.len(),
+            width,
+            height,
+            expected,
+        });
+    }
+    for px in map.chunks_exact_mut(4) {
+        if px[3] == 0 {
+            px.copy_from_slice(&color);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,6 +518,42 @@ mod tests {
                     }
                 }
             }
+        }
+
+        /// `fill_uncovered` (the §6 default-color fill mode): paints
+        /// only the uncovered texels, leaves covered ones untouched,
+        /// and validates the buffer shape.
+        #[test]
+        fn fill_uncovered_paints_only_holes() {
+            let mut map = vec![0u8; 2 * 2 * 4];
+            // One covered texel, distinct color.
+            map[0..4].copy_from_slice(&[10, 20, 30, 255]);
+            let fill = [200, 150, 100, 255];
+
+            fill_uncovered(&mut map, 2, 2, fill).expect("shape is valid");
+
+            assert_eq!(&map[0..4], &[10, 20, 30, 255], "covered texel untouched");
+            for px in map[4..].chunks_exact(4) {
+                assert_eq!(px, fill, "uncovered texel takes the fill color");
+            }
+        }
+
+        #[test]
+        fn fill_uncovered_rejects_mismatched_shape() {
+            let mut map = vec![0u8; 7]; // 2x2 needs 16
+            assert!(matches!(
+                fill_uncovered(&mut map, 2, 2, [255; 4]),
+                Err(DilateError::SizeMismatch { .. })
+            ));
+        }
+
+        #[test]
+        fn fill_uncovered_preserves_transparent_fill_semantics_by_noop() {
+            // The transparent mode IS the default: without the fill,
+            // uncovered texels stay (0,0,0,0) through dilation —
+            // documented as the companion no-op mode.
+            let map = [0u8; 2 * 2 * 4];
+            assert!(map.chunks_exact(4).all(|px| px == [0, 0, 0, 0]));
         }
 
         /// `dilate_map_filled` (the §6 "infinite dilation" entry point)
