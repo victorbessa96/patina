@@ -157,8 +157,86 @@ fn bake_all_cmd(args: &[String]) -> Result<()> {
     )?;
     println!("wrote {}", ao_path.display());
 
+    // Curvature map: <set>_curvature.png (already grayscale RGB + alpha).
+    let curvature = umber_bake::curvature::bake_curvature_mesh(
+        &ctx.device,
+        &ctx.queue,
+        &mesh,
+        flags.size,
+        flags.size,
+        &umber_bake::CurvatureParams::default(),
+    )?;
+    let curv_path =
+        umber_mesh::format_mesh_map(out_dir, &set, umber_mesh::MeshMapKind::Curvature, "png");
+    umber_export::png::write_png(
+        &curv_path,
+        flags.size,
+        flags.size,
+        &curvature,
+        umber_export::png::Transfer::Srgb,
+    )?;
+    println!("wrote {}", curv_path.display());
+
+    // Position map: <set>_position.png — the f32 position data
+    // re-encoded to 8-bit (each axis mapped [min,max] -> [0,255] over
+    // the mesh bounds; w = coverage as alpha).
+    let position_params = umber_bake::position::PositionMapParams {
+        width: flags.size,
+        height: flags.size,
+    };
+    let position_f32 =
+        umber_bake::position::bake_position_map(&ctx.device, &ctx.queue, &mesh, &position_params)?;
+    let position = encode_position_rgba8(&position_f32);
+    let pos_path =
+        umber_mesh::format_mesh_map(out_dir, &set, umber_mesh::MeshMapKind::Position, "png");
+    umber_export::png::write_png(
+        &pos_path,
+        flags.size,
+        flags.size,
+        &position,
+        umber_export::png::Transfer::Srgb,
+    )?;
+    println!("wrote {}", pos_path.display());
+
     println!("bake-all complete for texture set '{set}'");
     Ok(())
+}
+
+/// Re-encodes the f32 position map (rgba32f: xyz = world pos, w =
+/// coverage) to RGBA8: each axis normalized over the mesh bounds to
+/// [0,255]; alpha carries coverage. Bounds come from the map itself
+/// (covered texels only) so the output is self-contained.
+fn encode_position_rgba8(position_f32: &[f32]) -> Vec<u8> {
+    // First pass: gather bounds over covered texels.
+    let texels = position_f32.len() / 4;
+    let mut min = [f32::MAX; 3];
+    let mut max = [f32::MIN; 3];
+    for t in 0..texels {
+        if position_f32[t * 4 + 3] > 0.5 {
+            for axis in 0..3 {
+                let v = position_f32[t * 4 + axis];
+                min[axis] = min[axis].min(v);
+                max[axis] = max[axis].max(v);
+            }
+        }
+    }
+    // Degenerate (empty/zero-height map): all-black uncovered.
+    let span = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+    let mut out = vec![0u8; texels * 4];
+    for t in 0..texels {
+        if position_f32[t * 4 + 3] > 0.5 {
+            for axis in 0..3 {
+                let v = if span[axis] > f32::EPSILON {
+                    (position_f32[t * 4 + axis] - min[axis]) / span[axis]
+                } else {
+                    0.5
+                };
+                out[t * 4 + axis] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+            out[t * 4 + 3] = 255;
+        }
+    }
+    out
 }
 
 /// Shared AO bake driver (bake-ao + bake-all).
