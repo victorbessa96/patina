@@ -63,16 +63,29 @@ pub struct CameraUniform {
     /// Normalized direction the light travels (surface -> fragment); `w` is
     /// unused padding.
     pub light_dir: [f32; 4],
+    /// World-space eye position; `w` unused. The mesh pass ignores it
+    /// (no view-dependent term); `OPENPBR_SHADER` reads it for its
+    /// specular/Fresnel view vector.
+    pub eye: [f32; 4],
 }
 
 impl CameraUniform {
     /// Builds the uniform from a view-projection matrix and a light
-    /// direction (need not be pre-normalized).
+    /// direction (need not be pre-normalized). Eye defaults to the
+    /// +Z axis — use [`Self::with_eye`] for view-dependent shading.
     pub fn new(view_proj: glam::Mat4, light_dir: glam::Vec3) -> Self {
         Self {
             view_proj: view_proj.to_cols_array_2d(),
             light_dir: [light_dir.x, light_dir.y, light_dir.z, 0.0],
+            eye: [0.0, 0.0, 1.0, 0.0],
         }
+    }
+
+    /// Sets the world-space eye position (view-dependent shading).
+    #[must_use]
+    pub fn with_eye(mut self, eye: glam::Vec3) -> Self {
+        self.eye = [eye.x, eye.y, eye.z, 0.0];
+        self
     }
 }
 
@@ -95,6 +108,10 @@ pub struct GpuContext {
     /// Textured-quad display pipeline for paint-target presentation
     /// (built once; see `texture_display`).
     texture_display: crate::texture_display::TextureDisplay,
+    /// OpenPBR viewport pipeline (binding 0 camera + binding 1 params).
+    openpbr_pipeline: wgpu::RenderPipeline,
+    /// Bind-group layout shared by OpenPBR draw calls (camera + params).
+    openpbr_layout: wgpu::BindGroupLayout,
 }
 
 /// Depth format used by the viewport mesh pipeline when depth is enabled.
@@ -118,6 +135,84 @@ impl GpuContext {
     /// The texture-display pipeline for presenting paint targets.
     pub fn texture_display(&self) -> &crate::texture_display::TextureDisplay {
         &self.texture_display
+    }
+
+    /// Creates a uniform buffer holding `params`, ready for an OpenPBR
+    /// bind group (binding 1 in [`Self::openpbr_draw`]).
+    pub fn openpbr_params_buffer(&self, params: &crate::material::OpenPbrParams) -> wgpu::Buffer {
+        self.device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("umber_openpbr_params"),
+                contents: params.as_bytes(),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            })
+    }
+
+    /// Renders `buffers` with the OpenPBR surface model: returns a paint
+    /// callback shape drawing the mesh with `params` through the OpenPBR
+    /// pipeline. `camera_uniform_buffer` is the same buffer the plain
+    /// mesh pass uses (rebound here at group 0 of the OpenPBR layout).
+    ///
+    /// The params buffer is written on `prepare` every frame from
+    /// `params` so live parameter edits show without re-upload plumbing.
+    pub fn openpbr_paint_shape(
+        &self,
+        rect: epaint::emath::Rect,
+        buffers: &MeshBuffers,
+        uniform: CameraUniform,
+        params: crate::material::OpenPbrParams,
+    ) -> epaint::Shape {
+        let callback = self.openpbr_callback(buffers, uniform, params);
+        egui_wgpu::Callback::new_paint_callback(rect, callback).into()
+    }
+
+    /// Builds the OpenPBR callback without the egui shape wrapper —
+    /// used by [`Self::openpbr_paint_shape`] and by offscreen tests.
+    pub fn openpbr_callback(
+        &self,
+        buffers: &MeshBuffers,
+        uniform: CameraUniform,
+        params: crate::material::OpenPbrParams,
+    ) -> OpenPbrPaintCallback {
+        let params_buffer = self.openpbr_params_buffer(&params);
+        // Fresh camera uniform buffer per callback: the OpenPBR layout's
+        // binding 0 is byte-compatible with the mesh pass's.
+        let camera_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("umber_openpbr_camera"),
+                contents: bytemuck::bytes_of(&uniform),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("umber_openpbr_bind_group"),
+            layout: &self.openpbr_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &camera_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &params_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+            ],
+        });
+        OpenPbrPaintCallback {
+            pipeline: self.openpbr_pipeline.clone(),
+            bind_group,
+            vertex_buffer: buffers.vertex_buffer.clone(),
+            index_buffer: buffers.index_buffer.clone(),
+            index_count: buffers.index_count,
+        }
     }
 
     /// `adapter`/`device`/`queue` must come from eframe's
@@ -198,7 +293,7 @@ impl GpuContext {
                 polygon_mode: wgpu::PolygonMode::default(),
                 strip_index_format: None,
             },
-            depth_stencil,
+            depth_stencil: depth_stencil.clone(),
             multisample: wgpu::MultisampleState {
                 alpha_to_coverage_enabled: false,
                 count: 1,
@@ -220,6 +315,85 @@ impl GpuContext {
 
         let texture_display = crate::texture_display::TextureDisplay::new(&device, color_format);
 
+        // OpenPBR pipeline: camera (binding 0) + material params
+        // (binding 1, the 96-byte OpenPbrParams uniform).
+        let openpbr_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("umber_openpbr_bind_group_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: NonZeroU64::new(size_of::<CameraUniform>() as u64),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: NonZeroU64::new(96),
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let openpbr_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("umber_openpbr_shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(crate::shaders::OPENPBR_SHADER)),
+        });
+        let openpbr_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("umber_openpbr_pipeline_layout"),
+                bind_group_layouts: &[Some(&openpbr_layout)],
+                immediate_size: 0,
+            });
+        let openpbr_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("umber_openpbr_pipeline"),
+            layout: Some(&openpbr_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &openpbr_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: size_of::<Vertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3],
+                })],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                unclipped_depth: false,
+                conservative: false,
+                cull_mode: Some(wgpu::Face::Back),
+                front_face: wgpu::FrontFace::default(),
+                polygon_mode: wgpu::PolygonMode::default(),
+                strip_index_format: None,
+            },
+            depth_stencil: depth_stencil.clone(),
+            multisample: wgpu::MultisampleState {
+                alpha_to_coverage_enabled: false,
+                count: 1,
+                mask: !0,
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &openpbr_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         Self {
             device,
             queue,
@@ -228,6 +402,8 @@ impl GpuContext {
             bind_group_layout,
             depth_format,
             texture_display,
+            openpbr_pipeline,
+            openpbr_layout,
         }
     }
 }
@@ -380,6 +556,54 @@ impl egui_wgpu::CallbackTrait for MeshPaintCallback {
     }
 }
 
+/// Per-frame egui paint callback for the OpenPBR mesh pass.
+///
+/// Structural mirror of [`MeshPaintCallback`]: cloned handles, params
+/// baked into the bind group at shape-build time.
+pub struct OpenPbrPaintCallback {
+    pipeline: wgpu::RenderPipeline,
+    bind_group: wgpu::BindGroup,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
+}
+
+impl OpenPbrPaintCallback {
+    /// Draws the OpenPBR mesh into `render_pass` — the exact state the
+    /// egui `CallbackTrait::paint` applies, reusable by offscreen tests.
+    pub(crate) fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, &self.bind_group, &[]);
+        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        render_pass.draw_indexed(0..self.index_count, 0, 0..1);
+    }
+}
+
+impl egui_wgpu::CallbackTrait for OpenPbrPaintCallback {
+    fn prepare(
+        &self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        _egui_encoder: &mut wgpu::CommandEncoder,
+        _callback_resources: &mut egui_wgpu::CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        // Buffers were initialized at creation (create_buffer_init maps +
+        // writes), nothing to stage per frame.
+        Vec::new()
+    }
+
+    fn paint(
+        &self,
+        _info: epaint::PaintCallbackInfo,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        _callback_resources: &egui_wgpu::CallbackResources,
+    ) {
+        self.draw(render_pass);
+    }
+}
+
 /// Wraps `callback` into an `epaint::Shape` ready for `ui.painter().add(..)`.
 ///
 /// Kept in `umber-gpu` (rather than calling `egui_wgpu::Callback` from
@@ -516,6 +740,171 @@ mod tests {
                 MeshBuffers::upload(&gpu, &mesh),
                 Err(GpuError::EmptyMesh)
             ));
+        }
+
+        /// Offscreen-renders a triangle through the OpenPBR pipeline and
+        /// returns the 4x4 target's bytes.
+        fn render_openpbr(gpu: &GpuContext, params: crate::material::OpenPbrParams) -> Vec<u8> {
+            let device = &gpu.device;
+            let mesh = umber_mesh::MeshData {
+                positions: vec![[-1.0, -1.0, 0.0], [3.0, -1.0, 0.0], [-1.0, 3.0, 0.0]],
+                normals: vec![[0.0, 0.0, 1.0]; 3],
+                uvs: vec![],
+                indices: vec![0, 1, 2],
+                material_names: vec![],
+            };
+            let buffers = MeshBuffers::upload(gpu, &mesh).expect("upload succeeds");
+            let uniform = CameraUniform::new(glam::Mat4::IDENTITY, glam::Vec3::NEG_Y);
+            let callback = gpu.openpbr_callback(&buffers, uniform, params);
+
+            let target = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("umber_openpbr_test_target"),
+                size: wgpu::Extent3d {
+                    width: 4,
+                    height: 4,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("umber_openpbr_test_encoder"),
+            });
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("umber_openpbr_test_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                callback.draw(&mut pass);
+            }
+            gpu.queue.submit(Some(encoder.finish()));
+
+            // Readback: rows must respect COPY_BYTES_PER_ROW_ALIGNMENT
+            // (256); 4x4 RGBA rows are 16 bytes, so pad each row to 256
+            // and extract the first 16 bytes of every padded row.
+            const PADDED_ROW: u32 = 256;
+            let readback_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("umber_openpbr_test_readback"),
+                size: PADDED_ROW as u64 * 4,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("umber_openpbr_test_readback_encoder"),
+            });
+            enc.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &target,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback_buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(PADDED_ROW),
+                        rows_per_image: Some(4),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: 4,
+                    height: 4,
+                    depth_or_array_layers: 1,
+                },
+            );
+            gpu.queue.submit(Some(enc.finish()));
+
+            let (sx, rx) = std::sync::mpsc::channel();
+            readback_buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    let _ = sx.send(result);
+                });
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                })
+                .expect("poll succeeds");
+            rx.recv().expect("map callback ran").expect("map ok");
+            let padded = readback_buffer
+                .slice(..)
+                .get_mapped_range()
+                .expect("mapped range available")
+                .to_vec();
+            readback_buffer.unmap();
+            let mut data = Vec::with_capacity(4 * 4 * 4);
+            for row in padded.chunks_exact(PADDED_ROW as usize) {
+                data.extend_from_slice(&row[..16]);
+            }
+            data
+        }
+
+        #[test]
+        fn openpbr_defaults_render_nonzero_and_bounded() {
+            let Some((adapter, device, queue)) = try_request_device() else {
+                eprintln!("skipping openpbr_defaults_render_nonzero_and_bounded: no wgpu adapter available");
+                return;
+            };
+            let gpu = GpuContext::new(
+                adapter,
+                device,
+                queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                None,
+            );
+            let bytes = render_openpbr(&gpu, crate::material::OpenPbrParams::default());
+            // Non-zero: the triangle covers every pixel of the 4x4.
+            let nonzero = bytes
+                .chunks_exact(4)
+                .any(|px| px[0] > 0 || px[1] > 0 || px[2] > 0);
+            assert!(nonzero, "OpenPBR default render must be non-zero");
+            // Energy sanity: no channel exceeds 255 (+1 rounding).
+            for px in bytes.chunks_exact(4) {
+                assert!(px[0] <= 255 && px[1] <= 255 && px[2] <= 255);
+            }
+        }
+
+        #[test]
+        fn openpbr_metalness_changes_response() {
+            let Some((adapter, device, queue)) = try_request_device() else {
+                eprintln!("skipping openpbr_metalness_changes_response: no wgpu adapter available");
+                return;
+            };
+            let gpu = GpuContext::new(
+                adapter,
+                device,
+                queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                None,
+            );
+            let dielectric = render_openpbr(&gpu, crate::material::OpenPbrParams::default());
+            let mut metal = crate::material::OpenPbrParams::default();
+            metal.surface[0] = 1.0; // base_metalness = 1
+            let metallic = render_openpbr(&gpu, metal);
+            assert_ne!(
+                dielectric, metallic,
+                "metalness=1 must shade differently from metalness=0"
+            );
         }
     }
 }
