@@ -4,10 +4,10 @@
 
 ## Status line
 
-Current wave: **2 of 6** (READY — Wave 1 closed at checkpoint 905a389, 2026-10-09 09:28 UTC)
-State: WAVE-1-CLOSED / WAVE-2-READY
+Current wave: **3 of 6** (bake & export pipeline complete; painting core from Wave 2 landed through the brush/layer/undo/viewport surface)
+State: WAVE-3-BAKE/EXPORT-COMPLETE
 Last checkpoint: Wave 1 @ 905a389 (exit 0, clean — 2026-10-09 09:28 UTC)
-Last green commit: 905a389 (both platforms green incl. winink tests on windows-latest)
+Last green commit: 8b79e48 (README current; workspace 250+ tests green on both platforms)
 
 **WAVE-1-ACTIVATION (2026-10-09 03:25):** Bessa's /loop instruction ("continue working autonomously... writing the code and expanding until 11am") explicitly authorizes implementation past the ratification gate. Wave 1 opened under loop authorization with SPEC v1.0 as the working contract — ratification still pending; any Bessa edits at ratification rescope per the spec-change rule. Full trail: DECISIONS.md [03:25].
 
@@ -38,9 +38,13 @@ Last green commit: 905a389 (both platforms green incl. winink tests on windows-l
 
 ## Handoff addendum (next loop iteration)
 
-Wave-1 vertical slice is code-complete through the GPU viewport: workspace + loaders + render pass all committed and CI-green on both platforms (93e0140). Remaining for Wave-1 exit: (1) IBL env-map lighting — the claw-artifacts pattern applies: vendor an HDR example or ship a procedural gradient env-light in shaders.rs first; (2) stylus Windows-Ink WM_POINTER backend skeleton behind the feature gate (event vocabulary already compiles). Then dragon-checkpoint umber --wave 1, and Wave 2 (painting core — the big one: brush engine, seam-aware stamping, layer stack, undo) opens per SPEC.
+**Wave-3 bake & export surface is code-complete** (2026-10-09, ending 8b79e48): six mesh-map bakers (AO/position/world-normal/curvature/thickness/tangent-normal, 71 GPU tests), 8-neighbor UV dilation, four engine presets (glTF/Unreal/Unity/Blender, JSON-roundtripping), the two-pass export driver (no partial exports, per-output color/data transfer, DirectX normal flip), format writers (PNG 8/16, EXR 32F, TIFF, JPEG), the §9 ocio bridge (stub-gated: built-in ACES 2.0 config surface, 9/9 with feature / 6/6 default), ICC iCCP embed (bundled sRGB profile, no lcms2), the headless CLI (inspect / bake-ao / bake-all --dilate / export --preset), and the egui app (Bakes panel, Export dialog, .umber Open/Save Project). Workspace 250+ tests green, CI both platforms every commit. Cross-review catches this wave: Bessa's sRGB-on-unit-vectors dilate fix (b5a2e2d), the claw brief-error rejections (Chebyshev square, DirectX fixed-point), the driver's partial-export hole.
 
-Claw dispatch recipe (proven twice this wave): vendor dependency sources into docs/claw-artifacts/<crate>/ + verified-API-facts README before dispatch; opencode gets the brief pointing at the artifacts; claude gets --allowedTools with cargo read/write allowlist. Cross-review: the OTHER claw's model reviews each landing (nemotron reviewed both this wave; findings were substantive both times — depth blocker, OBJ validation, GLB spec confirmation). Never trust claw self-reports: verify from artifacts (fmt/clippy/test + behavioral probes) before committing.
+**Machine-load directive (2026-10-09 18:50, standing):** one cargo command at a time, no gate stacking, after stacked full-parallelism gates crashed Hermes. Claw dispatches must exclude files another session is editing.
+
+**Next wave-3/4 items:** real-OCIO bundled build (manual dispatch — heavy C++), GPU display LUT via GpuShaderDesc extraction, per-texel UV-derivative TBN, wave-5 async bake/export job system, painted maps into the export driver (tile-pool readback bridge).
+
+Claw dispatch recipe (proven repeatedly): vendor dependency sources into docs/claw-artifacts/<crate>/ + verified-API-facts README before dispatch; opencode gets the brief pointing at the artifacts; claude gets --allowedTools with cargo read/write allowlist. Cross-review: the OTHER claw's model reviews each landing. Never trust claw self-reports: verify from artifacts (fmt/clippy/test + behavioral probes) before committing.
 
 ## Blocked / waiting
 
