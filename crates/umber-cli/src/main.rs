@@ -202,6 +202,42 @@ fn bake_all_cmd(args: &[String]) -> Result<()> {
     )?;
     println!("wrote {}", pos_path.display());
 
+    // World-space normal map: <set>_world_space_normal.png — the f32
+    // unit normals re-encoded (each axis [-1,1] -> [0,255]; w =
+    // coverage as alpha). This is the WorldSpaceNormal naming slot,
+    // NOT the tangent-space Normal map (that needs the TBN pass).
+    let wnormal_f32 = umber_bake::position::bake_world_normal_map(
+        &ctx.device,
+        &ctx.queue,
+        &mesh,
+        &position_params,
+    )?;
+    let texels = (flags.size * flags.size) as usize;
+    let mut wnormal = vec![0u8; texels * 4];
+    for t in 0..texels {
+        if wnormal_f32[t * 4 + 3] > 0.5 {
+            for axis in 0..3 {
+                let v = (wnormal_f32[t * 4 + axis] + 1.0) * 0.5;
+                wnormal[t * 4 + axis] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            }
+            wnormal[t * 4 + 3] = 255;
+        }
+    }
+    let wnormal_path = umber_mesh::format_mesh_map(
+        out_dir,
+        &set,
+        umber_mesh::MeshMapKind::WorldSpaceNormal,
+        "png",
+    );
+    umber_export::png::write_png(
+        &wnormal_path,
+        flags.size,
+        flags.size,
+        &wnormal,
+        umber_export::png::Transfer::Linear,
+    )?;
+    println!("wrote {}", wnormal_path.display());
+
     // Thickness map: <set>_thickness.png.
     let thickness_params = umber_bake::thickness::ThicknessParams {
         rays: flags.rays,
