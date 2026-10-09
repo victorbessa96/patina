@@ -21,7 +21,7 @@ Thanks for your interest in building the community's Substance Painter alternati
 ## Development setup (when code opens)
 
 ```bash
-git clone https://graphics.fun/repo/patina
+git clone https://github.com/victorbessa96/patina.git
 cd patina
 cargo build --workspace
 cargo test --workspace
