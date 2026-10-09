@@ -19,13 +19,19 @@ const PAD_COLOR: Color32 = Color32::from_rgb(28, 28, 30);
 pub struct UvView;
 
 impl UvView {
-    /// Draws the UV wireframe for `mesh` (or a hint when none is loaded).
-    pub fn ui(&mut self, ui: &mut Ui, mesh: Option<&MeshData>) {
+    /// Draws the UV wireframe for `mesh` (or a hint when none is loaded)
+    /// and feeds pointer strokes into the paint session.
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        mesh: Option<&MeshData>,
+        paint: Option<&mut crate::paint_state::PaintState>,
+    ) {
         let rect = ui.available_rect_before_wrap();
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
-        let response = ui.allocate_rect(rect, Sense::hover());
+        let response = ui.allocate_rect(rect, Sense::click_and_drag());
 
         // The UV square occupies the largest centered square that fits.
         let side = rect.width().min(rect.height());
@@ -34,6 +40,32 @@ impl UvView {
             rect.top() + (rect.height() - side) / 2.0,
         );
         let square = egui::Rect::from_min_size(origin, egui::vec2(side, side));
+
+        // Stroke input: primary-button drag inside the UV square maps to
+        // UV space and feeds the paint conditioner. Left-drag orbits in
+        // the 3D view; here left-drag paints.
+        if let Some(paint) = paint {
+            let interact = ui.interact(
+                square,
+                ui.id().with("uv-paint"),
+                egui::Sense::click_and_drag(),
+            );
+            let pointer_down =
+                interact.dragged_by(egui::PointerButton::Primary) || interact.clicked();
+            if pointer_down {
+                if let Some(pos) = interact.interact_pointer_pos() {
+                    if let Some(uv) = crate::paint_state::uv_from_pointer(square, pos) {
+                        if !paint.is_stroking() {
+                            paint.begin_stroke(uv);
+                        } else {
+                            paint.extend_stroke(uv);
+                        }
+                    }
+                }
+            } else if paint.is_stroking() {
+                paint.end_stroke();
+            }
+        }
 
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, PAD_COLOR);

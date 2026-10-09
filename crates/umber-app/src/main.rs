@@ -13,6 +13,7 @@
 //! paint-thread + ring-buffer architecture (docs/specs/architecture.md)
 //! lands with the paint engine.
 
+mod paint_state;
 mod uv_view;
 mod viewport;
 
@@ -45,6 +46,7 @@ struct PanelViewer<'a> {
     uv_view: &'a mut UvView,
     mesh: Option<&'a umber_mesh::MeshData>,
     gpu: &'a GpuContext,
+    paint: Option<&'a mut paint_state::PaintState>,
 }
 
 impl TabViewer for PanelViewer<'_> {
@@ -69,7 +71,7 @@ impl TabViewer for PanelViewer<'_> {
     fn ui(&mut self, ui: &mut Ui, tab: &mut Self::Tab) {
         match tab {
             Panel::Viewport => self.viewport.ui(ui, self.gpu),
-            Panel::UvView => self.uv_view.ui(ui, self.mesh),
+            Panel::UvView => self.uv_view.ui(ui, self.mesh, self.paint.take()),
             Panel::LayerStack => {
                 ui.label("Layer stack (Wave 2)");
             }
@@ -96,6 +98,9 @@ pub struct AppState {
     pub mesh_path: Option<PathBuf>,
     pub viewport: Viewport,
     pub uv_view: UvView,
+    /// The paint session; `None` when the device lacks the storage-texture
+    /// feature (constructed in `UmberApp::new`, falls back to view-only).
+    pub paint: Option<paint_state::PaintState>,
 }
 
 /// The eframe app.
@@ -141,8 +146,25 @@ impl UmberApp {
             tree.split_right(NodeIndex::root(), 0.2, vec![Panel::History]);
         }
 
+        // Paint session on the eframe-owned device/queue (cloned for the
+        // thread). Feature-missing devices degrade to view-only with a
+        // logged warning, never a hard startup failure.
+        let paint = match paint_state::PaintState::new(
+            render_state.device.clone(),
+            render_state.queue.clone(),
+        ) {
+            Ok(session) => Some(session),
+            Err(err) => {
+                log::warn!("paint disabled: {err:#}");
+                None
+            }
+        };
+
         Ok(Self {
-            state: AppState::default(),
+            state: AppState {
+                paint,
+                ..AppState::default()
+            },
             dock,
             gpu,
         })
@@ -186,11 +208,19 @@ impl eframe::App for UmberApp {
                 uv_view: &mut self.state.uv_view,
                 mesh: self.state.mesh.as_ref(),
                 gpu: &self.gpu,
+                paint: self.state.paint.as_mut(),
             };
             DockArea::new(&mut self.dock)
                 .style(Style::from_egui(ui.style()))
                 .show_inside(ui, &mut viewer);
         });
+
+        // Drain the paint channel once per frame after all panels ran.
+        if let Some(paint) = self.state.paint.as_mut() {
+            if let Err(err) = paint.process_pending() {
+                log::warn!("paint processing failed: {err:#}");
+            }
+        }
     }
 }
 

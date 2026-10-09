@@ -23,6 +23,7 @@ egui = { workspace = true }
 egui_dock = { workspace = true }
 glam = { workspace = true }
 log = { workspace = true }
+thiserror = { workspace = true }
 env_logger = { workspace = true }
 anyhow = { workspace = true }
 rfd = "0.15"

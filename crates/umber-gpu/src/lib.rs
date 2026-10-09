@@ -32,6 +32,10 @@ pub const DEPTH_FORMAT_BITS: u8 = 32;
 pub use renderer::{
     mesh_paint_shape, CameraUniform, GpuContext, GpuError, MeshBuffers, MeshPaintCallback, Vertex,
 };
+// App-facing handle re-exports: umber-app must not name wgpu types
+// directly (architecture rule — GPU objects stay behind umber-gpu), but it
+// needs to hand the eframe-owned device/queue to `PaintThread::new`.
+pub use wgpu::{Device as WgpuDevice, Queue as WgpuQueue};
 
 /// Identifies a backend device at runtime (for diagnostics + the future
 /// lavapipe/WARP test path).
