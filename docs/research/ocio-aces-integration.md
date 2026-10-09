@@ -60,11 +60,16 @@ the whole config in-memory with zero external LUT files.
 
 ## Open questions (probe before wiring)
 
-- Does ocio-rs 0.2.1 expose the built-in config creation surface
-  (`CreateFromBuiltin` / `Config::createFromBuiltin`)? The docs list
-  `Config::from_file` + ConfigIO; the built-in path is the one API
-  detail to verify against the actual crate (stub mode makes this
-  cheap — a smoke test, not a bundled build).
+- ~~Does ocio-rs 0.2.1 expose the built-in config creation surface?~~
+  **ANSWERED by stub-mode probe (2026-10-09, scratch ocio-probe):**
+  - `Config::create_from_builtin_config(name)` — exists, compiles.
+  - `BuiltinConfigRegistry::get() / num_builtin_configs() /
+    config_name(i) / config_ui_name(i)` — the full enumeration API.
+  - `GpuShaderDesc::create()` — constructs even in stub mode (Ok).
+  - Stub mode behavior confirmed: handle-allocating calls error with
+    "OpenColorIO handle allocation failed" — clean, documented,
+    CI-safe. Real-mode verification needs the bundled build (manual
+    dispatch only, per the gentle-load directive).
 - The `GpuTexture3D` payload's edge/interpolation metadata vs wgpu's
   `SamplerDescriptor` — one mapping shim, needs the real types.
 - ACES 2.0 config's display-color-space set (Rec.709/sRGB, P3 variants,
