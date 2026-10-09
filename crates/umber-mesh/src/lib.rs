@@ -8,10 +8,15 @@ use glam::Vec3;
 
 pub mod fbx;
 pub mod gltf;
+pub mod mesh_maps;
 pub mod raycast;
 
 pub use fbx::load_fbx;
 pub use gltf::load_gltf;
+pub use mesh_maps::{
+    format_mesh_map, parse_mesh_map, parse_mesh_map_stem, texture_set_name, MeshMapKind,
+    MeshMapName,
+};
 pub use raycast::{ray_intersect, uv_at, RayHit};
 
 /// Interleaved mesh data as imported, before any GPU upload.
