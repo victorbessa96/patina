@@ -23,6 +23,7 @@ where upstream licenses permit relicensing.
 | tobj | 4.x | MIT | ✅ | OBJ import |
 | ufbx | 0.11 | MIT | ✅ | FBX import (C lib, official bindings) |
 | thiserror / anyhow | 2 / 1 | MIT OR Apache-2.0 | ✅ | errors |
+| rfd | 0.15.4 | MIT | ✅ | native file dialogs (umber-app; added Wave 1 — recorded after the fact, gate audit caught it) |
 | log / env_logger | 0.4 / 0.11 | MIT OR Apache-2.0 | ✅ | logging |
 | rayon / parking_lot / crossbeam | (W2+) | MIT OR Apache-2.0 | ✅ | concurrency |
 
