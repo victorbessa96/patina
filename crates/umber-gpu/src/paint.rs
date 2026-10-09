@@ -100,6 +100,12 @@ pub enum PaintError {
          required for read_write storage-texture access on Rgba8Unorm"
     )]
     MissingDeviceFeature,
+    /// `PaintThread::publish` tried to send on its command channel after the
+    /// receiving end was dropped. `PaintThread` owns both ends for its whole
+    /// lifetime, so in practice this is unreachable — it exists because
+    /// `mpsc::Sender::send` returns a `Result` that must be handled.
+    #[error("paint-thread command channel is closed")]
+    ChannelClosed,
 }
 
 /// CPU-side staging for a dab batch, uploaded to a GPU storage buffer just

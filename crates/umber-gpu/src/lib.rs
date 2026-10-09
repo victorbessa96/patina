@@ -18,11 +18,13 @@
 pub mod camera;
 pub mod golden;
 pub mod paint;
+pub mod paint_thread;
 pub mod renderer;
 pub mod shaders;
 
 pub use camera::OrbitCamera;
 pub use paint::{Dab, DabBuffer, PaintCompositor, PaintError, PaintTarget};
+pub use paint_thread::{FrameStats, PaintThread, PaintThreadCommand};
 /// The depth format the app must request from eframe
 /// (`NativeOptions::depth_buffer = 32`) so the egui renderer's render pass
 /// carries a depth attachment matching [`renderer::GpuContext`]'s pipeline.
