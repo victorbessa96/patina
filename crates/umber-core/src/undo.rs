@@ -149,6 +149,30 @@ impl<C: Command> UndoStack<C> {
         !self.redo.is_empty()
     }
 
+    /// Drops every journal entry, undo and redo both — the journal
+    /// starts fresh, as if just constructed. Evicted entries fire
+    /// [`with_on_evict`](Self::with_on_evict) and release their
+    /// [`Command::memory_bytes`] against the budget, exactly as
+    /// capacity eviction does, so cleanup hooks (the future
+    /// GPU-tile-snapshot pool) stay coherent.
+    ///
+    /// The load-a-different-document path: command journals capture
+    /// ids and indices from the stack they were recorded against, so
+    /// replaying them across a stack swap silently corrupts the
+    /// loaded document (an `Add` recorded as id 0 in the previous
+    /// document reverts by deleting the new document's layer 0).
+    /// Replace documents through this, never by swapping the stack
+    /// underneath a live journal.
+    pub fn clear(&mut self) {
+        for stale in self.undo.drain(..) {
+            Self::evict(&mut self.bytes_held, &mut self.on_evict, stale);
+        }
+        for stale in self.redo.drain(..) {
+            Self::evict(&mut self.bytes_held, &mut self.on_evict, stale);
+        }
+        self.bytes_held = 0;
+    }
+
     /// Number of entries currently held in the undo journal.
     pub fn len(&self) -> usize {
         self.undo.len()
@@ -317,5 +341,50 @@ mod tests {
         assert_eq!(doc, Counter(1)); // only delta 2 reverted; delta 1 was evicted
         assert!(!stack.undo(&mut doc));
         assert_eq!(doc, Counter(1));
+    }
+
+    #[test]
+    fn clear_empties_both_stacks_and_fires_evict_for_every_entry() {
+        let evicted = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let evicted_clone = evicted.clone();
+        let mut doc = Counter::default();
+        let mut stack: UndoStack<AddCommand> =
+            UndoStack::new(100).with_on_evict(move |c: AddCommand| {
+                evicted_clone.borrow_mut().push(c.delta);
+            });
+
+        stack.push(AddCommand { delta: 1 }, &mut doc);
+        stack.push(AddCommand { delta: 2 }, &mut doc);
+        assert!(stack.undo(&mut doc)); // delta 2 now sits on the redo stack
+        assert!(stack.can_redo());
+
+        stack.clear();
+
+        // Every held entry — undo and redo both — flowed through
+        // on_evict; nothing silently vanished. Drain order is
+        // chronological: undo entries oldest-first, then redo.
+        assert_eq!(*evicted.borrow(), vec![1, 2]);
+        assert!(stack.is_empty());
+        assert!(!stack.can_undo());
+        assert!(!stack.can_redo());
+        // The document itself is untouched: clear is a journal
+        // operation, not an undo.
+        assert_eq!(doc, Counter(1));
+    }
+
+    #[test]
+    fn clear_releases_budget_and_accepts_new_entries() {
+        let mut doc = Counter::default();
+        let mut stack: UndoStack<AddCommand> = UndoStack::new(100).with_memory_budget(10);
+
+        stack.push(AddCommand { delta: 5 }, &mut doc);
+        stack.clear();
+        // Budget accounting must have released the cleared entry:
+        // a same-cost push after clear must NOT trigger eviction.
+        stack.push(AddCommand { delta: 5 }, &mut doc);
+        assert!(stack.can_undo());
+        assert!(stack.undo(&mut doc));
+        assert_eq!(doc, Counter(5));
+        assert!(!stack.undo(&mut doc));
     }
 }

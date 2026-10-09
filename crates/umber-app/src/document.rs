@@ -42,6 +42,16 @@ impl Document {
         self.history.redo(&mut self.stack)
     }
 
+    /// Replaces the document's layer stack wholesale — the
+    /// Open-Project path. The journal holds ids and indices captured
+    /// against the *old* stack, so it is cleared with the swap:
+    /// undo history is session-scoped by design and does not follow
+    /// the file across an open.
+    pub fn load_stack(&mut self, stack: LayerStack) {
+        self.history.clear();
+        self.stack = stack;
+    }
+
     /// Layers bottom-to-top (stack order == draw order).
     pub fn layers(&self) -> &[Layer] {
         &self.stack.layers
@@ -154,5 +164,68 @@ mod tests {
         assert!(doc.layers().is_empty());
         assert!(!doc.history.can_undo());
         assert!(!doc.history.can_redo());
+    }
+
+    /// The Open-Project contract: the journal does not follow the
+    /// file. Undo entries recorded against the previous document
+    /// must never replay against the loaded stack — both stacks
+    /// allocate layer ids from 0, so a stale `Add` revert would
+    /// delete the loaded project's layer 0 by coincidental id.
+    #[test]
+    fn load_stack_clears_journal_no_stale_undo() {
+        let mut doc = Document::default();
+        // Arm the journal in document A: one Add, one Remove.
+        doc.run(LayerCommand::add("A-base", LayerKind::Fill));
+        doc.run(LayerCommand::add("A-detail", LayerKind::Paint));
+        assert!(doc.history.can_undo());
+
+        // Load document B's stack — the Open Project path.
+        let mut b = LayerStack::new();
+        let b0 = b.add_layer("B-base", LayerKind::Fill);
+        let b1 = b.add_layer("B-top", LayerKind::Paint);
+        doc.load_stack(b);
+
+        // Journal is fresh: undo is a no-op, never replays A's Add.
+        assert!(!doc.history.can_undo());
+        assert!(!doc.history.can_redo());
+        assert!(!doc.undo());
+        let ids: Vec<u64> = doc.layers().iter().map(|l| l.id).collect();
+        assert_eq!(
+            ids,
+            [b0, b1],
+            "undo after open project must not touch the loaded stack"
+        );
+        // And the loaded stack still behaves: a new Add works and is
+        // itself undoable.
+        doc.run(LayerCommand::add("B-new", LayerKind::Paint));
+        assert_eq!(doc.layers().len(), 3);
+        assert!(doc.undo());
+        assert_eq!(doc.layers().len(), 2);
+    }
+
+    /// Red-state proof of the exact corruption `load_stack` closes:
+    /// swapping the stack raw, journal untouched (the pre-fix
+    /// `open_project` path), replays document A's `Add{id: 0}` revert
+    /// as a deletion of the loaded stack's layer 0.
+    #[test]
+    fn raw_stack_swap_keeps_stale_journal_and_corrupts() {
+        let mut doc = Document::default();
+        // Document A: one Add — the journal holds `Add{id: Some(0)}`.
+        doc.run(LayerCommand::add("A-only", LayerKind::Fill));
+
+        // Document B loaded via the RAW swap the fix replaces.
+        let mut b = LayerStack::new();
+        let b0 = b.add_layer("B-keep-me", LayerKind::Fill);
+        let b1 = b.add_layer("B-top", LayerKind::Paint);
+        doc.stack = b;
+
+        // One undo click on the stale journal: Add.revert deletes by
+        // id 0 — which is now document B's innocent bottom layer.
+        assert!(doc.undo());
+        assert_eq!(
+            doc.layers().iter().map(|l| l.id).collect::<Vec<_>>(),
+            [b1],
+            "pre-fix path: stale Add (id 0) revert silently deleted the loaded layer {b0}"
+        );
     }
 }

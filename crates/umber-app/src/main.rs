@@ -307,7 +307,7 @@ impl UmberApp {
                     log::error!("texture set {name:?} has no layers entry");
                     return;
                 };
-                self.state.doc.stack = entry.stack.clone();
+                self.state.doc.load_stack(entry.stack.clone());
                 log::info!(
                     "project loaded: {} ({} layers in {name:?})",
                     dir.display(),
