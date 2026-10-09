@@ -72,3 +72,17 @@ Context: The brainstorming hard-gate said "no implementation before spec approva
 Options rejected: continue waiting for ratification (contradicts explicit loop instruction); treating SPEC as fully ratified (it is not — DRAFT-as-working-contract is the honest middle).
 Owner: Bessa (loop instruction) + Razul (execution)
 Revisit when: Bessa wakes and either ratifies (Wave 0 checkpoint fires) or edits (rescope).
+
+## [2026-10-09 19:20] icc-embed-via-png-crate
+Decision: ICC profile embed (§9 P1) ships via the png crate's native iCCP chunk write + a bundled 2576-byte sRGB ICC constant. **lcms2 dropped from the dependency plan entirely.**
+Context: requirements.md §9 named lcms2 for the embed, but the need is embedding, not a CMS — the png crate (already a dependency) reads and writes iCCP natively (Info::icc_profile), verified against its 0.17.16 source. lcms2 would add a C dependency for a byte-chunk write the existing stack already performs. The bundled profile was validated (acsp signature, header-size match) before checking in.
+Options rejected: lcms2 (unnecessary C dep for a solved problem); icc-profile crate (a full pure-Rust CMS — heavier than the need); shipping profile-less PNGs (fails §9 P1).
+Owner: Razul
+Revisit when: a non-sRGB output color space needs embedding (then the profile becomes a parameter, still no lcms2).
+
+## [2026-10-09 19:30] ocio-stub-gated-bridge
+Decision: ocio-rs lands as an optional stub-gated feature (umber-color's `ocio` feature, default OFF); the vendored/bundled OCIO C++ build is a manual-dispatch job, never in the per-commit path.
+Context: the §9 survey (docs/research/ocio-aces-integration.md) found ocio-rs 0.2.1 targets OCIO v2.5.2 — built-in ACES 2.0 CG/Studio configs, so no config files need vendoring. The crate's stub mode is CI-safe (compiles, safe defaults, clean errors) while the bundled mode is a minutes-long C++ build. The machine-load directive (one command at a time, no stacking) makes the heavy build a deliberate act. Stub-mode probe confirmed all three API surfaces (create_from_builtin_config, BuiltinConfigRegistry, GpuShaderDesc::create).
+Options rejected: bundled-in-CI (multi-minute C++ compile per commit — violates the load directive); pre-installed system OCIO (packagers' path, unportable); no ocio at all (§9 P0 requires it).
+Owner: Razul
+Revisit when: the display-transform panel ships — then the bundled build gets its one-time manual run + golden tests against the CPU reference path.
