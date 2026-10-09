@@ -32,13 +32,18 @@ Both numbers are exact in `f32` (`0.9375 = 15/16`, `0.0625 = 1/16`,
 `2048` is a power of two), so this isn't a float-precision artifact —
 the brief's example mixed a tile-local fraction with a global-UV label.
 Resolution: implemented the mapping from first principles (see below),
-and `tile_pool.rs`'s tests cover **both** readings —
-`tile_for_maps_interior_point_to_its_tile` uses the corrected global UV
-`(0.9375, 0.0625)` to reproduce the brief's intended `(3,0)` /
-`(384.5, 128.5)` outputs, and `tile_for_exact_tile_boundary_is_lower_inclusive`
-uses the brief's literal `(0.75, 0.25)` to document what it actually
-produces (`(3,1)` / `(0.5, 0.5)`), as a lower-inclusive-boundary
-regression test.
+and `tile_pool.rs`'s tests cover **both** readings, split across the
+tile-id and texel-center halves of the mapping:
+
+- `tile_for_maps_interior_point_to_its_tile` and
+  `texel_within_tile_matches_the_worked_example` both use the corrected
+  global UV `(0.9375, 0.0625)`, reproducing the brief's intended tile
+  `(3,0)` and texel center `(384.5, 128.5)` respectively.
+- `tile_for_exact_tile_boundary_is_lower_inclusive` and
+  `texel_within_tile_at_exact_boundary_centers_on_the_first_texel` both
+  use the brief's literal `(0.75, 0.25)`, documenting what it actually
+  produces — tile `(3,1)`, texel center `(0.5, 0.5)` — as a
+  lower-inclusive-boundary regression test.
 
 ## What was built
 
@@ -115,11 +120,8 @@ is fallible in a way worth modeling as an error: `get_or_create` always
 succeeds (`PaintTarget::new` is infallible), `evict`/`get` return
 plain `bool`/`Option`, and `tile_for`/`texel_within_tile` use `Option`
 because "not every UV lands on a tile" is a normal, expected outcome,
-not an error condition. No `PaintError` variant was added for the same
-reason `paint_thread.rs`'s landing notes checked first: `grep -rn
-PaintError --include="*.rs" .` shows it's only matched inside
-`umber-gpu`, but there was nothing here that needed a new variant in the
-first place.
+not an error condition. No `paint::PaintError` variant was added either,
+since nothing here calls into `paint.rs` in a way that can fail.
 
 ## Eviction semantics (also documented at the top of `tile_pool.rs`)
 
@@ -188,7 +190,10 @@ too, plus 4 new GPU tests), `cargo build --workspace`.
 `renderer.rs` (`assert!(px[0] <= 255 ...)` on a `u8`, landed in
 `0071bb9`, unrelated to this slab) — confirmed by checking
 `git show HEAD:crates/umber-gpu/src/renderer.rs`, which already contains
-the flagged lines. `tile_pool.rs` itself produces zero clippy warnings
+the flagged lines. Re-running with those two specific lints allowed
+(`cargo clippy -p umber-gpu --all-targets --features gpu -- -D warnings
+-A clippy::absurd_extreme_comparisons -A unused_comparisons`) comes back
+clean, confirming `tile_pool.rs` itself produces zero clippy warnings
 under either feature combination.
 
 ## Reviewer checklist
@@ -228,3 +233,12 @@ under either feature combination.
   `--features gpu` (see "Tests" above) is out of this slab's ownership
   and was left unfixed deliberately — flag if CI runs that stricter
   invocation and expects it green.
+- [ ] Three deliberate deviations from the brief's literal signatures,
+  for a reviewer comparing against it directly: `texel_within_tile`
+  returns `Option<([f32; 2], TileId)>` rather than a bare tuple (needed
+  so out-of-range `uv` has somewhere to go without an `unwrap`);
+  `TilePool::new` takes an owned `wgpu::Device` rather than `&Device`
+  (matches `PaintCompositor::new`/`PaintThread::new`'s existing
+  retain-for-later-use convention, not a borrow); `evict` returns `bool`
+  rather than `()` (so a caller can tell a no-op evict from a real one,
+  used by its own test).
