@@ -23,8 +23,8 @@ fn main() -> Result<()> {
         None => {
             println!("umber-cli v{} (wave-3)", env!("CARGO_PKG_VERSION"));
             println!("commands: inspect <mesh-file>");
-            println!("          bake-ao <mesh-file> <out.png> [--size N] [--rays N]");
-            println!("          bake-all <mesh-file> <out-dir> [--size N] [--rays N]");
+            println!("          bake-ao <mesh-file> <out.png> [--size N] [--rays N] [--dilate N]");
+            println!("          bake-all <mesh-file> <out-dir> [--size N] [--rays N] [--dilate N]");
             println!("          export <mesh-file> <out-dir> --preset <gltf|unreal|unity|blender> [--size N] [--rays N]");
             Ok(())
         }
@@ -49,16 +49,19 @@ fn inspect_cmd(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Size/ray flag parsing shared by the bake commands.
+/// Size/ray/dilate flag parsing shared by the bake commands.
 struct BakeFlags {
     size: u32,
     rays: u32,
+    /// Dilation iterations for the UV-padding post-pass (0 = off).
+    dilate: u32,
 }
 
 fn parse_bake_flags(args: &[String], start: usize) -> Result<BakeFlags> {
     let mut flags = BakeFlags {
         size: 512,
         rays: 16,
+        dilate: 0,
     };
     let mut i = start;
     while i < args.len() {
@@ -74,6 +77,13 @@ fn parse_bake_flags(args: &[String], start: usize) -> Result<BakeFlags> {
                 flags.rays = args
                     .get(i + 1)
                     .ok_or_else(|| anyhow::anyhow!("--rays needs a value"))?
+                    .parse()?;
+                i += 2;
+            }
+            "--dilate" => {
+                flags.dilate = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--dilate needs a value"))?
                     .parse()?;
                 i += 2;
             }
@@ -115,6 +125,22 @@ fn bake_ao_cmd(args: &[String]) -> Result<()> {
     let mesh = umber_mesh::load(std::path::Path::new(mesh_path))?;
     let ctx = bake_context()?;
     let map = bake_ao(&ctx, &mesh, &flags)?;
+    // Optional UV-padding post-pass: spread island-edge color into
+    // seams when --dilate N (N > 0) is given.
+    let map = if flags.dilate > 0 {
+        umber_bake::dilation::dilate_map(
+            &ctx.device,
+            &ctx.queue,
+            &map,
+            flags.size,
+            flags.size,
+            &umber_bake::dilation::DilateParams {
+                iterations: flags.dilate,
+            },
+        )?
+    } else {
+        map
+    };
     umber_export::png::write_png(
         std::path::Path::new(out_path),
         flags.size,
@@ -123,8 +149,15 @@ fn bake_ao_cmd(args: &[String]) -> Result<()> {
         umber_export::png::Transfer::Srgb,
     )?;
     println!(
-        "wrote {out_path} ({}x{}, {} rays)",
-        flags.size, flags.size, flags.rays
+        "wrote {out_path} ({}x{}, {} rays{})",
+        flags.size,
+        flags.size,
+        flags.rays,
+        if flags.dilate > 0 {
+            format!(", {} dilate steps", flags.dilate)
+        } else {
+            String::new()
+        }
     );
     Ok(())
 }
@@ -262,25 +295,40 @@ fn bake_all_cmd(args: &[String]) -> Result<()> {
     )?;
     println!("wrote {}", thick_path.display());
 
-    // Dilation post-pass: spread island-edge color into UV seams so
-    // exported maps show no transparent halos (requirements §6).
-    let dilate = umber_bake::dilation::dilate_map(
-        &ctx.device,
-        &ctx.queue,
-        &ao,
-        flags.size,
-        flags.size,
-        &umber_bake::dilation::DilateParams::default(),
-    )?;
-    let dilated_path = out_dir.join(format!("{set}_ambient_occlusion_dilated.png"));
-    umber_export::png::write_png(
-        &dilated_path,
-        flags.size,
-        flags.size,
-        &dilate,
-        umber_export::png::Transfer::Srgb,
-    )?;
-    println!("wrote {}", dilated_path.display());
+    // Flag-driven dilation post-pass: when --dilate N is given, EVERY
+    // map gets seam-filled in place (the earlier always-on
+    // AO-dilated side file is superseded by the uniform flag).
+    if flags.dilate > 0 {
+        let dilate_params = umber_bake::dilation::DilateParams {
+            iterations: flags.dilate,
+        };
+        let to_dilate = [
+            (ao, umber_mesh::MeshMapKind::AmbientOcclusion),
+            (curvature, umber_mesh::MeshMapKind::Curvature),
+            (position, umber_mesh::MeshMapKind::Position),
+            (wnormal, umber_mesh::MeshMapKind::WorldSpaceNormal),
+            (thickness, umber_mesh::MeshMapKind::Thickness),
+        ];
+        for (map, kind) in &to_dilate {
+            let dilated = umber_bake::dilation::dilate_map(
+                &ctx.device,
+                &ctx.queue,
+                map,
+                flags.size,
+                flags.size,
+                &dilate_params,
+            )?;
+            let path = umber_mesh::format_mesh_map(out_dir, &set, *kind, "png");
+            umber_export::png::write_png(
+                &path,
+                flags.size,
+                flags.size,
+                &dilated,
+                umber_export::png::Transfer::Srgb,
+            )?;
+            println!("wrote {} (dilated {} steps)", path.display(), flags.dilate);
+        }
+    }
 
     println!("bake-all complete for texture set '{set}'");
     Ok(())
