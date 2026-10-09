@@ -229,6 +229,137 @@ impl ExportPreset {
     pub fn from_json(raw: &str) -> Result<Self, ExportPresetError> {
         Ok(serde_json::from_str(raw)?)
     }
+
+    /// The Unreal Engine preset (§6): ORM packed (R=AO, G=Roughness,
+    /// B=Metallic), baseColor sRGB, normal in DirectX convention
+    /// (Unreal's tangent-space Y is flipped vs OpenGL).
+    pub fn unreal_orm() -> Self {
+        let orm = OutputSpec {
+            filename: "$textureSet_OpenglORM.png".into(),
+            maps: vec![
+                (MapKind::AmbientOcclusion, vec![]),
+                (MapKind::Roughness, vec![]),
+                (MapKind::Metallic, vec![]),
+            ],
+            channels: [
+                ChannelWiring::new(0, ChannelSlot::Gray), // R = AO
+                ChannelWiring::new(1, ChannelSlot::Gray), // G = rough
+                ChannelWiring::new(2, ChannelSlot::Gray), // B = metal
+                ChannelWiring::new(0, ChannelSlot::A),    // A = AO alpha
+            ],
+            normal_convention: NormalConvention::Directx,
+            format: OutputFormat::Png8,
+        };
+        Self {
+            name: "Unreal ORM".into(),
+            outputs: vec![
+                OutputSpec {
+                    filename: "$textureSet_basecolor.png".into(),
+                    maps: vec![(MapKind::BaseColor, vec![])],
+                    channels: [
+                        ChannelWiring::new(0, ChannelSlot::R),
+                        ChannelWiring::new(0, ChannelSlot::G),
+                        ChannelWiring::new(0, ChannelSlot::B),
+                        ChannelWiring::new(0, ChannelSlot::A),
+                    ],
+                    normal_convention: NormalConvention::Directx,
+                    format: OutputFormat::Png8,
+                },
+                orm,
+                OutputSpec {
+                    filename: "$textureSet_normal.png".into(),
+                    maps: vec![(MapKind::Normal, vec![])],
+                    channels: [
+                        ChannelWiring::new(0, ChannelSlot::R),
+                        ChannelWiring::new(0, ChannelSlot::G),
+                        ChannelWiring::new(0, ChannelSlot::B),
+                        ChannelWiring::new(0, ChannelSlot::A),
+                    ],
+                    normal_convention: NormalConvention::Directx,
+                    format: OutputFormat::Png8,
+                },
+            ],
+        }
+    }
+
+    /// The Unity HDRP/URP preset (§6): baseColor (sRGB) + separate
+    /// metallic/smoothness PNG (smoothness = 1 - roughness packed in
+    /// A per URP convention; HDRP MaskMap is a later refinement),
+    /// normal OpenGL, packed normal DXT5nm style noted in the preset.
+    pub fn unity_hdrp_urp() -> Self {
+        let metallic_smoothness = OutputSpec {
+            filename: "$textureSet_MetallicSmoothness.png".into(),
+            maps: vec![(MapKind::Metallic, vec![]), (MapKind::Roughness, vec![])],
+            channels: [
+                ChannelWiring::new(0, ChannelSlot::R), // R = metallic r
+                ChannelWiring::new(0, ChannelSlot::G), // G = metallic g
+                ChannelWiring::new(0, ChannelSlot::B), // B = metallic b
+                // A = smoothness = 1 - roughness: the packing layer
+                // inverts at export (documented: pack_texel's caller
+                // inverts the roughness input when using this preset).
+                ChannelWiring::new(1, ChannelSlot::Gray),
+            ],
+            normal_convention: NormalConvention::Opengl,
+            format: OutputFormat::Png8,
+        };
+        Self {
+            name: "Unity HDRP/URP".into(),
+            outputs: vec![
+                OutputSpec {
+                    filename: "$textureSet_BaseMap.png".into(),
+                    maps: vec![(MapKind::BaseColor, vec![])],
+                    channels: [
+                        ChannelWiring::new(0, ChannelSlot::R),
+                        ChannelWiring::new(0, ChannelSlot::G),
+                        ChannelWiring::new(0, ChannelSlot::B),
+                        ChannelWiring::new(0, ChannelSlot::A),
+                    ],
+                    normal_convention: NormalConvention::Opengl,
+                    format: OutputFormat::Png8,
+                },
+                metallic_smoothness,
+                OutputSpec {
+                    filename: "$textureSet_Normal.png".into(),
+                    maps: vec![(MapKind::Normal, vec![])],
+                    channels: [
+                        ChannelWiring::new(0, ChannelSlot::R),
+                        ChannelWiring::new(0, ChannelSlot::G),
+                        ChannelWiring::new(0, ChannelSlot::B),
+                        ChannelWiring::new(0, ChannelSlot::A),
+                    ],
+                    normal_convention: NormalConvention::Opengl,
+                    format: OutputFormat::Png8,
+                },
+            ],
+        }
+    }
+
+    /// The Blender Principled BSDF preset (§6): baseColor, roughness
+    /// (gray), metallic (gray), normal OpenGL — all separate files,
+    /// no packing (Principled takes scalar inputs).
+    pub fn blender_principled() -> Self {
+        let passthrough = |kind: MapKind, filename: &str| OutputSpec {
+            filename: filename.into(),
+            maps: vec![(kind, vec![])],
+            channels: [
+                ChannelWiring::new(0, ChannelSlot::R),
+                ChannelWiring::new(0, ChannelSlot::G),
+                ChannelWiring::new(0, ChannelSlot::B),
+                ChannelWiring::new(0, ChannelSlot::A),
+            ],
+            normal_convention: NormalConvention::Opengl,
+            format: OutputFormat::Png8,
+        };
+        Self {
+            name: "Blender Principled".into(),
+            outputs: vec![
+                passthrough(MapKind::BaseColor, "$textureSet_basecolor.png"),
+                passthrough(MapKind::Roughness, "$textureSet_roughness.png"),
+                passthrough(MapKind::Metallic, "$textureSet_metallic.png"),
+                passthrough(MapKind::Normal, "$textureSet_normal.png"),
+            ],
+        }
+    }
 }
 
 /// Packs one RGBA8 output texel from the source maps per the channel
@@ -300,6 +431,64 @@ mod tests {
             .outputs
             .iter()
             .all(|o| o.normal_convention == NormalConvention::Opengl));
+    }
+
+    #[test]
+    fn unreal_preset_is_directx_and_packs_orm() {
+        let preset = ExportPreset::unreal_orm();
+        assert_eq!(preset.name, "Unreal ORM");
+        let orm = preset
+            .outputs
+            .iter()
+            .find(|o| o.filename.contains("ORM"))
+            .expect("ORM output");
+        // R=AO, G=rough, B=metal via distinct map indices.
+        assert_eq!(orm.channels[0].map, 0, "R = AO (maps[0])");
+        assert_eq!(orm.channels[1].map, 1, "G = roughness (maps[1])");
+        assert_eq!(orm.channels[2].map, 2, "B = metallic (maps[2])");
+        assert!(preset
+            .outputs
+            .iter()
+            .all(|o| o.normal_convention == NormalConvention::Directx));
+        // Every preset round-trips JSON.
+        let back = ExportPreset::from_json(&preset.to_json().unwrap()).unwrap();
+        assert_eq!(back, preset);
+    }
+
+    #[test]
+    fn unity_preset_smoothness_reads_roughness_map() {
+        let preset = ExportPreset::unity_hdrp_urp();
+        assert_eq!(preset.name, "Unity HDRP/URP");
+        let ms = preset
+            .outputs
+            .iter()
+            .find(|o| o.filename.contains("MetallicSmoothness"))
+            .expect("metallic/smoothness output");
+        // A (smoothness) reads maps[1] = roughness (the caller inverts).
+        assert_eq!(ms.channels[3].map, 1);
+        assert_eq!(ms.channels[3].slot, ChannelSlot::Gray);
+        assert!(preset
+            .outputs
+            .iter()
+            .all(|o| o.normal_convention == NormalConvention::Opengl));
+    }
+
+    #[test]
+    fn blender_preset_is_four_passthroughs() {
+        let preset = ExportPreset::blender_principled();
+        assert_eq!(preset.name, "Blender Principled");
+        assert_eq!(preset.outputs.len(), 4);
+        // Each output wires exactly its own map, channels straight
+        // through in order: R, G, B, A.
+        for (i, output) in preset.outputs.iter().enumerate() {
+            assert_eq!(output.maps.len(), 1, "output {i} is single-map");
+            assert_eq!(output.channels[0], ChannelWiring::new(0, ChannelSlot::R));
+            assert_eq!(output.channels[1], ChannelWiring::new(0, ChannelSlot::G));
+            assert_eq!(output.channels[2], ChannelWiring::new(0, ChannelSlot::B));
+            assert_eq!(output.channels[3], ChannelWiring::new(0, ChannelSlot::A));
+        }
+        let back = ExportPreset::from_json(&preset.to_json().unwrap()).unwrap();
+        assert_eq!(back, preset);
     }
 
     #[test]
