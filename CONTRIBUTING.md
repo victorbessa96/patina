@@ -1,4 +1,4 @@
-# Contributing to Patina
+# Contributing to Umber
 
 Thanks for your interest in building the community's Substance Painter alternative.
 
@@ -14,15 +14,15 @@ Thanks for your interest in building the community's Substance Painter alternati
 
 - **Rust only** for the core. FFI only where no viable crate exists (OIDN, OCIO, ufbx) and the license is compatible.
 - **GPL-3.0-or-later.** By contributing you agree your work is licensed under GPL-3.0-or-later. Standalone library crates may be released under MIT.
-- **Original implementations only.** No Adobe SDKs, no .sbsar/.spp format execution, no decompilation of Painter — Patina builds its own node-graph engine and its own file formats. Ideas are not copyrightable; code is.
+- **Original implementations only.** No Adobe SDKs, no .sbsar/.spp format execution, no decompilation of Painter — Umber builds its own node-graph engine and its own file formats. Ideas are not copyrightable; code is.
 - **Design docs live in the repo.** Decisions land in `DECISIONS.md` (append-only). If you disagree with a decision, open an issue rather than editing the log.
 - **Be excellent to each other** — see [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## Development setup (when code opens)
 
 ```bash
-git clone https://github.com/victorbessa96/patina.git
-cd patina
+git clone https://github.com/victorbessa96/umber.git
+cd umber
 cargo build --workspace
 cargo test --workspace
 ```

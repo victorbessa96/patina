@@ -1,6 +1,6 @@
 # Research corpus
 
-The evidence base for Patina's requirements, tech stack, and architecture. Each report is produced by a research claw (subagent) with web sources, then cross-reviewed before folding into `docs/specs/`.
+The evidence base for Umber's requirements, tech stack, and architecture. Each report is produced by a research claw (subagent) with web sources, then cross-reviewed before folding into `docs/specs/`.
 
 | # | Report | Status | Feeds |
 |---|---|---|---|

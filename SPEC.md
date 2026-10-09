@@ -1,4 +1,4 @@
-# Patina — Spec
+# Umber — Spec
 
 > Written ONCE at project start during the alignment session. Changed only by explicit Bessa+Razul respec, not by execution drift. Spec drift is a bug — name it, fix the spec, then the work, in that order.
 >
@@ -27,7 +27,7 @@ What exists at the end that does not exist today.
 2. A crate-structured Rust workspace: render engine, painting core, UI shell, format I/O, procedural graph engine, baking engine — each independently reusable.
 3. An original procedural node graph engine (generators, filters, masks, smart materials) replacing the .sbsar ecosystem.
 4. A bake engine: AO, normal-from-mesh, curvature, position, thickness, ID maps with cage controls.
-5. A git-friendly open project format (.patina) — diffable, mergeable alternative to .spp.
+5. A git-friendly open project format (.umber) — diffable, mergeable alternative to .spp.
 6. Plugin system (Rust-native + sandboxed WASM/WASI runtime) + headless CLI for automation.
 7. Reproducible CI on GitHub Actions building Windows + Linux releases.
 

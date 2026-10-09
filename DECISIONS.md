@@ -1,4 +1,4 @@
-# patina — Decisions
+# umber — Decisions
 
 > Alignment-session + mid-execution decisions, append-only. Never edit history; supersede by adding a new entry that names the old one.
 
@@ -22,7 +22,7 @@ Decision: Project name is **Patina**.
 Context: Brand must be short, professional, evoke the rust/pigment metaphor (iron oxide = the oldest pigment family in human art). "Patina" = the story a surface tells over time — exactly what this tool authors.
 Options rejected: Hematite, Umber, Impasto (all viable; name-collision sweep running in parallel to confirm Patina is clean).
 Owner: Bessa + Razul
-Revisit when: research claw finds a serious name collision or trademark holder.
+Revisit when: research claw finds a serious name collision or trademark holder. *(Fired 2026-10-09 02:41 — see [02:41] project-rename.)*
 
 ## [2026-10-09 01:40] license
 Decision: **GPL-3.0-or-later** for the application (Blender/Krita/GIMP community-DCC model). Standalone utility crates extracted later may be MIT.
@@ -45,16 +45,23 @@ Options rejected: wgpu + GL fallback tier (decision deferred, not rejected — o
 Owner: Bessa (sovereignty: accepted Razul's lead recommendation)
 Revisit when: wgpu blocks a hard requirement (e.g. hardware RT timeline) — then backend abstraction gets revisited.
 
-## [2026-10-09 02:10] repo-and-claws
-Decision: Public GitHub repo **victorbessa96/patina** (origin), created under Bessa's explicit in-message authorization (2026-10-09 02:08: "feel free to have a project github repository"); claw roster (opencode default + claude deliberate third) usable at any moment under the standing cross-review rule; subagents at will.
-Context: Standing grants reconfirmed mid-Wave-0. Upstream-PR gate remains (present before posting to public repos); the project's OWN repo is explicitly authorized — the gate doesn't apply to patina's own repo.
-Options rejected: private repo until v0.1 (public-by-default builds in the open from day one, matches OSS-first intent); solo execution (claws parallelize research + later cross-review implementation).
-Owner: Bessa (authorization) + Razul (execution)
-Revisit when: never — this is a standing-grant confirmation, not a scoped call.
-
 ## [2026-10-09 01:41] ui-framework
 Decision: **egui on wgpu + egui_dock**, custom input layer for stylus/pressure feeding custom events, purpose-built node-canvas widget for the procedural graph editor.
 Context: Bessa asked for a recommendation instead of picking. Immediate-mode gives the fastest tool-iteration loop in the Rust ecosystem; egui_dock provides Painter-style dockable panel trees; renders on our own wgpu surface (one GPU stack for UI + viewport). Known weaknesses (stylus pressure, dense node-graph editing) are solved with custom input layer + custom node canvas — work we'd own under any toolkit. Ecosystem claw is pressure-testing this integration story; dealbreaker findings will reopen this.
 Options rejected: Iced (slower to build complex dock UIs), GPUI (young, opinionated, Zed-internal defaults), fully custom retained stack (years of cost before shipping).
 Owner: Razul under delegation; Bessa ratified by accepting recommendation
 Revisit when: ecosystem research surfaces a hard egui blocker (e.g. per-tablet-pixel pressure latency structurally unachievable) or node-canvas work proves unbounded.
+
+## [2026-10-09 02:10] repo-and-claws
+Decision: Public GitHub repo **victorbessa96/patina** (origin), created under Bessa's explicit in-message authorization (2026-10-09 02:08: "feel free to have a project github repository"); claw roster (opencode default + claude deliberate third) usable at any moment under the standing cross-review rule; subagents at will.
+Context: Standing grants reconfirmed mid-Wave-0. Upstream-PR gate remains (present before posting to public repos); the project's OWN repo is explicitly authorized — the gate doesn't apply to patina's own repo.
+Options rejected: private repo until v0.1 (public-by-default builds in the open from day one, matches OSS-first intent); solo execution (claws parallelize research + later cross-review implementation).
+Owner: Bessa (authorization) + Razul (execution)
+Revisit when: never — this is a standing-grant confirmation, not a scoped call. *(Repo renamed with the project — see [02:41] project-rename.)*
+
+## [2026-10-09 02:41] project-rename
+Decision: Project renamed **Patina → Umber** (repo, directory ~/Projects/umber, docs, brand). Supersedes [01:40] project-name.
+Context: The [01:40] decision pre-committed the revisit trigger ("research claw finds a serious name collision or trademark holder"), and the competitor claw's name-collision sweep fired it: Patina® is an established Mac drawing/paint app (patinaapp.com) in the same broad category, with live USPTO marks (Patina LLC Reg #7213631, The Patina Group Reg #2375467) and a crowded GitHub namespace. Umber was one of the four names on Bessa's original ballot, and the claw independently recommended it sight-unseen: no in-category product, no active software trademark, on-theme (raw earth pigment containing iron oxide — literally rust-colored paint), short, spellable. Executed under the 2026-10-09 02:15 overnight-autonomy grant ("take all the decisions needed").
+Options rejected: Impasto (runner-up; generic-term trademark weakness, and a 310★ active Linux desktop shell shares the name), Hematite (1,920★ canonical Rust Minecraft clone + crates.io collision), keeping Patina (legal exposure + brand confusion in-category from day one).
+Owner: Razul under overnight-autonomy delegation; **reversible by Bessa on wake — one `gh repo rename` + git mv if he overrides.**
+Revisit when: Bessa overrides on wake (pre-agreed revert path), or a Umber trademark/collision surfaces before 0.1 branding investment begins.

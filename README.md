@@ -1,8 +1,8 @@
-# Patina
+# Umber
 
 **Open-source, Rust-native 3D texture painting — the community's answer to Adobe Substance 3D Painter.**
 
-Patina is a ground-up reimagining of the 3D texture-painting DCC: paint PBR materials directly on your meshes, build non-destructive layer stacks, bake mesh maps, and export engine-ready texture sets — fast, local-first, and free forever. Built completely in Rust for **Windows and Linux**.
+Umber is a ground-up reimagining of the 3D texture-painting DCC: paint PBR materials directly on your meshes, build non-destructive layer stacks, bake mesh maps, and export engine-ready texture sets — fast, local-first, and free forever. Built completely in Rust for **Windows and Linux**.
 
 > Status: **Wave 0 — research & design.** Requirements, tech stack, and architecture are being assembled from a full Substance Painter feature inventory, competitor autopsies (ArmorPaint, Blender, Mari, Marmoset…), and a 2026 Rust graphics ecosystem survey. No releases yet. Watch the repo or join the design conversation.
 
@@ -15,7 +15,7 @@ Substance Painter is the industry standard for game/film texturing — and it is
 - **Free forever, GPL-3.0-or-later.** No subscriptions, no license servers, no telemetry. Community-owned, community-extended.
 - **Local-first.** Your machine, your files. No account. No cloud requirement — ever.
 - **Fast by construction.** Rust + wgpu (Vulkan/DX12). Compute-first painting and baking. 60fps viewport floor.
-- **Original procedural engine.** We do not touch Adobe's .sbsar/.spp formats — Patina ships its own node-graph engine for generators, filters, and smart materials.
+- **Original procedural engine.** We do not touch Adobe's .sbsar/.spp formats — Umber ships its own node-graph engine for generators, filters, and smart materials.
 - **Git-friendly project format.** Diffable, mergeable projects — the anti-.spp.
 - **Windows + Linux first-class.** One codebase, no second-class platform.
 
@@ -33,13 +33,13 @@ Substance Painter is the industry standard for game/film texturing — and it is
 
 ## License
 
-GPL-3.0-or-later for the application. Standalone library crates extracted from Patina may be released under MIT where it helps the ecosystem.
+GPL-3.0-or-later for the application. Standalone library crates extracted from Umber may be released under MIT where it helps the ecosystem.
 
 ## Repository layout
 
 ```
-patina/
-├── SPEC.md            # the contract — what Patina is and is not
+umber/
+├── SPEC.md            # the contract — what Umber is and is not
 ├── DECISIONS.md       # append-only architecture decision log
 ├── STATE.md           # wave state (read this first on any new session)
 ├── docs/
