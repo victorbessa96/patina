@@ -325,15 +325,44 @@ fn bake_all_cmd(args: &[String]) -> Result<()> {
         let dilate_params = umber_bake::dilation::DilateParams {
             iterations: flags.dilate,
         };
+        // Each map re-written with its base write's transfer: the
+        // dilated file must equal the base file except at seams, so
+        // unit-vector maps (world/tangent normals) stay Linear — an
+        // Srgb write here would decode a flat tangent normal (128,128,255)
+        // as (188,188,255) (≈ +0.474/+0.474 in tangent xy).
         let to_dilate = [
-            (ao, umber_mesh::MeshMapKind::AmbientOcclusion),
-            (curvature, umber_mesh::MeshMapKind::Curvature),
-            (position, umber_mesh::MeshMapKind::Position),
-            (wnormal, umber_mesh::MeshMapKind::WorldSpaceNormal),
-            (tnormal, umber_mesh::MeshMapKind::NormalBase),
-            (thickness, umber_mesh::MeshMapKind::Thickness),
+            (
+                ao,
+                umber_mesh::MeshMapKind::AmbientOcclusion,
+                umber_export::png::Transfer::Srgb,
+            ),
+            (
+                curvature,
+                umber_mesh::MeshMapKind::Curvature,
+                umber_export::png::Transfer::Srgb,
+            ),
+            (
+                position,
+                umber_mesh::MeshMapKind::Position,
+                umber_export::png::Transfer::Srgb,
+            ),
+            (
+                wnormal,
+                umber_mesh::MeshMapKind::WorldSpaceNormal,
+                umber_export::png::Transfer::Linear,
+            ),
+            (
+                tnormal,
+                umber_mesh::MeshMapKind::NormalBase,
+                umber_export::png::Transfer::Linear,
+            ),
+            (
+                thickness,
+                umber_mesh::MeshMapKind::Thickness,
+                umber_export::png::Transfer::Srgb,
+            ),
         ];
-        for (map, kind) in &to_dilate {
+        for (map, kind, transfer) in &to_dilate {
             let dilated = umber_bake::dilation::dilate_map(
                 &ctx.device,
                 &ctx.queue,
@@ -343,13 +372,7 @@ fn bake_all_cmd(args: &[String]) -> Result<()> {
                 &dilate_params,
             )?;
             let path = umber_mesh::format_mesh_map(out_dir, &set, *kind, "png");
-            umber_export::png::write_png(
-                &path,
-                flags.size,
-                flags.size,
-                &dilated,
-                umber_export::png::Transfer::Srgb,
-            )?;
+            umber_export::png::write_png(&path, flags.size, flags.size, &dilated, *transfer)?;
             println!("wrote {} (dilated {} steps)", path.display(), flags.dilate);
         }
     }
