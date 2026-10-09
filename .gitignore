@@ -1,3 +1,19 @@
+# Dragon project state (local)
 .dragon/local/
 __pycache__/
 *.pyc
+
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock  # NOTE: flip to committed when the app crate lands (app workspace = commit lock)
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Scratch
+/tmp/
+*.log
