@@ -321,6 +321,34 @@ pub fn dilate_map(
         })
 }
 
+/// The §6 "infinite dilation" entry point: fills every UNCOVERAGED
+/// texel **connected** to an island — no transparent holes anywhere a
+/// seed can reach. A dilation front claims one texel ring per pass,
+/// so `width + height` passes bound the worst-case diagonal crossing
+/// of the whole map: after that many rings, any still-uncovered texel
+/// is unreachable from every island (a fully enclosed UV hole — the
+/// map genuinely has no donor) and passes beyond it change nothing.
+///
+/// Equivalent to [`dilate_map`] with `iterations = width + height`,
+/// exposed so callers say what they mean (the CLI's `--dilate inf`
+/// maps here; Substance's "infinite dilation" is the same bound).
+///
+/// # Errors
+///
+/// Same surface as [`dilate_map`].
+pub fn dilate_map_filled(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    map: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, DilateError> {
+    let params = DilateParams {
+        iterations: width.saturating_add(height),
+    };
+    dilate_map(device, queue, map, width, height, &params)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,6 +480,35 @@ mod tests {
                     if manhattan <= 4 {
                         assert_eq!(px[3], 255, "diamond texel ({x}, {y}) must be covered");
                     }
+                }
+            }
+        }
+
+        /// `dilate_map_filled` (the §6 "infinite dilation" entry point)
+        /// claims the WHOLE map from a single seed: every texel is
+        /// connected to the center on a 15x15 grid, so all of them
+        /// carry the donor color with full alpha.
+        #[test]
+        fn filled_dilation_covers_the_entire_map_from_one_seed() {
+            let Some((device, queue)) = try_request_device() else {
+                return;
+            };
+            const SIZE: u32 = 15;
+            const C: u32 = 7;
+            const COLOR: [u8; 4] = [200, 100, 50, 255];
+            let mut map = vec![0u8; (SIZE * SIZE * 4) as usize];
+            set_texel(&mut map, SIZE, C, C, COLOR);
+
+            let out = dilate_map_filled(&device, &queue, &map, SIZE, SIZE)
+                .expect("filled dilate should succeed");
+
+            for y in 0..SIZE {
+                for x in 0..SIZE {
+                    let px = texel(&out, SIZE, x, y);
+                    assert_eq!(
+                        px, COLOR,
+                        "every texel ({x}, {y}) is connected — filled dilation covers all"
+                    );
                 }
             }
         }
