@@ -8,9 +8,11 @@ use glam::Vec3;
 
 pub mod fbx;
 pub mod gltf;
+pub mod raycast;
 
 pub use fbx::load_fbx;
 pub use gltf::load_gltf;
+pub use raycast::{ray_intersect, uv_at, RayHit};
 
 /// Interleaved mesh data as imported, before any GPU upload.
 #[derive(Debug, Clone, Default, PartialEq)]
