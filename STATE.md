@@ -5,9 +5,11 @@
 ## Status line
 
 Current wave: **0 of 6** (IN-PROGRESS)
-State: WAVE-0-ACTIVE (research + spec v1.0)
-Last checkpoint: never
-Last green commit: pending first commit
+State: WAVE-0-ACTIVE — research consolidation phase
+Last checkpoint: not yet (first checkpoint fires when all 5 reports land + SPEC v1.0 ratified)
+Last green commit: 967fb99 (docs: security policy, issue/PR templates, research index)
+
+**Overnight autonomy grant active** (Bessa asleep, granted 2026-10-09 02:15): take all decisions needed until wake. Green-light standing for everything except: (a) SPEC.md v1.0 remains DRAFT until Bessa ratifies, (b) .sbsar/.spp wall stays absolute, (c) license stays GPL-3.0-or-later.
 
 ## Active wave
 
