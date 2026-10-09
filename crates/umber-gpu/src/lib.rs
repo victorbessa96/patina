@@ -21,6 +21,7 @@ pub mod paint;
 pub mod paint_thread;
 pub mod renderer;
 pub mod shaders;
+pub mod texture_display;
 
 pub use camera::OrbitCamera;
 pub use paint::{Dab, DabBuffer, PaintCompositor, PaintError, PaintTarget};

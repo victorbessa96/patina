@@ -219,6 +219,7 @@ impl PaintTarget {
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
@@ -267,6 +268,12 @@ impl PaintTarget {
     /// or future tile-pool wiring.
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
+    }
+
+    /// The texture's default view — for display callbacks sampling the
+    /// paint surface.
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.texture_view
     }
 }
 
