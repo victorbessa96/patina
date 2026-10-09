@@ -13,8 +13,10 @@
 //! paint-thread + ring-buffer architecture (docs/specs/architecture.md)
 //! lands with the paint engine.
 
+mod bake_sources;
 mod bakes_panel;
 mod document;
+mod export_dialog;
 mod paint_state;
 mod uv_view;
 mod viewport;
@@ -23,6 +25,7 @@ use bakes_panel::{BakesContext, BakesPanel};
 use egui::containers::menu::{MenuBar, MenuButton};
 use egui::{CentralPanel, Id, Ui, WidgetText};
 use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
+use export_dialog::{ExportContext, ExportDialog};
 use std::path::PathBuf;
 use umber_gpu::GpuContext;
 use uv_view::UvView;
@@ -39,6 +42,7 @@ pub enum Panel {
     History,
     TextureSets,
     Bakes,
+    Export,
 }
 
 /// Implements the egui_dock tab interface. Built fresh each frame, borrowing
@@ -49,6 +53,7 @@ struct PanelViewer<'a> {
     viewport: &'a mut Viewport,
     uv_view: &'a mut UvView,
     bakes: &'a mut BakesPanel,
+    export: &'a mut ExportDialog,
     mesh: Option<&'a umber_mesh::MeshData>,
     mesh_path: Option<&'a std::path::Path>,
     gpu: &'a GpuContext,
@@ -73,6 +78,7 @@ impl TabViewer for PanelViewer<'_> {
             Panel::History => "History".into(),
             Panel::TextureSets => "Texture Sets".into(),
             Panel::Bakes => "Bakes".into(),
+            Panel::Export => "Export".into(),
         }
     }
 
@@ -99,6 +105,14 @@ impl TabViewer for PanelViewer<'_> {
                 };
                 self.bakes.show(ui, ctx);
             }
+            Panel::Export => {
+                let ctx = ExportContext {
+                    gpu: Some(self.gpu),
+                    mesh: self.mesh,
+                    mesh_path: self.mesh_path,
+                };
+                self.export.show(ui, ctx);
+            }
         }
     }
 }
@@ -117,6 +131,8 @@ pub struct AppState {
     pub doc: document::Document,
     /// The bakes panel: mesh-map bake settings + last-bake status.
     pub bakes: BakesPanel,
+    /// The export dialog: preset choice, output dir + last-export status.
+    pub export: ExportDialog,
 }
 
 /// The eframe app.
@@ -155,7 +171,12 @@ impl UmberApp {
             let [left, _] = tree.split_left(
                 NodeIndex::root(),
                 0.25,
-                vec![Panel::LayerStack, Panel::TextureSets, Panel::Bakes],
+                vec![
+                    Panel::LayerStack,
+                    Panel::TextureSets,
+                    Panel::Bakes,
+                    Panel::Export,
+                ],
             );
             let [_top, _bottom] =
                 tree.split_below(left, 0.4, vec![Panel::Properties, Panel::Assets]);
@@ -270,6 +291,7 @@ impl eframe::App for UmberApp {
                 viewport: &mut self.state.viewport,
                 uv_view: &mut self.state.uv_view,
                 bakes: &mut self.state.bakes,
+                export: &mut self.state.export,
                 mesh: self.state.mesh.as_ref(),
                 mesh_path: self.state.mesh_path.as_deref(),
                 gpu: &self.gpu,

@@ -15,6 +15,10 @@
 //! GPU access follows the `viewport`/`paint_state` pattern: this module
 //! never names a `wgpu` type, taking `umber_gpu::WgpuDevice`/`WgpuQueue`
 //! (re-exported aliases) or `&umber_gpu::GpuContext` instead.
+//!
+//! The AO bake itself lives in [`crate::bake_sources`], shared with the
+//! Export dialog (`export_dialog.rs`) so the two panels drive one GPU
+//! call instead of two copies of the same params.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -372,23 +376,10 @@ impl BakesPanel {
             let started = Instant::now();
             let bytes: Vec<u8> = match selection {
                 BakeSelection::Ao => {
-                    let mut params = umber_bake::AoBakeParams::new(
-                        // max_distance/bias per the bake tests' convention;
-                        // the plane is unused by the mesh-fed path (the
-                        // mesh's position map supplies ray origins).
-                        10.0,
-                        0.01,
-                        umber_bake::PlaneDesc::new(
-                            [0.0, 0.0, 0.0],
-                            [1.0, 0.0, 0.0],
-                            [0.0, 1.0, 0.0],
-                            [2.0, 2.0],
-                        ),
-                    );
-                    params.rays = self.rays;
-                    let raw =
-                        umber_bake::ao::bake_ao_mesh(device, queue, mesh, size, size, &params)
-                            .context("ao bake")?;
+                    // Shared with the Export dialog (`bake_sources::bake_ao`)
+                    // — this panel dilates afterward; the export path uses
+                    // the raw bake directly (see `bake_sources` docs).
+                    let raw = crate::bake_sources::bake_ao(device, queue, mesh, size, self.rays)?;
                     umber_bake::dilation::dilate_map(device, queue, &raw, size, size, &dilate)
                         .context("ao dilation")?
                 }
