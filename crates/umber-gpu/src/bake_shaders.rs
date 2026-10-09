@@ -991,3 +991,190 @@ fn cs_main(@builtin(workgroup_id) workgroup_id: vec3<u32>) {
     }
 }
 "#;
+
+/// Tangent-space normal baking from a position/normal map: one workgroup
+/// per output texel, transforming each covered texel's world normal into a
+/// screen-space tangent frame built from the position map's own
+/// x-derivative.
+///
+/// # Screen-space tangent frame (no explicit UVs)
+///
+/// Per covered texel:
+///
+/// ```text
+/// dpdx = central (both x-neighbors covered) or one-sided (island border)
+///        position difference; uncovered/out-of-bounds neighbors are skipped,
+///        never zero-filled (a hole must not tilt a neighboring frame)
+/// T = normalize(dpdx - N * dot(N, dpdx))   // Gram-Schmidt against N
+/// B = cross(N, T)
+/// tangent_normal = (dot(T, n), dot(B, n), dot(N, n))  // transpose(TBN) * n
+/// ```
+///
+/// where `N`/`n` is the position pass's per-texel face normal
+/// (`normal_tex`, normalized) — the only normal this slice has, so the
+/// world normal being transformed and the frame's axis coincide (a flat
+/// facet correctly bakes `(0, 0, 1)`; smooth/interpolated normals plug into
+/// `n` without touching the frame code — see "Wave-4 refinement" below).
+/// A texel with no covered x-neighbor (isolated single-texel island) or a
+/// near-zero gradient falls back to the world axis least aligned with `N`,
+/// orthogonalized the same way, so `T` is never a normalized zero vector.
+///
+/// # UV-alignment assumption (matches Substance's default when UVs are axis-aligned)
+///
+/// Texel `+x` is `+u`: the position pass maps texel centers through
+/// `u = (x + 0.5) / width` (see `POSITION_BAKE_SHADER`'s doc comment), so
+/// `dP/dx` points along the surface's `+u` direction and `T` is the
+/// `+u` tangent — exactly Substance Painter's default tangent frame on
+/// meshes whose UV islands are axis-aligned to the baked surface. `B =
+/// cross(N, T)` then points along `+v` on such meshes (not along texel
+/// `+y`, which is `-v` under the position pass's `(1 - v)` flip), keeping
+/// green "up" in UV space per the OpenGL convention below. On rotated UV
+/// islands the frame twists with the screen axes instead of the UVs —
+/// the known screen-space limitation this slice accepts (same class of
+/// artifact as `CURVATURE_BAKE_SHADER`'s UV-seam blindness).
+///
+/// # Wave-4 refinement plan (per-texel UV-derivative TBN)
+///
+/// Once the position pass exports per-texel UVs in a channel, replace the
+/// `dpdx`-only construction with the standard UV-derivative frame: solve
+/// `dP/du`, `dP/dv` from neighbor differences (`dp = dP/du * du + dP/dv *
+/// dv` over two covered neighbors), `T = normalize(dP/du - N * dot(N,
+/// dP/du))`, `B` from `dP/dv` with a `cross(N, T)`-handedness check
+/// against the UV winding. The `transpose(TBN) * n` transform and
+/// the encoding below stay unchanged; only the `T`/`B` derivation moves.
+///
+/// # Encoding + convention (OpenGL default, DirectX flip)
+///
+/// `rgb = tangent_normal * 0.5 + 0.5`, `a` = coverage (`1.0` covered,
+/// `0.0` uncovered). Default is OpenGL (`+Y` up = green up). A nonzero
+/// `flip_y` inverts the green channel *after* encoding (`g = 1 - g`) for
+/// DirectX (`-Y` up). Uncovered texels write `(0, 0, 0, 0)`,
+/// distinguishable from a flat-but-covered texel (`(~0.5, ~0.5, 1, 1)`)
+/// by alpha alone — the same alpha convention
+/// `AO_BAKE_SHADER::cs_main_from_position` uses, which is why
+/// `normal_map::bake_tangent_normal_mesh` returns full RGBA8.
+///
+/// # Layout contracts
+///
+/// - `TangentNormalParams` must match `umber_bake::normal_map`'s private
+///   `TangentNormalUniform` byte-for-byte (`width`, `height`, `flip_y`,
+///   one `u32` pad — 16 bytes, already a multiple of WGSL's 16-byte
+///   uniform-struct alignment, so no further padding is needed).
+/// - `position_tex`/`normal_tex` are the two `Rgba32Float` outputs of
+///   `POSITION_BAKE_SHADER`'s `cs_main`, bound read-only and sampled with
+///   `textureLoad` at integer texel coordinates (no sampler, no filtering
+///   — filtering would smear normals across UV seams; see
+///   `CURVATURE_BAKE_SHADER`'s doc comment). `position_tex`'s alpha is
+///   the position pass's coverage flag: `0.0` means no UV triangle covered
+///   that texel.
+/// - `out_tex` is a write-only `Rgba8Unorm` storage texture (core WebGPU,
+///   no device feature — the same reason [`AO_BAKE_SHADER`] uses `write`,
+///   not `read_write`).
+///
+/// # Dispatch + edge behavior
+///
+/// One workgroup (`@workgroup_size(1)`) per texel, dispatched as
+/// `dispatch_workgroups(width, height, 1)`, so `workgroup_id.xy` is
+/// directly the texel coordinate into all three textures — the same
+/// "one workgroup per texel" shape as `CURVATURE_BAKE_SHADER`, minus any
+/// ray loop (per-texel work here is a handful of `textureLoad`s,
+/// trivially serial).
+pub const TANGENT_NORMAL_BAKE_SHADER: &str = r#"
+struct TangentNormalParams {
+    width: u32,
+    height: u32,
+    flip_y: u32,
+    _pad: u32,
+};
+
+@group(0) @binding(0) var out_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(1) var<uniform> params: TangentNormalParams;
+@group(0) @binding(2) var position_tex: texture_2d<f32>;
+@group(0) @binding(3) var normal_tex: texture_2d<f32>;
+
+const TN_EPS: f32 = 1e-6;
+
+@compute @workgroup_size(1)
+fn cs_main(@builtin(workgroup_id) workgroup_id: vec3<u32>) {
+    let coord = vec2<i32>(workgroup_id.xy);
+    let center = textureLoad(position_tex, coord, 0);
+    if (center.w <= 0.5) {
+        textureStore(out_tex, coord, vec4<f32>(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    let p0 = center.xyz;
+    let n_axis = normalize(textureLoad(normal_tex, coord, 0).xyz);
+    let dims = vec2<i32>(i32(params.width), i32(params.height));
+
+    // Screen-space dP/dx from the covered x-neighbors: central difference
+    // when both sides are covered, one-sided at island borders. Out-of-
+    // bounds and uncovered neighbors are skipped, not zero-filled (a hole
+    // must not tilt a neighboring frame) — the same rule
+    // CURVATURE_BAKE_SHADER uses for its 4-neighborhood.
+    var has_px = false;
+    var has_nx = false;
+    var p_px = vec3<f32>(0.0, 0.0, 0.0);
+    var p_nx = vec3<f32>(0.0, 0.0, 0.0);
+    if (coord.x + 1 < dims.x) {
+        let s = textureLoad(position_tex, coord + vec2<i32>(1, 0), 0);
+        if (s.w > 0.5) {
+            p_px = s.xyz;
+            has_px = true;
+        }
+    }
+    if (coord.x - 1 >= 0) {
+        let s = textureLoad(position_tex, coord + vec2<i32>(-1, 0), 0);
+        if (s.w > 0.5) {
+            p_nx = s.xyz;
+            has_nx = true;
+        }
+    }
+    var dpdx = vec3<f32>(0.0, 0.0, 0.0);
+    var has_dpdx = false;
+    if (has_px && has_nx) {
+        dpdx = (p_px - p_nx) * 0.5;
+        has_dpdx = true;
+    } else if (has_px) {
+        dpdx = p_px - p0;
+        has_dpdx = true;
+    } else if (has_nx) {
+        dpdx = p0 - p_nx;
+        has_dpdx = true;
+    }
+
+    // Gram-Schmidt orthogonalization of the +u tangent against N. An
+    // isolated texel (no covered x-neighbor) or a near-zero gradient falls
+    // back to the world axis least aligned with N, orthogonalized the same
+    // way, so T is never a normalized zero vector.
+    var t = vec3<f32>(1.0, 0.0, 0.0);
+    if (has_dpdx) {
+        t = dpdx - n_axis * dot(n_axis, dpdx);
+    }
+    var t_len = length(t);
+    if (!has_dpdx || t_len < TN_EPS) {
+        var axis = vec3<f32>(1.0, 0.0, 0.0);
+        if (abs(n_axis.x) > 0.9) {
+            axis = vec3<f32>(0.0, 1.0, 0.0);
+        }
+        t = axis - n_axis * dot(n_axis, axis);
+        t_len = length(t);
+    }
+    let T = t / max(t_len, TN_EPS);
+    let B = cross(n_axis, T);
+
+    // World normal into the frame: transpose(TBN) * n. This slice's only
+    // normal source is the position pass's face normal, so n == n_axis and
+    // a flat facet bakes (0, 0, 1) by construction; a wave-4 smooth-normal
+    // input plugs into `n` here without touching the frame above.
+    let n = n_axis;
+    var tn = vec3<f32>(dot(T, n), dot(B, n), dot(n_axis, n));
+    tn = clamp(tn, vec3<f32>(-1.0, -1.0, -1.0), vec3<f32>(1.0, 1.0, 1.0));
+    var rgb = tn * 0.5 + vec3<f32>(0.5, 0.5, 0.5);
+    if (params.flip_y != 0u) {
+        rgb.y = 1.0 - rgb.y;
+    }
+    rgb = clamp(rgb, vec3<f32>(0.0, 0.0, 0.0), vec3<f32>(1.0, 1.0, 1.0));
+    textureStore(out_tex, coord, vec4<f32>(rgb, 1.0));
+}
+"#;
