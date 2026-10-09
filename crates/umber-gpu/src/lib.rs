@@ -17,6 +17,7 @@
 
 pub mod camera;
 pub mod golden;
+pub mod material;
 pub mod paint;
 pub mod paint_thread;
 pub mod renderer;

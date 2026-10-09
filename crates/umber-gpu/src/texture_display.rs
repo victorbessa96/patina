@@ -10,24 +10,30 @@
 use wgpu::util::DeviceExt as _;
 
 /// Full-target textured quad, four vertices, triangle-strip topology.
-/// Positions are 0..1 corner coords; UVs sample with V flipped (paint
-/// texture row 0 = top, UV origin = bottom-left).
+/// Positions are 0..1 corner coords.
+///
+/// Texture-coord contract: paint-texture row 0 is the TOP of the painted
+/// image. The pointer→UV→texel path (`umber_app::paint_state::push_event`)
+/// flips V exactly once, so texel (x, 0) is what the pointer drew at the
+/// top of the UV square. The display quad therefore samples row 0 at the
+/// top of the screen: pos.y == 0 maps to uv.y == 0. No second flip here —
+/// a V-flip in this data would mirror strokes vertically.
 const QUAD_VERTS: [TexturedVertex; 4] = [
     TexturedVertex {
         pos: [0.0, 0.0],
-        uv: [0.0, 1.0],
-    },
-    TexturedVertex {
-        pos: [1.0, 0.0],
-        uv: [1.0, 1.0],
-    },
-    TexturedVertex {
-        pos: [0.0, 1.0],
         uv: [0.0, 0.0],
     },
     TexturedVertex {
-        pos: [1.0, 1.0],
+        pos: [1.0, 0.0],
         uv: [1.0, 0.0],
+    },
+    TexturedVertex {
+        pos: [0.0, 1.0],
+        uv: [0.0, 1.0],
+    },
+    TexturedVertex {
+        pos: [1.0, 1.0],
+        uv: [1.0, 1.0],
     },
 ];
 
@@ -211,22 +217,24 @@ impl TextureDisplay {
     }
 
     /// Builds the per-frame callback presenting `target` at panel-space
-    /// `rect` on a surface of `resolution` pixels.
+    /// `rect` (egui points; converted to pixels per-frame in `prepare`
+    /// using the frame's actual scale factor).
     pub fn callback(
         &self,
         device: &wgpu::Device,
         target: &crate::paint::PaintTarget,
-        resolution: [f32; 2],
         rect: epaint::emath::Rect,
     ) -> TextureDisplayCallback {
-        let uniform = ScreenUniformData {
-            resolution,
-            quad_origin: [rect.left(), rect.top()],
-            quad_size: [rect.width(), rect.height()],
-        };
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("umber_texture_display_uniform"),
-            contents: bytemuck::bytes_of(&uniform),
+            // Placeholder contents; `prepare` overwrites this every frame
+            // with the pixel-space uniform built from `rect_points` and
+            // the frame's `ScreenDescriptor`.
+            contents: bytemuck::bytes_of(&ScreenUniformData {
+                resolution: [0.0, 0.0],
+                quad_origin: [0.0, 0.0],
+                quad_size: [0.0, 0.0],
+            }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -261,7 +269,7 @@ impl TextureDisplay {
             bind_group,
             vertex_buffer,
             uniform_buffer,
-            uniform,
+            rect_points: rect,
         }
     }
 }
@@ -275,7 +283,11 @@ pub struct TextureDisplayCallback {
     bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
-    uniform: ScreenUniformData,
+    /// The quad rect in egui points, as of this frame. Converted to
+    /// pixel space in `prepare` using the frame's actual scale factor
+    /// (from `ScreenDescriptor`), so the uniform and the surface size
+    /// are always in one coordinate system.
+    rect_points: epaint::emath::Rect,
 }
 
 impl egui_wgpu::CallbackTrait for TextureDisplayCallback {
@@ -283,11 +295,17 @@ impl egui_wgpu::CallbackTrait for TextureDisplayCallback {
         &self,
         _device: &wgpu::Device,
         queue: &wgpu::Queue,
-        _screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        screen_descriptor: &egui_wgpu::ScreenDescriptor,
         _egui_encoder: &mut wgpu::CommandEncoder,
         _callback_resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&self.uniform));
+        // egui works in points; the render surface is physical pixels.
+        // Same conversion the egui_wgpu renderer applies to clip rects
+        // (`ScissorRect::new`): scale by pixels_per_point, and divide by
+        // the descriptor's size_in_pixels — the actual surface size —
+        // not a caller-reconstructed viewport approximation.
+        let uniform = screen_uniform(&self.rect_points, screen_descriptor);
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
         Vec::new()
     }
 
@@ -312,6 +330,27 @@ pub fn texture_display_shape(
     egui_wgpu::Callback::new_paint_callback(rect, callback).into()
 }
 
+/// Builds the screen uniform: the quad rect (egui points) converted to
+/// pixel space with the frame's scale factor, against the surface's
+/// actual pixel size. Both quantities in one coordinate system —
+/// mixing points with pixels misplaces the quad whenever
+/// `pixels_per_point != 1.0` (HiDPI) or the outer viewport is larger
+/// than the client surface.
+fn screen_uniform(
+    rect: &epaint::emath::Rect,
+    screen_descriptor: &egui_wgpu::ScreenDescriptor,
+) -> ScreenUniformData {
+    let ppp = screen_descriptor.pixels_per_point;
+    ScreenUniformData {
+        resolution: [
+            screen_descriptor.size_in_pixels[0] as f32,
+            screen_descriptor.size_in_pixels[1] as f32,
+        ],
+        quad_origin: [rect.left() * ppp, rect.top() * ppp],
+        quad_size: [rect.width() * ppp, rect.height() * ppp],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,10 +368,61 @@ mod tests {
     }
 
     #[test]
+    fn quad_uv_matches_row0_top_contract() {
+        // The paint texture's row 0 is the top of the painted image
+        // (paint_state::push_event flips V once at input). The display
+        // must sample row 0 at the top of the screen — pos.y and uv.y
+        // agree — so strokes appear where the pointer drew them. A
+        // V-flip here mirrors strokes vertically.
+        for v in QUAD_VERTS {
+            assert_eq!(v.pos[1], v.uv[1]);
+        }
+    }
+
+    #[test]
     fn uniform_layout_is_pod() {
         // ScreenUniformData must stay exactly 24 bytes (2+2+2 f32s) for
         // the WGSL struct alignment; repr(C) + Pod is checked at the
         // derive, this pins the size.
         assert_eq!(std::mem::size_of::<ScreenUniformData>(), 24);
+    }
+
+    #[test]
+    fn screen_uniform_scales_rect_and_surface_consistently() {
+        // HiDPI: 2560x1440 physical, 2.0 px/pt. A quad at points
+        // (100, 50) sized (300, 300) must land at pixels (200, 100) and
+        // cover (600, 600) against the 2560x1440 surface. The old shape
+        // (points quad_origin ÷ pixels resolution) failed this: the quad
+        // shrank by ppp and misaligned with the clip rect.
+        let rect = epaint::emath::Rect::from_min_size(
+            epaint::emath::Pos2::new(100.0, 50.0),
+            epaint::emath::vec2(300.0, 300.0),
+        );
+        let sd = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [2560, 1440],
+            pixels_per_point: 2.0,
+        };
+        let u = screen_uniform(&rect, &sd);
+        assert_eq!(u.resolution, [2560.0, 1440.0]);
+        assert_eq!(u.quad_origin, [200.0, 100.0]);
+        assert_eq!(u.quad_size, [600.0, 600.0]);
+
+        // Scale invariance: the same points-rect against a surface whose
+        // pixel dimensions scale with pixels_per_point lands at the same
+        // NDC — the quad tracks the window, not the pixel grid.
+        let sd1 = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [1280, 720],
+            pixels_per_point: 1.0,
+        };
+        let u1 = screen_uniform(&rect, &sd1);
+        let ndc = |u: &ScreenUniformData| {
+            (
+                (u.quad_origin[0] + u.quad_size[0]) / u.resolution[0] * 2.0 - 1.0,
+                1.0 - (u.quad_origin[1] + u.quad_size[1]) / u.resolution[1] * 2.0,
+            )
+        };
+        let (x2, y2) = ndc(&u);
+        let (x1, y1) = ndc(&u1);
+        assert!((x2 - x1).abs() < 1e-6 && (y2 - y1).abs() < 1e-6);
     }
 }
