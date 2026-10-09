@@ -1,0 +1,6 @@
+# Reproducible CI: pin the toolchain to the verified dev version
+# (SPEC.md constraints — deterministic builds). Bump deliberately, then
+# fix any new lints the bump surfaces in the same change.
+[toolchain]
+channel = "1.97.0"
+components = ["rustfmt", "clippy"]

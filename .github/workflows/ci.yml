@@ -20,6 +20,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        # pinned via rust-toolchain.toml (1.97.0) — see file at repo root
         with:
           components: rustfmt, clippy
 
