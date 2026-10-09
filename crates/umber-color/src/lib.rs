@@ -10,7 +10,15 @@
 
 pub mod display;
 
+#[cfg(feature = "ocio")]
+pub mod ocio;
+
 pub use display::{apply_display, invert_display, DisplayTransform};
+
+#[cfg(feature = "ocio")]
+pub use ocio::{
+    builtin_configs, create_builtin_config, OcioBridgeError, ACES_CG_CONFIG, ACES_STUDIO_CONFIG,
+};
 
 /// Whether a channel's values are color-managed or raw data
 /// (mirrors umber-core's ChannelKind; duplicated at the crate boundary

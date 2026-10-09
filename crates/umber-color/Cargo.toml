@@ -8,3 +8,11 @@ repository.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+ocio-rs = { version = "0.2", optional = true, default-features = false }
+
+[features]
+# Real OCIO via the ocio-rs bridge (stub mode — no C++ build, CI-safe;
+# the bundled C++ build stays a manual-dispatch job per the
+# gentle-load directive, see docs/research/ocio-aces-integration.md).
+default = []
+ocio = ["ocio-rs"]
