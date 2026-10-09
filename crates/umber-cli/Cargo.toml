@@ -11,9 +11,17 @@ name = "umber-cli"
 path = "src/main.rs"
 
 [dependencies]
+umber-bake = { workspace = true }
 umber-core = { workspace = true }
 umber-mesh = { workspace = true }
 umber-export = { workspace = true }
+umber-gpu = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
+wgpu = { workspace = true }
+pollster = { workspace = true }
+
+[features]
+default = ["gpu"]
+gpu = ["umber-bake/gpu"]

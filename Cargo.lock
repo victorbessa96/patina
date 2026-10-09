@@ -3676,9 +3676,13 @@ dependencies = [
  "anyhow",
  "env_logger",
  "log",
+ "pollster 1.0.1",
+ "umber-bake",
  "umber-core",
  "umber-export",
+ "umber-gpu",
  "umber-mesh",
+ "wgpu",
 ]
 
 [[package]]
