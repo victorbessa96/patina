@@ -26,11 +26,13 @@ pub struct StrokeEvent {
     pub contact: bool,
 }
 
+pub mod dab_adapter;
 pub mod lazy_mouse;
 pub mod one_euro;
 pub mod spacing;
 pub mod wiring;
 
+pub use dab_adapter::{BrushParams, DabAdapter};
 pub use lazy_mouse::LazyMouse;
 pub use one_euro::{OneEuroError, OneEuroFilter, OneEuroScalar};
 pub use spacing::{DabPlan, SpacingAccumulator, SpacingError};

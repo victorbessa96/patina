@@ -9,3 +9,4 @@ repository.workspace = true
 [dependencies]
 glam = { workspace = true }
 thiserror = { workspace = true }
+umber-gpu = { workspace = true }
