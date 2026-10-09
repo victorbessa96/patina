@@ -5,6 +5,10 @@
 //! dilation, and golden-image CI verification on lavapipe/WARP.
 //! Compute passes share the umber-gpu tile pool.
 
+pub mod ao;
+
+pub use ao::{AoBakeError, AoBakeParams, BakeTarget, PlaneDesc};
+
 /// The bake map types, named per Substance conventions for the
 /// `TextureSetName_map` import naming (requirements §7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

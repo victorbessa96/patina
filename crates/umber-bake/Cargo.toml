@@ -8,3 +8,12 @@ repository.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+glam = { workspace = true }
+umber-gpu = { workspace = true }
+umber-mesh = { workspace = true }
+pollster = { workspace = true, optional = true }
+
+[features]
+gpu = ["pollster"]

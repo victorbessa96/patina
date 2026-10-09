@@ -15,6 +15,7 @@
 
 #![warn(missing_docs)]
 
+pub mod bake_shaders;
 pub mod camera;
 pub mod golden;
 pub mod material;
