@@ -16,6 +16,7 @@ fn main() -> Result<()> {
         Some("inspect") => inspect_cmd(&args[1..]),
         Some("bake-ao") => bake_ao_cmd(&args[1..]),
         Some("bake-all") => bake_all_cmd(&args[1..]),
+        Some("export") => export_cmd(&args[1..]),
         Some(other) => Err(anyhow::anyhow!(
             "unknown command: {other}\nusage: umber-cli <inspect|bake-ao|bake-all> ..."
         )),
@@ -24,6 +25,7 @@ fn main() -> Result<()> {
             println!("commands: inspect <mesh-file>");
             println!("          bake-ao <mesh-file> <out.png> [--size N] [--rays N]");
             println!("          bake-all <mesh-file> <out-dir> [--size N] [--rays N]");
+            println!("          export <mesh-file> <out-dir> --preset <gltf|unreal|unity|blender> [--size N] [--rays N]");
             Ok(())
         }
     }
@@ -75,6 +77,8 @@ fn parse_bake_flags(args: &[String], start: usize) -> Result<BakeFlags> {
                     .parse()?;
                 i += 2;
             }
+            // export_cmd parses --preset itself; skip it (value too).
+            "--preset" => i += 2,
             other => return Err(anyhow::anyhow!("unknown flag: {other}")),
         }
     }
@@ -309,4 +313,111 @@ fn bake_ao(ctx: &BakeContext, mesh: &umber_mesh::MeshData, flags: &BakeFlags) ->
     )?;
     log::info!("baked {} texels", map.len() / 4);
     Ok(map)
+}
+
+/// `export <mesh> <out-dir> --preset <name> [--size N] [--rays N]` —
+/// runs the full pipeline headless: bakes the P0 maps, packs them
+/// through the chosen export preset, writes the named outputs.
+fn export_cmd(args: &[String]) -> Result<()> {
+    let usage =
+        "usage: umber-cli export <mesh-file> <out-dir> --preset <gltf|unreal|unity|blender> [--size N] [--rays N]";
+    let mesh_path = args.first().ok_or_else(|| anyhow::anyhow!("{usage}"))?;
+    let out_dir = args.get(1).ok_or_else(|| anyhow::anyhow!("{usage}"))?;
+
+    let mut preset_name = String::new();
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--preset" => {
+                preset_name = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--preset needs a value"))?
+                    .clone();
+                i += 2;
+            }
+            "--size" | "--rays" => i += 2, // parsed by BakeFlags below
+            other => return Err(anyhow::anyhow!("unknown flag: {other}")),
+        }
+    }
+
+    let flags = parse_bake_flags(args, 2)?;
+    let preset = match preset_name.as_str() {
+        "gltf" => umber_export::ExportPreset::gltf_metal_rough(),
+        "unreal" => umber_export::ExportPreset::unreal_orm(),
+        "unity" => umber_export::ExportPreset::unity_hdrp_urp(),
+        "blender" => umber_export::ExportPreset::blender_principled(),
+        other => {
+            return Err(anyhow::anyhow!(
+                "unknown preset: {other} (gltf|unreal|unity|blender)"
+            ))
+        }
+    };
+
+    let mesh_path = std::path::Path::new(mesh_path);
+    let mesh = umber_mesh::load(mesh_path)?;
+    let ctx = bake_context()?;
+    let set_name = umber_mesh::texture_set_name(mesh_path, &mesh);
+
+    // Bake the union of the preset's map kinds (data maps as linear
+    // RGBA8 sources for the driver).
+    let ao = bake_ao(&ctx, &mesh, &flags)?;
+    let position_params = umber_bake::position::PositionMapParams {
+        width: flags.size,
+        height: flags.size,
+    };
+    let position_f32 =
+        umber_bake::position::bake_position_map(&ctx.device, &ctx.queue, &mesh, &position_params)?;
+    let position = encode_position_rgba8(&position_f32);
+
+    // The driver validates ALL outputs up front. For headless export
+    // with baked-only sources (AO + flat normal today), a full engine
+    // preset errors on BaseColor/Metallic — the honest behavior is
+    // exporting the outputs we CAN fill and warning about the rest.
+    // Strategy: filter the preset to outputs whose maps we hold.
+    let mut map_set = umber_export::MapSet::new(flags.size);
+    map_set.set(umber_export::MapKind::AmbientOcclusion, ao);
+    let texels = (flags.size * flags.size) as usize;
+    let mut flat_normal = Vec::with_capacity(texels * 4);
+    for _ in 0..texels {
+        flat_normal.extend_from_slice(&[128, 128, 255, 255]);
+    }
+    map_set.set(umber_export::MapKind::Normal, flat_normal);
+    let _ = position; // position joins when a preset references it
+
+    let available: Vec<umber_export::MapKind> = map_set.maps_iter().collect();
+    let full_preset = preset;
+    let filtered_outputs: Vec<_> = full_preset
+        .outputs
+        .iter()
+        .filter(|o| o.maps.iter().all(|(k, _)| available.contains(k)))
+        .cloned()
+        .collect();
+    for skipped in &full_preset.outputs {
+        if !filtered_outputs.contains(skipped) {
+            println!(
+                "skipped {} (needs maps not baked headless)",
+                skipped.filename
+            );
+        }
+    }
+    let preset = umber_export::ExportPreset {
+        name: full_preset.name.clone(),
+        outputs: filtered_outputs,
+    };
+    if preset.outputs.is_empty() {
+        return Err(anyhow::anyhow!(
+            "preset '{preset_name}' has no outputs satisfiable from baked maps"
+        ));
+    }
+
+    let written =
+        umber_export::run_preset(&preset, &map_set, &set_name, std::path::Path::new(out_dir))?;
+    for path in &written {
+        println!("wrote {}", path.display());
+    }
+    println!(
+        "export complete: preset '{preset_name}', {} outputs",
+        written.len()
+    );
+    Ok(())
 }

@@ -113,6 +113,12 @@ impl MapSet {
             .find(|(k, _)| *k == kind)
             .map(|(_, bytes)| bytes.as_slice())
     }
+
+    /// The kinds currently held (for callers filtering presets to
+    /// satisfiable outputs).
+    pub fn maps_iter(&self) -> impl Iterator<Item = MapKind> + '_ {
+        self.maps.iter().map(|(k, _)| *k)
+    }
 }
 
 /// JPEG quality used when a preset output picks JPEG (§6 previews).
