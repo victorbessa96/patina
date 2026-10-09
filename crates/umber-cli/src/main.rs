@@ -222,6 +222,26 @@ fn bake_all_cmd(args: &[String]) -> Result<()> {
     )?;
     println!("wrote {}", thick_path.display());
 
+    // Dilation post-pass: spread island-edge color into UV seams so
+    // exported maps show no transparent halos (requirements §6).
+    let dilate = umber_bake::dilation::dilate_map(
+        &ctx.device,
+        &ctx.queue,
+        &ao,
+        flags.size,
+        flags.size,
+        &umber_bake::dilation::DilateParams::default(),
+    )?;
+    let dilated_path = out_dir.join(format!("{set}_ambient_occlusion_dilated.png"));
+    umber_export::png::write_png(
+        &dilated_path,
+        flags.size,
+        flags.size,
+        &dilate,
+        umber_export::png::Transfer::Srgb,
+    )?;
+    println!("wrote {}", dilated_path.display());
+
     println!("bake-all complete for texture set '{set}'");
     Ok(())
 }
