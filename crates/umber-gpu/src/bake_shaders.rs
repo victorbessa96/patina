@@ -872,3 +872,122 @@ fn cs_main(@builtin(workgroup_id) workgroup_id: vec3<u32>) {
     textureStore(thickness_tex, coord, vec4<f32>(thickness, thickness, thickness, 1.0));
 }
 "#;
+
+/// UV-padding dilation (post-bake island-margin expansion): one workgroup
+/// per output texel, spreading island-edge colors outward into uncovered
+/// texels so exported maps have no transparent seams.
+///
+/// # Algorithm (one dilation step per dispatch)
+///
+/// Per texel, from the read-only input map `src_tex` into the write-only
+/// output `dst_tex`:
+///
+/// ```text
+/// if src.a > 0: copy through unchanged
+/// else: scan the 8 neighbors; among covered neighbors pick the one with
+///       the HIGHEST coverage (alpha) value, ties keep the first found;
+///       write its rgb with alpha 1.0 — or (0,0,0,0) if no neighbor is covered.
+/// ```
+///
+/// `N` steps of padding = `N` ping-pong dispatches driven from Rust (see
+/// `umber_bake::dilation::dilate_map`): each step reads the previous step's
+/// output, so one ring of texels is claimed per dispatch and the covered
+/// front advances exactly one texel per iteration.
+///
+/// # Why the dilated alpha must normalize to 1.0 (chain propagation)
+///
+/// A newly-dilated texel must be indistinguishable from an originally
+/// covered texel on the *next* step (`a = 1.0`, i.e. byte `255`, both) or
+/// propagation stalls after one ring: the next pass's "covered" test is
+/// `a > 0`, and its donor ranking compares coverage values, so writing
+/// anything less than full coverage would make second-ring texels rank
+/// below (or read as uncovered next to) the front and the wave would die
+/// out. The donor's rgb is copied verbatim — no blending, no falloff — so
+/// color propagates unchanged no matter how many rings it travels.
+///
+/// # Layout contracts
+///
+/// - `src_tex` is a read-only `texture_2d<f32>` over an `Rgba8Unorm`
+///   texture, sampled with `textureLoad` at integer texel coordinates (no
+///   sampler, no filtering — filtering would smear island colors across UV
+///   seams, the same reason `CURVATURE_BAKE_SHADER` uses `textureLoad`). The
+///   Rust side must create the source texture with
+///   `TEXTURE_BINDING` usage; the `BakeTarget` textures it ping-pongs
+///   between already carry that flag via `PaintTarget`.
+/// - `dst_tex` is a write-only `Rgba8Unorm` storage texture (core WebGPU,
+///   no device feature — the same reason [`AO_BAKE_SHADER`] uses `write`,
+///   not `read_write`).
+/// - `dims` is a `vec2<u32>` uniform holding the target width/height, used
+///   only to clamp the 8-neighborhood against the texture edges (no wrap).
+/// - No other state: no triangle buffer, no position/normal inputs.
+///
+/// # Dispatch + workgroup shape
+///
+/// One workgroup (`@workgroup_size(1)`) per texel, dispatched as
+/// `dispatch_workgroups(width, height, 1)`, so `workgroup_id.xy` is directly
+/// the texel coordinate into both textures — the same "one workgroup per
+/// texel" shape as `AO_BAKE_SHADER::cs_main_from_position` and the
+/// curvature/thickness passes, minus any ray loop (per-texel work here is
+/// nine `textureLoad`s, trivially serial).
+///
+/// # Known artifact: thin diagonal streaks from first-found tie-breaking
+///
+/// With binary coverage (alpha `0` or `1` — everything the bake passes and
+/// this pass itself produce), every covered neighbor ties at `1.0` and the
+/// strict-`>` comparison keeps the first in scan order (top-left row-major:
+/// `(-1,-1)` first, `(1,1)` last). Along diagonal fronts this biases donor
+/// choice toward the top-left, leaving faint diagonal streaks in the padded
+/// margin where two fronts meet. Acceptable for this slice — Substance's
+/// dilator shows the same streaking — and confined to the margin (covered
+/// texels copy through untouched, so source pixels are never altered).
+pub const DILATE_BAKE_SHADER: &str = r#"
+struct DilateDims {
+    dims: vec2<u32>,
+};
+
+@group(0) @binding(0) var src_tex: texture_2d<f32>;
+@group(0) @binding(1) var dst_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var<uniform> dilate_dims: DilateDims;
+
+@compute @workgroup_size(1)
+fn cs_main(@builtin(workgroup_id) workgroup_id: vec3<u32>) {
+    let coord = vec2<i32>(workgroup_id.xy);
+    let center = textureLoad(src_tex, coord, 0);
+    if (center.w > 0.0) {
+        textureStore(dst_tex, coord, center);
+        return;
+    }
+
+    let dims = vec2<i32>(dilate_dims.dims);
+    var best_rgb = vec3<f32>(0.0, 0.0, 0.0);
+    var best_a = 0.0;
+    for (var dy: i32 = -1; dy <= 1; dy = dy + 1) {
+        for (var dx: i32 = -1; dx <= 1; dx = dx + 1) {
+            if (dx == 0 && dy == 0) {
+                continue;
+            }
+            let nc = coord + vec2<i32>(dx, dy);
+            if (nc.x < 0 || nc.y < 0 || nc.x >= dims.x || nc.y >= dims.y) {
+                continue;
+            }
+            let s = textureLoad(src_tex, nc, 0);
+            // Strict `>`: ties keep the first donor found in scan order
+            // (top-left row-major), giving deterministic output — see this
+            // constant's "diagonal streaks" doc comment.
+            if (s.w > 0.0 && s.w > best_a) {
+                best_a = s.w;
+                best_rgb = s.xyz;
+            }
+        }
+    }
+
+    if (best_a > 0.0) {
+        // Full coverage alpha: the next ping-pong step must read this
+        // texel as covered as if it were original island (see this
+        // constant's "chain propagation" doc comment).
+        textureStore(dst_tex, coord, vec4<f32>(best_rgb, 1.0));
+    } else {
+        textureStore(dst_tex, coord, vec4<f32>(0.0, 0.0, 0.0, 0.0));
+    }
+}
+"#;

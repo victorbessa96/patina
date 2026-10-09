@@ -7,11 +7,13 @@
 
 pub mod ao;
 pub mod curvature;
+pub mod dilation;
 pub mod position;
 pub mod thickness;
 
 pub use ao::{AoBakeError, AoBakeParams, BakeTarget, PlaneDesc};
 pub use curvature::{CurvatureBakeError, CurvatureParams};
+pub use dilation::{DilateError, DilateParams};
 pub use thickness::{ThicknessBakeError, ThicknessParams};
 
 /// The bake map types, named per Substance conventions for the
