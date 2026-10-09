@@ -8,9 +8,11 @@
 pub mod ao;
 pub mod curvature;
 pub mod position;
+pub mod thickness;
 
 pub use ao::{AoBakeError, AoBakeParams, BakeTarget, PlaneDesc};
 pub use curvature::{CurvatureBakeError, CurvatureParams};
+pub use thickness::{ThicknessBakeError, ThicknessParams};
 
 /// The bake map types, named per Substance conventions for the
 /// `TextureSetName_map` import naming (requirements §7).

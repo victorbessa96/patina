@@ -878,10 +878,11 @@ mod tests {
                 .chunks_exact(4)
                 .any(|px| px[0] > 0 || px[1] > 0 || px[2] > 0);
             assert!(nonzero, "OpenPBR default render must be non-zero");
-            // Energy sanity: no channel exceeds 255 (+1 rounding).
-            for px in bytes.chunks_exact(4) {
-                assert!(px[0] <= 255 && px[1] <= 255 && px[2] <= 255);
-            }
+            // Energy sanity note: channels are u8 and in-range by
+            // construction; a NaN leak surfaces as saturation, which
+            // the nonzero check plus the live-render tests would
+            // catch as a pixel-level anomaly. No vacuous range
+            // assertion here (clippy: absurd_extreme_comparisons).
         }
 
         #[test]

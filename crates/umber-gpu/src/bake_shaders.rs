@@ -648,3 +648,227 @@ fn cs_main(@builtin(workgroup_id) workgroup_id: vec3<u32>) {
     textureStore(out_tex, coord, vec4<f32>(g, g, g, 1.0));
 }
 "#;
+
+/// Thickness (local solid depth) estimation by inward hemisphere raycasting:
+/// one workgroup per output texel, casting rays *into* the mesh and recording
+/// the nearest opposite-face hit.
+///
+/// # Estimator
+///
+/// Per covered texel, over `params.rays` deterministic stratified hemisphere
+/// directions (the same `hemisphere_sample` as [`AO_BAKE_SHADER`], steered by
+/// the same Duff-et-al. `orthonormal_basis` tangent frame from the position
+/// pass's per-texel normal), pointed into the surface — i.e. around the
+/// *negative* normal instead of [`AO_BAKE_SHADER`]'s outward `+normal`
+/// hemisphere:
+///
+/// ```text
+/// min_dist = min over rays, over triangles of hit t in (EPS, max_distance)
+/// thickness = clamp(min_dist / max_distance, 0, 1)
+/// ```
+///
+/// A per-ray miss contributes nothing (that ray simply never lowers
+/// `min_dist`, which starts at `max_distance`); a texel whose *every* ray
+/// misses therefore bakes `1.0`. That is a deliberate convention, not a
+/// fallback: a miss means the ray escaped through open geometry, so the
+/// surface reads as "no opposite face within range" — i.e. maximally thick
+/// (see `umber-bake/LANDING_NOTES_THICKNESS.md` for the open-mesh artifact
+/// this implies). Output is grayscale `rgb = thickness`, `a = coverage
+/// (`1.0` covered, `0.0` uncovered).
+///
+/// Uncovered texels (the position pass's coverage flag `<= 0.5`) skip the
+/// raycast entirely and write `(0, 0, 0, 0)`, distinguishable on readback
+/// from a covered-but-maximally-thick texel (`(1, 1, 1, 1)`) by alpha alone
+/// — the same alpha convention `AO_BAKE_SHADER::cs_main_from_position` uses.
+///
+/// # Why into the mesh, and where the ray starts
+///
+/// `ray_origin = surface_pos - bias * normal` (nudged *inside* along the
+/// negative normal, the mirror of AO's outward `+ bias * normal`). Starting
+/// outside and casting inward would cross the originating surface itself at
+/// `t ~= bias` and bake a false near-zero thickness; starting just inside
+/// puts the origin triangle behind every inward ray so only genuine
+/// opposite faces lower `min_dist`. With `bias == 0` the origin sits exactly
+/// on the surface and the `(EPS, max_t)` open-interval guard in
+/// `ray_hit_distance` still rejects the self-hit at `t ~= 0`.
+///
+/// # Layout contracts
+///
+/// - `Tri` must match `umber_bake::thickness`'s private `GpuTriangle`
+///   byte-for-byte (four `vec4<f32>`s, identical to `AO_BAKE_SHADER`'s `Tri`
+///   — the same brute-force triangle list, no BVH, same perf budget of
+///   `texels * rays * triangle_count`; see [`AO_BAKE_SHADER`]'s doc comment).
+/// - `ThicknessParams` must match `umber_bake::thickness`'s private
+///   `ThicknessUniform` byte-for-byte (`rays`, `max_distance`, `bias`,
+///   `tri_count` — four 4-byte scalars, 16 bytes total, already a multiple
+///   of WGSL's 16-byte uniform-struct alignment, so no padding field is
+///   needed).
+/// - `position_tex`/`normal_tex` are the two `Rgba32Float` outputs of
+///   `POSITION_BAKE_SHADER`'s `cs_main`, bound read-only and sampled with
+///   `textureLoad` at integer texel coordinates (no sampler, no filtering).
+///   Binding numbers (`0/1/2` plus `4/5`) deliberately mirror
+///   `AO_BAKE_SHADER::cs_main_from_position`'s set (which skips `3`, the
+///   plane-path `dims` uniform this mesh-fed pass has no use for) so the
+///   two raycast passes stay grep-comparable.
+/// - `thickness_tex` is a write-only `Rgba8Unorm` storage texture (core
+///   WebGPU, no device feature — the same reason [`AO_BAKE_SHADER`] uses
+///   `write`, not `read_write`).
+///
+/// # Dispatch + workgroup shape
+///
+/// One workgroup (`@workgroup_size(1)`) per texel, dispatched as
+/// `dispatch_workgroups(width, height, 1)`, so `workgroup_id.xy` is directly
+/// the texel coordinate into all three textures — the same "one workgroup
+/// per texel" shape as `AO_BAKE_SHADER::cs_main_from_position`, minus the
+/// 64-invocation fan-out. A 64-wide workgroup with an atomic counter works
+/// for AO's hit *count* (`atomic<u32>`), but a minimum *distance* is a float
+/// with no atomic-min in core WGSL; fanning out would need a shared-memory
+/// array plus a manual reduction for no real win (per-texel work here is
+/// `rays * tri_count` brute-force tests, trivially serial at this slice's
+/// mesh-size budget). Each texel's ray loop is therefore serial, and the
+/// output stays deterministic texel-to-texel like AO's fixed sample set.
+pub const THICKNESS_BAKE_SHADER: &str = r#"
+struct Tri {
+    v0: vec4<f32>,
+    v1: vec4<f32>,
+    v2: vec4<f32>,
+    normal: vec4<f32>,
+};
+
+struct ThicknessParams {
+    rays: u32,
+    max_distance: f32,
+    bias: f32,
+    tri_count: u32,
+};
+
+@group(0) @binding(0) var<storage, read> triangles: array<Tri>;
+@group(0) @binding(1) var thickness_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var<uniform> params: ThicknessParams;
+@group(0) @binding(4) var position_tex: texture_2d<f32>;
+@group(0) @binding(5) var normal_tex: texture_2d<f32>;
+
+const PI: f32 = 3.14159265358979;
+const GOLDEN_CONJ: f32 = 0.6180339887498949;
+const EPS: f32 = 1e-6;
+
+/// Deterministic hemisphere direction for ray `i` of `n`, in a local frame
+/// where +Z is the hemisphere pole: `cos(theta)` is stratified evenly
+/// across `[0, 1)` (uniform over solid angle) and `phi` walks the golden
+/// angle. Verbatim the same sample set as `AO_BAKE_SHADER::hemisphere_sample`
+/// (fixed, not per-texel jittered) so thickness inherits AO's determinism;
+/// the caller negates the pole (`- local_dir.z * normal`) to point the
+/// hemisphere into the mesh.
+fn hemisphere_sample(i: u32, n: u32) -> vec3<f32> {
+    let nf = max(f32(n), 1.0);
+    let cos_theta = 1.0 - (f32(i) + 0.5) / nf;
+    let sin_theta = sqrt(max(0.0, 1.0 - cos_theta * cos_theta));
+    let phi = 2.0 * PI * fract(f32(i) * GOLDEN_CONJ);
+    return vec3<f32>(sin_theta * cos(phi), sin_theta * sin(phi), cos_theta);
+}
+
+/// Möller–Trumbore ray-triangle intersection returning the hit distance.
+/// Double-sided (no backface culling, matching `AO_BAKE_SHADER`). Returns the
+/// hit parameter `t` iff it lands in the open interval `(EPS, max_t`,
+/// otherwise `-1.0` — the distance-returning analog of AO's boolean
+/// `hits_triangle`, so the caller can keep the minimum across rays.
+fn ray_hit_distance(
+    orig: vec3<f32>,
+    dir: vec3<f32>,
+    v0: vec3<f32>,
+    v1: vec3<f32>,
+    v2: vec3<f32>,
+    max_t: f32,
+) -> f32 {
+    let e1 = v1 - v0;
+    let e2 = v2 - v0;
+    let h = cross(dir, e2);
+    let a = dot(e1, h);
+    if (abs(a) < EPS) {
+        return -1.0;
+    }
+    let f = 1.0 / a;
+    let s = orig - v0;
+    let u = f * dot(s, h);
+    if (u < 0.0 || u > 1.0) {
+        return -1.0;
+    }
+    let q = cross(s, e1);
+    let v = f * dot(dir, q);
+    if (v < 0.0 || u + v > 1.0) {
+        return -1.0;
+    }
+    let t = f * dot(e2, q);
+    if (t > EPS && t < max_t) {
+        return t;
+    }
+    return -1.0;
+}
+
+struct Basis {
+    b1: vec3<f32>,
+    b2: vec3<f32>,
+};
+
+/// Branchless tangent-frame construction from a unit normal (Duff et al.,
+/// "Building an Orthonormal Basis, Revisited", JCGT 2017). Verbatim the same
+/// frame as `AO_BAKE_SHADER::orthonormal_basis`: any orthonormal frame works
+/// (thickness, like AO, is isotropic in `phi`), this one was picked for being
+/// branchless and stable at the south pole.
+fn orthonormal_basis(n: vec3<f32>) -> Basis {
+    let sign_z = select(-1.0, 1.0, n.z >= 0.0);
+    let a = -1.0 / (sign_z + n.z);
+    let b = n.x * n.y * a;
+    return Basis(
+        vec3<f32>(1.0 + sign_z * n.x * n.x * a, sign_z * b, -sign_z * n.x),
+        vec3<f32>(b, sign_z + n.y * n.y * a, -n.y),
+    );
+}
+
+/// Mesh-fed thickness: per-texel ray origin and tangent frame come from
+/// `position_tex`/`normal_tex` (the two outputs of `POSITION_BAKE_SHADER`'s
+/// `cs_main`). `position_tex`'s alpha channel is the position pass's coverage
+/// flag: `0.0` means no UV triangle covered this texel, so there is no surface
+/// to cast inward from — the texel writes `(0, 0, 0, 0)` with no raycast.
+/// Otherwise every ray is cast around the *negative* normal, the minimum hit
+/// distance across the whole ray set is normalized by `max_distance`, and the
+/// result is written grayscale with full coverage alpha. A texel whose rays
+/// all miss writes `1.0` (no opposite face within range reads as maximally
+/// thick — see this constant's doc comment).
+@compute @workgroup_size(1)
+fn cs_main(@builtin(workgroup_id) workgroup_id: vec3<u32>) {
+    let coord = vec2<i32>(workgroup_id.xy);
+    let sample = textureLoad(position_tex, coord, 0);
+    if (sample.w <= 0.5) {
+        textureStore(thickness_tex, coord, vec4<f32>(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    let surface_pos = sample.xyz;
+    let normal = normalize(textureLoad(normal_tex, coord, 0).xyz);
+    let basis = orthonormal_basis(normal);
+    let ray_origin = surface_pos - params.bias * normal;
+
+    var min_dist = params.max_distance;
+    let n = params.rays;
+    for (var i: u32 = 0u; i < n; i = i + 1u) {
+        let local_dir = hemisphere_sample(i, n);
+        let dir = normalize(
+            local_dir.x * basis.b1 + local_dir.y * basis.b2 - local_dir.z * normal
+        );
+        for (var t: u32 = 0u; t < params.tri_count; t = t + 1u) {
+            let tri = triangles[t];
+            let hit = ray_hit_distance(
+                ray_origin, dir, tri.v0.xyz, tri.v1.xyz, tri.v2.xyz, params.max_distance
+            );
+            if (hit > 0.0 && hit < min_dist) {
+                min_dist = hit;
+            }
+        }
+    }
+
+    let range = max(params.max_distance, EPS);
+    let thickness = clamp(min_dist / range, 0.0, 1.0);
+    textureStore(thickness_tex, coord, vec4<f32>(thickness, thickness, thickness, 1.0));
+}
+"#;
