@@ -166,7 +166,7 @@ impl TextureDisplay {
                         },
                         wgpu::VertexAttribute {
                             format: wgpu::VertexFormat::Float32x2,
-                            offset: 16,
+                            offset: 8,
                             shader_location: 1,
                         },
                     ],
