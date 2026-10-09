@@ -148,6 +148,16 @@ impl<C: Command> UndoStack<C> {
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
+
+    /// Number of entries currently held in the undo journal.
+    pub fn len(&self) -> usize {
+        self.undo.len()
+    }
+
+    /// Whether the journal holds no entries.
+    pub fn is_empty(&self) -> bool {
+        self.undo.is_empty()
+    }
 }
 
 #[cfg(test)]

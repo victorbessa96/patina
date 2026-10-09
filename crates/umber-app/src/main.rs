@@ -13,6 +13,7 @@
 //! paint-thread + ring-buffer architecture (docs/specs/architecture.md)
 //! lands with the paint engine.
 
+mod document;
 mod paint_state;
 mod uv_view;
 mod viewport;
@@ -47,6 +48,7 @@ struct PanelViewer<'a> {
     mesh: Option<&'a umber_mesh::MeshData>,
     gpu: &'a GpuContext,
     paint: Option<&'a mut paint_state::PaintState>,
+    doc: &'a mut document::Document,
 }
 
 impl TabViewer for PanelViewer<'_> {
@@ -72,18 +74,14 @@ impl TabViewer for PanelViewer<'_> {
         match tab {
             Panel::Viewport => self.viewport.ui(ui, self.gpu),
             Panel::UvView => self.uv_view.ui(ui, self.mesh, self.gpu, self.paint.take()),
-            Panel::LayerStack => {
-                ui.label("Layer stack (Wave 2)");
-            }
+            Panel::LayerStack => document::layers_ui(ui, self.doc),
             Panel::Properties => {
                 ui.label("Properties (Wave 2)");
             }
             Panel::Assets => {
                 ui.label("Assets / shelf (Wave 4+)");
             }
-            Panel::History => {
-                ui.label("History (Wave 2)");
-            }
+            Panel::History => document::history_ui(ui, self.doc),
             Panel::TextureSets => {
                 ui.label("Texture sets (Wave 2)");
             }
@@ -101,6 +99,8 @@ pub struct AppState {
     /// The paint session; `None` when the device lacks the storage-texture
     /// feature (constructed in `UmberApp::new`, falls back to view-only).
     pub paint: Option<paint_state::PaintState>,
+    /// The open document: layers + undo journal.
+    pub doc: document::Document,
 }
 
 /// The eframe app.
@@ -209,6 +209,7 @@ impl eframe::App for UmberApp {
                 mesh: self.state.mesh.as_ref(),
                 gpu: &self.gpu,
                 paint: self.state.paint.as_mut(),
+                doc: &mut self.state.doc,
             };
             DockArea::new(&mut self.dock)
                 .style(Style::from_egui(ui.style()))

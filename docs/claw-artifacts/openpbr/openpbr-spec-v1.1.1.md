@@ -1,0 +1,1378 @@
+$$\\newcommand{\\n}{\\hat{n}}\\newcommand{\\thetai}{\\theta\_\\mathrm{i}}\\newcommand{\\thetao}{\\theta\_\\mathrm{o}}\\newcommand{\\d}\[1\]{\\mathrm{d}#1}\\newcommand{\\w}{\\hat{\\omega}}\\newcommand{\\wi}{\\w\_\\mathrm{i}}\\newcommand{\\wo}{\\w\_\\mathrm{o}}\\newcommand{\\wh}{\\w\_\\mathrm{h}}\\newcommand{\\Li}{L\_\\mathrm{i}}\\newcommand{\\Lo}{L\_\\mathrm{o}}\\newcommand{\\Le}{L\_\\mathrm{e}}\\newcommand{\\Lr}{L\_\\mathrm{r}}\\newcommand{\\Lt}{L\_\\mathrm{t}}\\newcommand{\\O}{\\mathrm{O}}\\newcommand{\\degrees}{{^{\\large\\circ}}}\\newcommand{\\T}{\\mathsf{T}}\\newcommand{\\mathset}\[1\]{\\mathbb{#1}}\\newcommand{\\Real}{\\mathset{R}}\\newcommand{\\Integer}{\\mathset{Z}}\\newcommand{\\Boolean}{\\mathset{B}}\\newcommand{\\Complex}{\\mathset{C}}\\newcommand{\\un}\[1\]{\\,\\mathrm{#1}}$$   [![homepage](https://academysoftwarefoundation.github.io/OpenPBR/images/logo/openpbr-logo-glyph.svg)](https://github.com/AcademySoftwareFoundation/OpenPBR)
+   [![homepage](https://academysoftwarefoundation.github.io/OpenPBR/images/logo/openpbr-logo-text.svg)](https://github.com/AcademySoftwareFoundation/OpenPBR)
+
+_OpenPBR Surface specification v1.1.1, 2026-04-17._
+
+  
+This document is a specification of a surface shading model intended as a standard for computer graphics: the OpenPBR Surface model. Designed as an über-shader, it aims to be capable of accurately modeling the vast majority of CG materials used in practical visual effects and feature animation productions. The model has been developed as a synthesis of the Autodesk Standard Surface and the Adobe Standard Material models.
+
+|     |     |
+| --- | --- |
+| [![](https://academysoftwarefoundation.github.io/OpenPBR/images/OpenPBR_title.jpg)](https://academysoftwarefoundation.github.io/OpenPBR/images/OpenPBR_title.jpg) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/ShaderPlayground_OpenPBR_meetMAT.jpg)](https://academysoftwarefoundation.github.io/OpenPBR/images/ShaderPlayground_OpenPBR_meetMAT.jpg) |
+| [![](https://academysoftwarefoundation.github.io/OpenPBR/images/ShaderPlayground_OpenPBR_topDown.jpg)](https://academysoftwarefoundation.github.io/OpenPBR/images/ShaderPlayground_OpenPBR_topDown.jpg) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/ShaderPlayground_OpenPBR_scissorsMug.jpg)](https://academysoftwarefoundation.github.io/OpenPBR/images/ShaderPlayground_OpenPBR_scissorsMug.jpg) |
+
+[![](https://academysoftwarefoundation.github.io/OpenPBR/dummy)](https://academysoftwarefoundation.github.io/OpenPBR/dummy)
+
+Shader Playground, rendered in Arnold for Maya, using OpenPBR Surface.
+
+Contents
+
+[1  Historical background and objectives](https://academysoftwarefoundation.github.io/OpenPBR/#historicalbackgroundandobjectives)
+  
+[2  Formalism](https://academysoftwarefoundation.github.io/OpenPBR/#formalism)
+  
+  [2.1  Slabs](https://academysoftwarefoundation.github.io/OpenPBR/#formalism/slabs)
+  
+  [2.2  Layering](https://academysoftwarefoundation.github.io/OpenPBR/#formalism/layering)
+  
+  [2.3  Mixing](https://academysoftwarefoundation.github.io/OpenPBR/#formalism/mixing)
+  
+  [2.4  Emission model](https://academysoftwarefoundation.github.io/OpenPBR/#formalism/emissionmodel)
+  
+  [2.5  Metadata](https://academysoftwarefoundation.github.io/OpenPBR/#formalism/metadata)
+  
+[3  Model](https://academysoftwarefoundation.github.io/OpenPBR/#model)
+  
+  [3.1  Microfacet model](https://academysoftwarefoundation.github.io/OpenPBR/#model/microfacetmodel)
+  
+  [3.2  Base Substrate](https://academysoftwarefoundation.github.io/OpenPBR/#model/basesubstrate)
+  
+    [3.2.1  Metal](https://academysoftwarefoundation.github.io/OpenPBR/#model/basesubstrate/metal)
+  
+    [3.2.2  Glossy-diffuse](https://academysoftwarefoundation.github.io/OpenPBR/#model/basesubstrate/glossy-diffuse)
+  
+    [3.2.3  Subsurface](https://academysoftwarefoundation.github.io/OpenPBR/#model/basesubstrate/subsurface)
+  
+    [3.2.4  Translucent base](https://academysoftwarefoundation.github.io/OpenPBR/#model/basesubstrate/translucentbase)
+  
+  [3.3  Thin-film iridescence](https://academysoftwarefoundation.github.io/OpenPBR/#model/thin-filmiridescence)
+  
+  [3.4  Coat](https://academysoftwarefoundation.github.io/OpenPBR/#model/coat)
+  
+    [3.4.1  Darkening](https://academysoftwarefoundation.github.io/OpenPBR/#model/coat/darkening)
+  
+    [3.4.2  View-dependent absorption](https://academysoftwarefoundation.github.io/OpenPBR/#model/coat/view-dependentabsorption)
+  
+    [3.4.3  Roughening](https://academysoftwarefoundation.github.io/OpenPBR/#model/coat/roughening)
+  
+    [3.4.4  Total internal reflection](https://academysoftwarefoundation.github.io/OpenPBR/#model/coat/totalinternalreflection)
+  
+  [3.5  Fuzz](https://academysoftwarefoundation.github.io/OpenPBR/#model/fuzz)
+  
+  [3.6  Emission](https://academysoftwarefoundation.github.io/OpenPBR/#model/emission)
+  
+  [3.7  Opacity / Transparency](https://academysoftwarefoundation.github.io/OpenPBR/#model/opacity/transparency)
+  
+  [3.8  Normal maps](https://academysoftwarefoundation.github.io/OpenPBR/#model/normalmaps)
+  
+  [3.9  Thin-walled mode](https://academysoftwarefoundation.github.io/OpenPBR/#model/thin-walledmode)
+  
+  [3.10  Reduction to a mixture of lobes](https://academysoftwarefoundation.github.io/OpenPBR/#model/reductiontoamixtureoflobes)
+  
+    [3.10.1  Non-thin-walled mode](https://academysoftwarefoundation.github.io/OpenPBR/#model/reductiontoamixtureoflobes/non-thin-walledmode)
+  
+    [3.10.2  Thin-walled mode](https://academysoftwarefoundation.github.io/OpenPBR/#model/reductiontoamixtureoflobes/thin-walledmode)
+  
+    [3.10.3  Entering versus exiting](https://academysoftwarefoundation.github.io/OpenPBR/#model/reductiontoamixtureoflobes/enteringversusexiting)
+  
+  [3.11  White furnace testing](https://academysoftwarefoundation.github.io/OpenPBR/#model/whitefurnacetesting)
+  
+  [3.12  MaterialX reference implementation](https://academysoftwarefoundation.github.io/OpenPBR/#model/materialxreferenceimplementation)
+  
+[4  Flexibility of implementation](https://academysoftwarefoundation.github.io/OpenPBR/#flexibilityofimplementation)
+  
+[5  Parameter reference](https://academysoftwarefoundation.github.io/OpenPBR/#parameterreference)
+  
+[6  Acknowledgements](https://academysoftwarefoundation.github.io/OpenPBR/#acknowledgements)
+  
+[7  References](https://academysoftwarefoundation.github.io/OpenPBR/#references)
+  
+
+   
+
+Historical background and objectives
+====================================
+
+Interchange of computer graphics scene assets remains a significant problem, especially with regard to surface appearance. Different renderers and 3D engines use different shading systems, shading languages, and fixed-function pipelines which are not easily interoperable. Furthermore, accurately modeling surface appearance remains a complex and pertinent problem and is a topic of active scientific research. Despite this, there is a strong need _today_ for industries engaged in physically based rendering (both offline and real-time) to find a standardized material model that covers the most common use cases in typical workflows.
+
+Over the years, certain de facto standard appearance definition frameworks have emerged as different vendors have come to the consensus of separating the definition of materials from the light transport simulation in the scene. Such general frameworks include MaterialX \[[Smythe2016](https://academysoftwarefoundation.github.io/OpenPBR/#citation-smythe2016)\
+\], Open Shading Language (OSL) \[[Gritz2010](https://academysoftwarefoundation.github.io/OpenPBR/#citation-gritz2010)\
+\], and Material Definition Language (MDL) \[[Kettner2015](https://academysoftwarefoundation.github.io/OpenPBR/#citation-kettner2015)\
+\], which allow specifying the material as a combination of primitive surface reflectance models. These frameworks alone however are not sufficient for look development by end users, who should not be expected to build complex surface shaders from the ground up for routine tasks. Instead it is much more convenient in practice for them to work with a standard "über-shader” parametrization, i.e. a single monolithic material definition covering a wide range of cases, with a well-defined set of parameters that can be tweaked to represent most real-world (as well as imaginary) materials.
+
+There have been various previous proposals for such an über-shader, such as Disney's Principled Shader \[[Burley2012](https://academysoftwarefoundation.github.io/OpenPBR/#citation-burley2012)\
+\], Allegorithmic's PBR shading model \[[McDermott2018](https://academysoftwarefoundation.github.io/OpenPBR/#citation-mcdermott2018)\
+\], and most recently the Autodesk Standard Surface shader \[[Georgiev2019](https://academysoftwarefoundation.github.io/OpenPBR/#citation-georgiev2019)\
+\] and the Adobe Standard Material \[[Kutz2021](https://academysoftwarefoundation.github.io/OpenPBR/#citation-kutz2021)\
+\]. Autodesk Standard Surface has strong spiritual predecessors in Anders Langlands' alSurface \[[Langlands2014](https://academysoftwarefoundation.github.io/OpenPBR/#citation-langlands2014)\
+\] and Autodesk 3ds Max's Physical Material \[[Andersson2016](https://academysoftwarefoundation.github.io/OpenPBR/#citation-andersson2016)\
+\]. 3ds Max's Physical Material in turn was strongly inspired by Allegorithmic's model, Disney's Principled Shader, and general industry trends in several real-time 3D engines.
+
+However each of these models originated from a single company and was designed primarily for the needs of that company's particular software products and customers. There is thus a need for a specification which is developed as a collaboration between all the significant players in the industry, as an open standard, which is flexible enough to accommodate the common use cases industry-wide. It should incorporate the experience of artists, software developers, and product managers as to what is genuinely useful in production. To this end, the model defined in this spec has been developed as a collaboration between Autodesk and Adobe, with input from multiple other industry partners. It is an open standard hosted by the Academy Software Foundation (ASWF).
+
+OpenPBR is intended to be a common interface between products, as well as something practical that works well and looks plausible for most day-to-day use cases. For the more specialized use cases it does not cover (for example very high-end skin, hair, cloth or volume shading), one may need to use a renderer-specific shader, or build a bespoke shading network. We aim for the overall behavior to be simple, logical, intuitive, and understandable, so that users can become comfortable and familiar with it, while also being grounded in physically-based rendering.
+
+We thus adopt a specific form of material structure that has proved useful as a general purpose model in media and entertainment ([Figure 1](https://academysoftwarefoundation.github.io/OpenPBR/#figure_diagram_model)
+). In outline the structure consists of:
+
+*   A [base substrate](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/basesubstrate)
+     made of a mixture of [metal](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/basesubstrate/metal)
+     or dielectric. The interface (dielectric or metal) of this base layer produces the primary specular reflection lobe. The dielectric base represents either of three components, that can be statistically mixed:
+    1.  [Glossy-diffuse](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/basesubstrate/glossy-diffuse)
+        : dielectric with opaque internal media, e.g. wood, granite, concrete, cardboard, and wall-paint.
+    2.  [Subsurface](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/basesubstrate/subsurface)
+        : dielectric with dense highly scattering internal media, e.g. plastic, marble, skin, vegetation, and food.
+    3.  [Translucent-base](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/basesubstrate/translucentbase)
+        : dielectric with translucent internal media, e.g. glass, crystals, and liquids.
+*   [Coat](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/coat)
+    : An optional layer of dielectric, which may have an absorbing medium, acting as a coating on top of the base substrate. The dielectric interface of this coat layer provides a secondary specular lobe.
+*   [Fuzz](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/fuzz)
+    : An optional layer representing the reflection from micro-fibers (such as fine hair, peach fuzz, textile strands, and dust grains) on top of everything else.
+    
+
+[![](https://academysoftwarefoundation.github.io/OpenPBR/images/model_schematic2.svg)](https://academysoftwarefoundation.github.io/OpenPBR/images/model_schematic2.svg)
+
+ **Figure 1:** Schematic illustration of the idealized physical material that our shader models. Horizontal stacking of slabs represents statistical mixture and vertical stacking represents layering.
+
+We define this physical material structure in detail using a simple [formalism](https://academysoftwarefoundation.github.io/OpenPBR/index.html#formalism)
+ involving slabs of material composed via layering and mixing operations. This formalism is general enough to describe arbitrarily complex materials, but we restrict its usage here to defining the particular material structure illustrated above.
+
+Unlike previous models such as Autodesk Standard Surface \[[Georgiev2019](https://academysoftwarefoundation.github.io/OpenPBR/#citation-georgiev2019)\
+\], we define the model by describing the physical structure as unambiguously as possible, rather than by specifying a particular form of implementation. At the level of computer graphics, the model is completely physically specified if the BSDF (Bidirectional Scattering Distribution Function) of each slab interface, and the volumetric properties of each slab medium, are specified. The ground truth appearance of the model is then _defined_ to be given by the BSDF obtained by physical light transport through the whole structure of component slabs. Implementations thus have an unambiguous goal appearance which they can reason about and approximate logically, to a greater or lesser degree of fidelity, on the basis of physics and light transport. The closer an implementation is to reproducing this ground truth physical appearance, the better it conforms to the specification.
+
+For each component slab of the structure, we define a set of artistically intuitive parameters which control the underlying physical properties, and describe in detail how the properties are determined from the parameters. Rather than providing parameters for every conceivable case, we intentionally try to boil the set of parameters down to only those that are most useful in practice. The parameters are designed to be intuitive but also to ensure that the users work within the bounds of what is physically plausible as much as possible. See the [Parameter reference](https://academysoftwarefoundation.github.io/OpenPBR/#parameterreference)
+ section for the complete list.
+
+   
+
+Formalism
+=========
+
+The light scattering characteristics at the surfaces of basic materials like metal, glass, or wall paint are well studied and can be accurately represented via simple analytical models. Other materials, such as finished wood, cloth, or skin, comprise semi-transparent layers of matter stacked on top of each other. The more intricate behavior of such materials is the result of light scattering at the interfaces between these layers and propagating through them. Materials are also heterogeneous across the surface, for example a rusty metal surface has regions with bare specular metal and dull iron oxide, and the transition between these materials may be abrupt or a smooth blend.
+
+To model such materials, we introduce a simple formalism which describes an abstraction consisting of [slabs](https://academysoftwarefoundation.github.io/OpenPBR/index.html#formalism/slabs)
+ of homogeneous dielectric or conductor, bounded by well-defined BSDFs. Two basic operations on these slabs — [layering](https://academysoftwarefoundation.github.io/OpenPBR/index.html#formalism/layering)
+ and statistical [mixing](https://academysoftwarefoundation.github.io/OpenPBR/index.html#formalism/mixing)
+ — then provide a formal language for constructing a well-defined physical material model.
+
+   
+
+Slabs
+-----
+
+Each slab consists of a homogeneous dielectric or conducting medium \\(V\\) with conceptually unbounded extent horizontally and a finite vertical extent, bounded above by a surface with a given interface BSDF \\(f\\). We denote a general slab therefore as follows: \\begin{equation} \\quad S = \\mathrm{Slab}(f, V) \\end{equation} where \\(f\\) is the interface BSDF and \\(V\\) is the medium VDF (as defined below). To clarify the relationships, we represent slabs diagrammatically in a block form as follows: fV
+
+We work in the local space of a 2d surface, so horizontal refers to directions in the local plane, and vertical means aligned with the outward shading normal. The direction towards the top of the material is understood to align with the local shading normal at the current light transport vertex. In order to make the light transport tractable we consider that on the mesoscopic scale of the depth of the slabs in the structure, the slabs are locally homogeneous. On a larger macroscopic scale, the properties of the slabs, and the overall structure of the material, will vary over the surface.
+
+We do not dictate how the surfaces of the slab are described physically at the microscopic level, but at the level of the mesoscopic slab description they are flat interfaces with a known BSDF. We will be as specific as possible about the chosen functional form of the BSDFs, though in most cases we refer to the literature for the full details of the implementation. The BSDFs are mostly [microfacet models](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/microfacetmodel)
+ (apart from the [fuzz](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/fuzz)
+ BSDF which derives from microflake theory).
+
+Each BSDF is a function of input and output directions \\(f(\\omega\_i, \\omega\_o)\\) where, following the usual convention, these both point away from the surface vertex with \\(\\omega\_o\\) in the direction of the outgoing light and \\(\\omega\_i\\) opposite to the direction of the incident light. Physically the BSDF should be energy conserving and reciprocal. Energy conservation of a BRDF[1](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-brdf)
+ \\(f(\\omega\_i, \\omega\_o)\\) amounts to the requirement that the _directional reflectance_ (or _albedo_) \\(E(\\omega\_o) \\le 1\\) for all output ray directions, where \\(E(\\omega\_o)\\) is defined as the integral of the BRDF over directions in the same hemisphere \\(\\mathcal{H}\_+\\) as \\(\\omega\_o\\) with projected solid angle measure: \\begin{equation} \\label{directional-reflectance-definition} E(\\omega\_o) \\equiv \\int\_{\\mathcal{H}\_+} f(\\omega\_i, \\omega\_o) \\,\\mathrm{d}\\omega^\\perp\_i \\ . \\end{equation} More generally, for transmissive BSDFs there is a similar constraint \\(E(\\omega\_o) + T(\\omega\_o)\\le 1\\) where the _directional transmittance_ \\(T(\\omega\_o)\\) is defined by integrating the BSDF over the opposite hemisphere \\(\\mathcal{H}\_-\\) to \\(\\omega\_o\\). All BSDFs used are energy conserving in this sense. A BSDF which in addition does not dissipate any energy, such as a dielectric interface or a diffuse surface with a white albedo, is said to be _energy-preserving_ and satisfies \\(E(\\omega\_o) + T(\\omega\_o) = 1\\).
+
+Reciprocity[2](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-reciprocity)
+ is the requirement that the BSDF is symmetric under interchange of the arguments, i.e. \\(\\omega\_i \\leftrightarrow \\omega\_o\\). In some cases this is relaxed and a non-reciprocal BSDF used for simplicity or efficiency, as in practice it does not lead to serious issues.
+
+If the slab is completely opaque (e.g. conducting or diffuse) we need only specify the surface BSDF \\(f\\), as the interior medium is irrelevant for light transport. If the slab is non-opaque, i.e. translucent, the interior medium \\(V\\) of the slab is taken to be a homogeneous dielectric which optionally contains a specified homogeneous volumetric medium (or “VDF”). By VDF we mean the set of quantities (in general spatially varying fields) which define a volumetric optical medium, i.e.
+
+*   the normalized phase function parameters
+*   the absorption and scattering coefficients (alternatively, extinction coefficient and scattering albedo)
+*   the index of refraction (IOR) and dispersion of the embedding dielectric medium
+
+We assume that the renderer is aware that the volumetric properties may vary from point to point, inherited from the surface parameters, and how the fields are “filled-in” in the space surrounding the surfaces is a matter for implementations to deal with.
+
+The medium \\(V\\) either specifies its own depth, or is a semi-infinite “bulk” volumetric medium at the bottom of the structure. We denote such a bulk medium conceptually unbounded below as \\(V^\\infty\\). This is an abstraction of course, where we understand that such a semi-infinite medium actually just represents the bottom layer of the local surface structure. The medium will most likely terminate somewhere but remote from the surface on the mesoscopic scale. Note that the BSDF of the bottom interface of a slab \\(S\\) of finite depth does not need to be specified, as it will be derivable from the BSDF of the underlying slab in combination with the properties of the medium of \\(S\\) (as discussed in the [Layering](https://academysoftwarefoundation.github.io/OpenPBR/#layering)
+ section).
+
+If the bounding BSDFs of a slab are completely non-transmissive and opaque (e.g. metallic or diffuse), the internal medium is irrelevant for light transport purposes. For convenience, it can be omitted: \\begin{equation} S\_\\mathrm{opaque} = \\mathrm{Slab}(f) \\ . \\end{equation}
+
+f\-\-\-\-\-\-\-\-\-
+
+A semi-infinite slab at the bottom of the material structure is denoted with a bulk medium \\(V^\\infty\\) which has no bottom interface: \\begin{equation} S\_\\mathrm{bulk} = \\mathrm{Slab}(f, V^\\infty) \\ . \\end{equation}
+
+fV∞\-\-\-\-\-\-\-\-\-
+
+For completeness, the absence of a slab (i.e. no surface or underlying medium), which corresponds just to the ambient dielectric medium, is denoted \\(\\mathrm{Slab}(\\emptyset)\\).
+
+A slab does not itself specify anything about other slabs in relation to itself (e.g. its substrate slab or overlying slab). The adjacent medium above and below the slab will depend on where it sits in the eventual layer structure. The ambient dielectric medium of the very top of the entire structure (and bottom if thin-walled) is also assumed to be given and unspecified by the model. If the renderer keeps track of the dielectric medium in which the surface is embedded (via a scheme such as “nested dielectrics” \[[Budge2002](https://academysoftwarefoundation.github.io/OpenPBR/#citation-budge2002)\
+\]) which may be the interior dielectric bulk of some transparent object in the scene such as a piece of glass or body of water, then the surrounding ambient medium is a dielectric whose IOR we denote \\(n\_\\mathrm{ambient}\\), or if dielectric medium tracking is not done then \\(n\_\\mathrm{ambient}\\) can be assumed to be 1 corresponding to air or vacuum.
+
+Given constituent slabs, we then build a more complex composite material by “vertically” [layering](https://academysoftwarefoundation.github.io/OpenPBR/index.html#formalism/layering)
+ and “horizontally” [mixing](https://academysoftwarefoundation.github.io/OpenPBR/index.html#formalism/mixing)
+ slabs, as described below.
+
+   
+
+Layering
+--------
+
+The layer operation generates a composite material by depositing a slab \\(S\_\\mathrm{coat} = \\mathrm{Slab}(f\_\\mathrm{coat}, V\_\\mathrm{coat})\\) on top of another substrate slab \\(S\_\\mathrm{sub} = \\mathrm{Slab}(f\_\\mathrm{sub}, V\_\\mathrm{sub})\\) or composite material, conceptually bonding the base of \\(S\_\\mathrm{coat}\\)'s dielectric medium to the surface of \\(S\_\\mathrm{sub}\\), so that \\(V\_\\mathrm{coat}\\) becomes the adjacent medium to the top interface of \\(S\_\\mathrm{sub}\\).
+
+The physical act of bringing the two independent slabs \\(S\_\\mathrm{sub}\\) and \\(S\_\\mathrm{coat}\\) together and bonding them produces a new composite material \\(L\\) which is “vertically” heterogeneous on the mesoscopic scale, denoted by: \\begin{equation} L = \\mathrm{\\mathbf{layer}}(S\_\\mathrm{sub}, S\_\\mathrm{coat}) \\ . \\end{equation}
+
+Diagrammatically, we represent the layering operation as putting the two slabs vertically adjacent, where one is to imagine the physical slabs of material being bonded at their top and bottom interfaces.
+
+fcoatScoatVcoatfcoatVcoatlayer(Ssub,Scoat)bondf'subfsubVsubSsubVsub
+
+It is understood that the BSDF \\(f^\\prime\_\\mathrm{sub}\\) at the new internal interface formed from the joining of the coat and substrate slabs is not necessarily the same as \\(f\_\\mathrm{sub}\\), but would be derivable from it by considering the physics and geometry of the bond. Physically this BSDF should be consistent with the adjacent media \\(V\_\\mathrm{coat}\\) and \\(V\_\\mathrm{sub}\\), and it is assumed that the bond does not significantly alter the geometry of the substrate interface (i.e. the coat conforms to the substrate geometry). It is then reasonably unambiguous how the BSDF of the internal interface should be implemented, taking into account the known BSDFs and media of the component slabs being bonded in the layering and the final suite of parameters which is supposed to describe the resultant interface. For example bringing two dielectric slabs together produces well-understood Fresnel effects at the interface according to the ratio of the IORs of the dielectric media.
+
+Note that technically, the \\(\\mathrm{\\mathbf{layer}}\\) operator is associative, i.e. \\begin{equation} \\mathrm{\\mathbf{layer}}(S\_a, \\mathrm{\\mathbf{layer}}(S\_b, S\_c)) = \\mathrm{\\mathbf{layer}}(\\mathrm{\\mathbf{layer}}(S\_a, S\_b), S\_c) \\end{equation} since these describe equivalent physical configurations.
+
+The mapping from the physical layer structure into a form usable within a renderer depends on the level of approximation which is desired for the specific use-case. Typically the light transport properties will be represented by BSDFs representing the various lobes generated by the model, which we can roughly identify with the BSDFs of the top interfaces of each slab. Then the resultant BSDF of the layering operation can be approximated via various schemes which combine the BSDFs of the individual interfaces.
+
+For example given the general situation described above of a dielectric coat slab layered on a substrate slab, denoted \\(\\mathrm{\\mathbf{layer}}(S\_\\mathrm{sub}, S\_\\mathrm{coat})\\), this produces an internal interface with some derivable BSDF \\(f\_\\mathrm{sub}\\) and dielectric top interface with BSDF \\(f\_\\mathrm{coat}\\) sandwiching the dielectric coat medium \\(V\_\\mathrm{coat}\\):
+
+fcoatVcoatfsub
+
+The simplest representation of this layer configuration would amount to some linear combination of the interface BSDFs \\(f\_\\mathrm{sub}\\) and \\(f\_\\mathrm{coat}\\). A common approach is the so-called _albedo-scaling_ approximation, where the total BSDF of this layered configuration is given by summing \\(f\_\\mathrm{coat}\\) and \\(f\_\\mathrm{sub}\\) with the substrate lobe weighted with a factor equal to one minus the directional reflectance of the coat, which is designed to ensure that the resulting BSDF is energy conserving: \\begin{equation} \\label{non-reciprocal-albedo-scaling} f\_\\mathrm{layer}(\\omega\_i, \\omega\_o) = f\_\\mathrm{coat}(\\omega\_i, \\omega\_o) + \\bigl(1 - E\_\\mathrm{coat}(\\omega\_o)\\bigr) \\,f\_\\mathrm{sub}(\\omega\_i, \\omega\_o) \\end{equation} where the directional albedo integral \\(E\_\\mathrm{coat}(\\omega\_o)\\) can be either precomputed and tabulated, or computed on-the-fly via [Monte Carlo](https://www.pbr-book.org/3ed-2018/Light_Transport_I_Surface_Reflection/Sampling_Reflection_Functions#Application:EstimatingReflectance)
+ sampling of the BSDF. This form ensures that if the directional albedos of the coat and substrate BSDFs are energy conserving (i.e. \\(E\_\\mathrm{coat}(\\omega\_o) \\le 1\\), \\(E\_\\mathrm{sub}(\\omega\_o) \\le 1\\)), then the combined BSDF is also energy conserving, since \\begin{equation} E\_\\mathrm{layer}(\\omega\_o) \\,=\\, E\_\\mathrm{coat}(\\omega\_o) + \\bigl(1 - E\_\\mathrm{coat}(\\omega\_o)\\bigr) \\,E\_\\mathrm{sub}(\\omega\_o) \\;\\; \\le \\, 1 \\ . \\end{equation} It also ensures that if the substrate BSDF perfectly preserves energy, i.e. \\(E\_\\mathrm{sub}(\\omega\_o) = 1\\), then the layer BSDF does also, ensuring that a “white furnace” test would pass. The Autodesk Standard Surface model \[[Georgiev2019](https://academysoftwarefoundation.github.io/OpenPBR/#citation-georgiev2019)\
+\] uses this formulation for its layering.
+
+Note though that this albedo-scaling approximation does not correctly take into account the effect of multiple light bounces back and forth between the interfaces, or absorption and scattering in the volumetric medium of the coat \\(V\_\\mathrm{coat}\\). In general the resulting BSDF lobe shape will not be a simple linear combination of the interface BSDFs. To some extent these effects can be put back into the albedo-scaling model by making various approximations. For example the effect of the volumetric absorption through the coat in the incident and output directions could be approximately modeled as \\begin{equation} \\label{non-reciprocal-albedo-scaling-with-T} f\_\\mathrm{layer}(\\omega\_i, \\omega\_o) = f\_\\mathrm{coat}(\\omega\_i, \\omega\_o) + T\_\\mathrm{coat}(\\omega\_i, \\omega\_o) \\bigl(1 - E\_\\mathrm{coat}(\\omega\_o)\\bigr) \\,f\_\\mathrm{sub}(\\omega\_i, \\omega\_o) \\end{equation} where \\(T\_\\mathrm{coat}(\\omega\_i, \\omega\_o)\\) accounts for the total volumetric transmittance of the coat along the input and output rays. Similarly if the coat is rough this will effectively roughen the substrate BSDF lobe also, which can be accounted for approximately via various heuristics.
+
+   
+
+Mixing
+------
+
+Many real-world objects are made of several different materials arranged in patches, e.g. metal and oxide regions on a rusty object, and it is convenient to model the appearance of such objects by texturing the type of each material on their surfaces. While the material transitions are typically abrupt in reality, the ability to continuously mix materials is useful for artistic purposes as well as for anti-aliasing.
+
+The mix operation models this as a linear blend between two materials at the mesoscopic level. The physical picture is that the mesosurface consists of randomly distributed patches of each material in proportion to the blend weight, which thus exhibits heterogeneity in the “horizontal” direction. The mix operation of two slabs \\(S\_0\\) and \\(S\_1\\) with weight \\(w\_1\\), generating a new “horizontally” heterogeneous composite material \\(M\\), is denoted: \\begin{equation} M = \\mathrm{\\mathbf{mix}}(S\_0, S\_1, w\_1) \\end{equation} where \\(M \\rightarrow S\_0\\) as \\(w\_1 \\rightarrow 0\\), and \\(M \\rightarrow S\_1\\) as \\(w\_1 \\rightarrow 1\\). Diagrammatically, we represent the mix as putting the two slabs horizontally adjacent, where the intention is that one should imagine the physical slabs lying adjacent at the same surface level, though randomly distributed in mesoscopic patches with relative area in proportion to the given mix weight.
+
+1\-w1w1f0f1V0V1
+
+The mix operation is also used to describe the probability that a particular layer structure exists in the material at a particular point. For example a coating \\(S\_\\mathrm{coat}\\) may cover the substrate layers \\(S\_\\mathrm{sub}\\), but be intermittent and applied only to some fraction \\(w\_\\mathrm{coat}\\) (the coat _presence_ or _coverage_ weight) of the substrate. This would be specified as \\begin{equation} \\mathrm{\\mathbf{mix}}(S\_\\mathrm{sub}, \\mathrm{\\mathbf{layer}}(S\_\\mathrm{sub}, S\_\\mathrm{coat}), w\_\\mathrm{coat}) \\ . \\end{equation} For convenience this may also be written more concisely as a weighted layer operator which covers a given fraction of the substrate with the coat layer: \\begin{equation} \\mathrm{\\mathbf{layer}}(S\_\\mathrm{sub}, S\_\\mathrm{coat}, w\_\\mathrm{coat}) \\ . \\end{equation}
+
+1\-wcoatwcoatScoatSsubSsubsubstratecoatedintermittently
+
+This physical picture of the mix operation becomes somewhat unrealistic in some cases where the bottom-most bulk materials being blended are not obviously consistent (e.g. blending dielectric and metallic bulks), but in such cases it is understood that the implementation should do the best it can to make sense of the physics. For example the metal bulk could be considered to actually be surface metallic flakes on top of a single consistent dielectric.
+
+The implementation of the mix operation in a renderer depends on how the material model is approximated. Typically the model will be reduced to an effective BSDF per slab being mixed, in which case the mix can be implemented simply as a linear blend of those BSDFs, i.e. if slabs \\(S\_0\\), \\(S\_1\\) have BSDFs \\(f\_0\\), \\(f\_1\\) respectively, then the BSDF of \\(\\mathrm{\\mathbf{mix}}(S\_0, S\_1, w\_1)\\) can be mapped to[3](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-lerp)
+ \\begin{equation} f\_\\mathrm{mix} = (1 - w\_1) f\_0 + w\_1 f\_1 = \\mathrm{lerp}(f\_0, f\_1, w\_1) \\ . \\end{equation}
+
+In the case of the weighted layer operation, if the BSDF of the substrate is \\(f\_\\mathrm{sub}\\) then \\(\\mathrm{\\mathbf{layer}}(S\_\\mathrm{sub}, S\_\\mathrm{coat}, w\_\\mathrm{coat})\\) maps to \\begin{equation} f\_\\mathrm{weighted-layer} = (1 - w\_\\mathrm{coat}) f\_\\mathrm{sub} + w\_\\mathrm{coat} f\_\\mathrm{layer} \\end{equation} where \\(f\_\\mathrm{layer}\\) is the BSDF corresponding to \\(\\mathrm{\\mathbf{layer}}(S\_\\mathrm{sub}, S\_\\mathrm{coat})\\). If we use the non-reciprocal albedo-scaling approach described in the [Layering](https://academysoftwarefoundation.github.io/OpenPBR/#layering)
+ section (equation \\ref{non-reciprocal-albedo-scaling-with-T}), then \\(f\_\\mathrm{layer}\\) can be expressed as \\begin{equation} f\_\\mathrm{layer} = f\_\\mathrm{coat} + T\_\\mathrm{coat} \\left(1 - E\_\\mathrm{coat}\\right) \\,f\_\\mathrm{sub} \\end{equation} where \\(f\_\\mathrm{coat}\\) is the BSDF of the coat and \\(T\_\\mathrm{coat}\\) is the volumetric transmittance along the path of the input and output rays. Thus combining these[3](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-lerp)
+, \\begin{equation} \\label{coat\_layering\_formula\_with\_albedo\_scaling} f\_\\mathrm{weighted-layer} = w\_\\mathrm{coat} f\_\\mathrm{coat} + \\mathrm{lerp}\\bigl(1, T\_\\mathrm{coat} (1 - E\_\\mathrm{coat}), w\_\\mathrm{coat}\\bigr) f\_\\mathrm{sub} \\ , \\end{equation} which, for example, is the formula used in the Autodesk Standard Surface \[[Georgiev2019](https://academysoftwarefoundation.github.io/OpenPBR/#citation-georgiev2019)\
+\] coat layer.
+
+In this fashion the abstract mix and layer operations can be mapped to a more computationally convenient approximate representation in terms of a weighted sum of BSDF lobes (see the [Reduction to a mixture of lobes](https://academysoftwarefoundation.github.io/OpenPBR/#reductiontoamixtureoflobes)
+ section for more details).
+
+   
+
+Emission model
+--------------
+
+Each slab also has an emission distribution function (EDF), though it corresponds by default to no emission at all. Emissive properties are expressed in photometric units, since reference values are widely available. Thus the EDF is a directional luminance function \\(L\_e\\). One can imagine the luminance emitted homogeneously from the slab interior (by some unspecified physical process).
+
+The conversion to radiometric units is the responsibility of the renderer. For RGB renderers, a simple approximation is proposed in \[[Lagarde2014](https://academysoftwarefoundation.github.io/OpenPBR/#citation-lagarde2014)\
+\].
+
+We will generally assume in this model that the emission is uniformly distributed in all directions into the hemisphere. The emission from the structure as a whole is then physically determined (in principle) by the propagation of this emitted light from the emitting slabs through their neighbors into the ambient space.
+
+   
+
+Metadata
+--------
+
+This specification is designed to facilitate exchange of assets between facilities which may use different render engines and pipelines. To this end it attempts to reduce the ambiguity about the final look, so that assets can be expected to render roughly the same visually if the implementation conforms reasonably well to the specification.
+
+However the parameters of the physical model that we describe do not specify all of the assumptions that would be needed to obtain a good visual match. We recommend therefore, for the purposes of asset exchange, that the parameters be packaged with certain metadata that provides the following missing information:
+
+*   The version of the specification implemented.
+    
+*   The assumed color space of all the color parameters. If unspecified, following MaterialX \[[Smythe2016](https://academysoftwarefoundation.github.io/OpenPBR/#citation-smythe2016)\
+    \], by default this color space is assumed to be [ACEScg](https://docs.acescentral.com/specifications/acescg/)
+    .[4](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-ingamut)
+    
+*   The floating-point conversion factor from the parameters given in world space length units to meters.
+    
+*   The association between any supplied texture files and the parameters which they specify, generating spatially varying parameters according to the local UV coordinates of the geometry.
+    
+*   Any shader networks which drive the parameters of the model.
+    
+*   The assumed convention for converting the input **`geometry_normal`**, **`geometry_coat_normal`**, **`geometry_tangent`** and **`geometry_coat_tangent`** maps, if present, to the final shading normal of the local surface at each point.
+
+As in practice OpenPBR will be integrated within data exchange frameworks such as MaterialX and USD, the specific form and content of this metadata is outside the scope of this specification.
+
+   
+
+Model
+=====
+
+Using the operator formalism and parametrization described, we now specify the structure of the OpenPBR surface model. We describe first the non-thin-walled mode (in the [thin-walled mode](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/thin-walledmode)
+ the structure differs), where the material structure looks informally like the following diagram: emissionambientmediumfuzzcoatthin\-filmglossmetaltranslucentsubsurfacebaseambientdiffusemedium\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-opaque\-basedielectric\-basebase
+
+To summarize the formal structure, this consists of the following slabs:
+
+\\begin{eqnarray} S\_\\textrm{ambient-medium} &=& \\mathrm{Slab}(\\emptyset) \\nonumber \\\\ S\_\\textrm{fuzz} &=& \\mathrm{Slab}(f\_\\mathrm{fuzz}, V\_\\mathrm{fuzz}) \\nonumber \\\\ S\_\\textrm{coat} &=& \\mathrm{Slab}(f\_\\mathrm{coat}, V\_\\mathrm{coat}) \\nonumber \\\\ S\_\\textrm{metal} &=& \\mathrm{Slab}(f\_\\mathrm{conductor}) \\nonumber \\\\ S\_\\textrm{translucent-base} &=& \\mathrm{Slab}(f\_\\mathrm{dielectric}, V^\\infty\_\\mathrm{dielectric}) \\nonumber \\\\ S\_\\textrm{subsurface} &=& \\mathrm{Slab}(f\_\\mathrm{dielectric}, V^\\infty\_\\mathrm{subsurface}) \\nonumber \\\\ S\_\\textrm{gloss} &=& \\mathrm{Slab}(f\_\\textrm{dielectric}, V\_\\mathrm{dielectric}) \\nonumber \\\\ S\_\\textrm{diffuse} &=& \\mathrm{Slab}(f\_\\textrm{diffuse}) \\nonumber \\\\ \\end{eqnarray}
+
+Which are composed to build the material structure, denoted \\(M\_\\textrm{PBR}\\) below, as follows:
+
+\\begin{align\*} M\_\\textrm{PBR} &= \\mathrm{\\mathbf{mix}} (S\_\\textrm{ambient-medium} , M\_\\textrm{surface}, \\mathtt{\\alpha}) \\quad\\quad &\\mathrm{where} \\; \\mathtt{\\alpha} &= \\mathtt{geometry \\\_ opacity} \\nonumber \\\\ M\_\\textrm{surface} &= \\mathrm{\\mathbf{layer}}(M\_\\textrm{coated-base} , S\_\\textrm{fuzz}, \\mathtt{F}) \\quad\\quad &\\mathrm{where} \\; \\mathtt{F} &= \\mathtt{fuzz \\\_ weight} \\nonumber \\\\ M\_\\textrm{coated-base} &= \\mathrm{\\mathbf{layer}}(M\_\\textrm{base-substrate} , S\_\\textrm{coat}, \\mathtt{C}) \\quad\\quad &\\mathrm{where} \\; \\mathtt{C} &= \\mathtt{coat \\\_ weight} \\nonumber \\\\ M\_\\textrm{base-substrate} &= \\mathrm{\\mathbf{mix}} (M\_\\textrm{dielectric-base}, S\_\\textrm{metal}, \\mathtt{M}) \\quad\\quad &\\mathrm{where} \\; \\mathtt{M} &= \\mathtt{base \\\_ metalness} \\nonumber \\\\ M\_\\textrm{dielectric-base} &= \\mathrm{\\mathbf{mix}} (M\_\\textrm{opaque-base} , S\_\\textrm{translucent-base}, \\mathtt{T}) \\quad\\quad &\\mathrm{where} \\; \\mathtt{T} &= \\mathtt{transmission \\\_ weight} \\nonumber \\\\ M\_\\textrm{opaque-base} &= \\mathrm{\\mathbf{mix}} (M\_\\textrm{glossy-diffuse} , S\_\\textrm{subsurface}, \\mathtt{S}) \\quad\\quad &\\mathrm{where} \\; \\mathtt{S} &= \\mathtt{subsurface \\\_ weight} \\nonumber \\\\ M\_\\textrm{glossy-diffuse} &= \\mathrm{\\mathbf{layer}}(S\_\\textrm{diffuse} , S\_\\textrm{gloss}) \\end{align\*}
+
+This has the form of a tree generated by the layer and mix operations:
+
+[![](https://academysoftwarefoundation.github.io/OpenPBR/images/layer_graph.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/layer_graph.png)
+
+In addition to the weight and opacity parameters explicit in the model structure above, the properties of each component slab are controlled via further parameters detailed below (see the [Parameter reference](https://academysoftwarefoundation.github.io/OpenPBR/#parameterreference)
+ section for the full set).
+
+Since the model is simply a physical description of a material structure, in principle it would be amenable to solution via accurate methods such as those developed in \[[Jakob2014](https://academysoftwarefoundation.github.io/OpenPBR/#citation-jakob2014)\
+\], \[[Belcour2018](https://academysoftwarefoundation.github.io/OpenPBR/#citation-belcour2018)\
+\], and \[[Zeltner2018](https://academysoftwarefoundation.github.io/OpenPBR/#citation-zeltner2018)\
+\], which attempt to compute all the various modes of reflection and transmission through the whole stack of layers, generating a final BSDF which is not necessarily a simple linear combination of the individual interface BSDFs. At present however, for the reasons described in the [Flexibility of implementation](https://academysoftwarefoundation.github.io/OpenPBR/#flexibilityofimplementation)
+ section, it is most likely to be mapped to a model consisting of a mixture of BSDF lobes similar to the Autodesk Standard Surface shader \[[Georgiev2019](https://academysoftwarefoundation.github.io/OpenPBR/#citation-georgiev2019)\
+\] and its representation in MaterialX. An example derivation of such a model is provided in the [“Reduction to a mixture of lobes”](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/reductiontoamixtureoflobes)
+ section below. We also provide a [reference implementation](https://academysoftwarefoundation.github.io/OpenPBR/reference/open_pbr_surface.mtlx)
+ in MaterialX based on this derivation.
+
+We now discuss the detailed form of the BSDFs and media of the slabs in the structure.
+
+   
+
+Microfacet model
+----------------
+
+We give here some general assumptions about the form and parametrization of the BSDFs which describe the interfaces in the model outlined in the previous section.
+
+The BSDFs \\(f\_\\mathrm{conductor}\\), \\(f\_\\mathrm{dielectric}\\), \\(f\_\\mathrm{coat}\\) and \\(f\_\\mathrm{diffuse}\\) of the [metal](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/basesubstrate/metal)
+, [dielectric](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/basesubstrate)
+, [coat](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/coat)
+ and [glossy-diffuse](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/basesubstrate/glossy-diffuse)
+ slabs respectively, are each assumed to be described by a standard _microfacet model_. This is a widely used approximation (\[[Pharr2023](https://academysoftwarefoundation.github.io/OpenPBR/#citation-pharr2023)\
+\]) in which the surface is assumed to be composed of a heightfield consisting of smooth microfacets of either metal, dielectric or Lambertian material, where the statistical distribution of the normal of these facets, termed the _micronormal_, determines the surface roughness characteristics at the macroscopic scale. (The [fuzz](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/fuzz)
+ model is distinct and based on a volumetric “microflake” model \[[Heitz2015](https://academysoftwarefoundation.github.io/OpenPBR/#citation-heitz2015)\
+\]).
+
+A microfacet BRDF has the standard form[5](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-jacobian)
+ (\[[Walter2007](https://academysoftwarefoundation.github.io/OpenPBR/#citation-walter2007)\
+\], \[[Pharr2023](https://academysoftwarefoundation.github.io/OpenPBR/#citation-pharr2023)\
+\]) in the single-scattering approximation: \\begin{equation} \\label{microfacet\_brdf\_ss} f(\\omega\_i, \\omega\_o) \\propto F(\\omega\_i, h) \\; D(h) \\; G(\\omega\_i, \\omega\_o) \\end{equation} where \\(h = (\\omega\_i+\\omega\_o)/|\\omega\_i+\\omega\_o|\\) is the half-vector, i.e. the micronormal which mirror reflects \\(\\omega\_i\\) into \\(\\omega\_o\\). For dielectrics there is also a BTDF, i.e. the portion of the BSDF where the input and output directions lie in opposite rather than the same hemispheres, which has a similar form to the BRDF except with a modified half-vector and Fresnel factor \[[Walter2007](https://academysoftwarefoundation.github.io/OpenPBR/#citation-walter2007)\
+\].
+
+The _Fresnel factor_ \\(F(\\omega\_i, h)\\) is determined by the complex index of refraction (IOR) of the reflecting material of each microfacet (or more technically, the ratio of this to the exterior IOR), and its form differs depending on whether the material is a dielectric or conductor \[[Walter2007](https://academysoftwarefoundation.github.io/OpenPBR/#citation-walter2007)\
+\]. Its parametrization in each case is described in the Dielectric base section and [Metal](https://academysoftwarefoundation.github.io/OpenPBR/#metal)
+ section.
+
+The _masking-shadowing function_ \\(G(\\omega\_i, \\omega\_o)\\) accounts for the probability that the input and output directions are occluded by the microsurface. It is usually derived using the Smith model which determines \\(G\\) given the NDF, and for the GGX NDF equation \\ref{GGX} the masking-shadowing function then has a well-known form \[[Heitz2014](https://academysoftwarefoundation.github.io/OpenPBR/#citation-heitz2014)\
+\].
+
+The _Normal Distribution Function_ (NDF) \\(D(m)\\) describes the relative probability of occurrence of micronormal \\(m\\) on the surface, and thus the roughness characteristics. We assume that the NDF is the so-called GGX distribution which well-approximates the roughness of real materials (the name GGX derives from “ground glass”, but the formula was originally due to Trowbridge and Reitz \[[Walter2007](https://academysoftwarefoundation.github.io/OpenPBR/#citation-walter2007)\
+\], \[[Burley2012](https://academysoftwarefoundation.github.io/OpenPBR/#citation-burley2012)\
+\], \[[Heitz2014](https://academysoftwarefoundation.github.io/OpenPBR/#citation-heitz2014)\
+\], \[[Pharr2023](https://academysoftwarefoundation.github.io/OpenPBR/#citation-pharr2023)\
+\]), which has the basic[6](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-normalization)
+ form: \\begin{equation} \\label{GGX} D\_\\mathrm{GGX}(m) \\propto \\left( 1 + \\frac{\\tan^2\\theta\_m}{\\alpha^2} \\right)^{-2} \\end{equation} where \\(\\theta\_m\\) is the angle between \\(m\\) and the (macroscopic) surface normal, and the parameter \\(\\alpha\\) controls the apparent roughness of the microsurface. As \\(\\alpha \\rightarrow 0\\), the distribution of normals becomes highly peaked around \\(\\theta\_m=0\\) so the microsurface is mostly flat leading to a smooth appearance, while as \\(\\alpha\\) grows the microsurface becomes increasingly jagged, leading to a rough appearance. In practice we restrict to the range \\(\\alpha \\in \[0,1\]\\), as \\(\\alpha > 1\\) does not produce a plausible rough appearance. Following \[[Burley2012](https://academysoftwarefoundation.github.io/OpenPBR/#citation-burley2012)\
+\], we set (in the isotropic case) \\begin{equation} \\alpha = r^2 \\end{equation} where \\(r \\in \[0,1\]\\) is the user-facing _roughness_, as this produces a more perceptually linear resulting change in apparent roughness as \\(r\\) is varied.
+
+In the general case the roughness is anisotropic, that is the NDF is not circularly symmetric but stretched along some direction in the surface plane, producing an elongation of the specular highlight along that direction. This simulates coherent microscale groove geometry due to processes like scratches or brushing. It is assumed that a reference tangent vector field is defined (via **`geometry_tangent`** and **`geometry_coat_tangent`**). The reference tangent vector indicates the direction along which the NDF is stretched, meaning the microscale grooves tend to be aligned with the orthogonal bitangent.
+
+The GGX distribution in the anisotropic case is then parametrized by two separate \\(\\alpha\\)-roughnesses \\(\\alpha\_t\\) and \\(\\alpha\_b\\) along the tangent and bitangent vectors as follows, given the polar angle \\(\\phi\_m\\) of the micronormal \\(m\\) relative to the tangent (counterclockwise about the normal): \\begin{equation} D\_\\mathrm{GGX}(m) \\propto \\left( 1 + \\tan^2\\theta\_m \\Bigl(\\frac{\\cos^2\\phi\_m}{\\alpha\_t^2} + \\frac{\\sin^2\\phi\_m}{\\alpha\_b^2}\\Bigr) \\right)^{-2} \\end{equation} which reduces to the isotropic form when \\(\\alpha\_t = \\alpha\_b = \\alpha\\). Efficient techniques for sampling BSDFs employing the anisotropic GGX microfacet model are presented in \[[Heitz2018](https://academysoftwarefoundation.github.io/OpenPBR/#citation-heitz2018)\
+\], \[[Dupuy2023](https://academysoftwarefoundation.github.io/OpenPBR/#citation-dupuy2023)\
+\].
+
+The NDF terms \\(\\alpha\_t\\) and \\(\\alpha\_b\\) are more conveniently parametrized as the total roughness \\(r\\) and an anisotropy \\(a \\in \[0, 1\]\\). We specify the following mapping from \\(r, a\\) to \\(\\alpha\_t, \\alpha\_b\\): \\begin{equation} \\label{openpbr-anisotropy-formula} \\alpha\_t = r^2 \\sqrt{\\frac{2}{1 + (1 - a)^2}} \\;\\ , \\quad \\alpha\_b = (1 - a) \\, \\alpha\_t \\ . \\end{equation}
+
+[![](https://academysoftwarefoundation.github.io/OpenPBR/images/anisotropy.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/anisotropy.png)
+
+ **Figure 2:** Highlight for varying roughness and anisotropy
+
+This formulation satisfies \\(\\alpha\_t^2 + \\alpha\_b^2 = 2\\alpha^2\\), to preserve the average roughness regardless of the anisotropy. A rationale is that if a renderer doesn't support anisotropy (or if the feature is turned off for performance considerations, such as level of detail), using only the roughness parameter should result in an isotropic specular highlight perceptually close to the original anisotropic one. [Figure 2](https://academysoftwarefoundation.github.io/OpenPBR/#figure_ndf_anisotropy)
+ shows the resulting shape of the highlight as a function of roughness \\(r\\) and anisotropy \\(a\\) (technically, these are contour lines of the NDF \\(D\_\\mathrm{GGX}(m)\\) in the 2D slope space).
+
+To summarize the NDF parameterization, the dielectric-base BSDF \\(f\_\\mathrm{dielectric}\\) and metal-base BRDF \\(f\_\\mathrm{conductor}\\) share the same parameters, while the coat BSDF \\(f\_\\mathrm{coat}\\) uses an independent set:
+
+*   **`specular_roughness`** for both \\(f\_\\mathrm{dielectric}\\) and \\(f\_\\mathrm{conductor}\\), and **`coat_roughness`** for \\(f\_\\mathrm{coat}\\), define the roughness parameter \\(r\\). These roughnesses are limited to the range \\(\[0,1\]\\), since \\(r=1\\) corresponds to a perceptually very rough surface.
+    
+*   **`specular_roughness_anisotropy`** for \\(f\_\\mathrm{dielectric}\\) and \\(f\_\\mathrm{conductor}\\), and **`coat_roughness_anisotropy`** for \\(f\_\\mathrm{coat}\\), specify \\(a \\in \[0, 1\]\\) (the degree to which the NDF is stretched in the direction of the local surface tangent). The resulting NDF \\(\\alpha\_t\\), \\(\\alpha\_b\\) parameters are then determined by equation \\ref{openpbr-anisotropy-formula}. Note that the appearance of the specular highlight is identical for tangent vectors of opposite directions; this also allows the preservation of value when converting to or from other models that support directional anisotropy.
+
+The single-scattering microfacet BRDF of equation \\ref{microfacet\_brdf\_ss} does not conserve energy, as it neglects to account for multiple scattering between the microfacets. An implementation should ideally account for this, via one of a number of schemes, otherwise the reflection from rough metals and dielectrics is dimmer and less saturated than it should be. A fully accurate approach is described in \[[Heitz2016a](https://academysoftwarefoundation.github.io/OpenPBR/#citation-heitz2016a)\
+\], where the multiple bounces are explicitly modeled via Monte Carlo. Simpler approximate models are presented in \[[Kulla2017](https://academysoftwarefoundation.github.io/OpenPBR/#citation-kulla2017)\
+\] (which functions by adding compensation lobes to account for the missing energy), and \[[Turquin2019](https://academysoftwarefoundation.github.io/OpenPBR/#citation-turquin2019)\
+\] (which scales the albedo of the lobe to maintain energy preservation at the expense of reciprocity).
+
+|     |     |     |
+| --- | --- | --- |
+| [![](https://academysoftwarefoundation.github.io/OpenPBR/images/carbon_fiber_a0.0.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/carbon_fiber_a0.0.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/carbon_fiber_a0.5.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/carbon_fiber_a0.5.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/carbon_fiber_a0.9.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/carbon_fiber_a0.9.png) |
+
+[![](https://academysoftwarefoundation.github.io/OpenPBR/dummy)](https://academysoftwarefoundation.github.io/OpenPBR/dummy)
+
+ **Figure 3:** Textured **`geometry_tangent`**, with **`specular_roughness_anisotropy`** varying over 0 (default), 0.5, 0.9.
+
+   
+
+Base Substrate
+--------------
+
+The bulk at the bottom of the material structure, termed the base substrate, consists of a statistical mix of metal and dielectric semi-infinite slabs:
+
+\\begin{eqnarray} M\_\\textrm{base-substrate} &=& \\mathrm{\\mathbf{mix}} (M\_\\textrm{dielectric-base}, S\_\\textrm{metal}, \\mathtt{M}) \\end{eqnarray} where \\(\\mathtt{M} = \\mathtt{base\\\_metalness}\\), which controls the fraction of microsurface area which is metallic. Areas of surface will normally be either fully metallic or fully dielectric, but values of **`base_metalness`** between 0 and 1 can be used to simulate smoothly blended transitions between areas of bare metal and areas of dielectric (modeling for example opaque rust or paint on top of the metal). Metalness maps from applications like Substance Painter can be connected to this parameter. The parameters controlling the metal BRDF are covered in the [Metal](https://academysoftwarefoundation.github.io/OpenPBR/#metal)
+ section.
+
+base\_metalness1\-base\_metalnessthin\-filmbase\-substrate\=\=metaldielectric\-base\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-
+
+The dielectric base is assumed to have a surface BSDF described by a rough GGX dielectric [microfacet model](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/microfacetmodel)
+ \[[Walter2007](https://academysoftwarefoundation.github.io/OpenPBR/#citation-walter2007)\
+\], and a bulk volumetric medium supporting absorption and scattering (whether physically due to the inherent molecular properties of the dielectric as in water, or e.g. a dispersion of embedded particles or flakes as in paint).
+
+However we distinguish between a separate “translucent” dielectric bulk and “opaque” dielectric bulk, which are placed in a statistical mix: \\begin{equation} M\_\\textrm{dielectric-base} = \\mathrm{\\mathbf{mix}}(M\_\\textrm{opaque-base}, S\_\\textrm{translucent-base}, \\mathtt{T}) \\end{equation} where \\(\\mathtt{T} = \\mathtt{transmission\\\_weight}\\).
+
+1\-transmission\_weighttransmission\_weightdielectric\-base\=\=opaque\-basetranslucent\-base\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-
+
+This mirrors the usual workflow of artists where they are typically either modelling an opaque surface potentially with some specularity and dense subsurface scattering (such as rock, plastic, skin etc.), or a translucent material with some limited amount of volumetric absorption and scattering (such as glass, liquids, organic matter etc.). These use cases require different parametrizations to effectively control, so are convenient to split into separate slabs.
+
+The translucent-base is described in the [Translucent base](https://academysoftwarefoundation.github.io/OpenPBR/#translucentbase)
+ section, while the opaque-base is further broken down below (into [Glossy-diffuse](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/basesubstrate/glossy-diffuse)
+ and [Subsurface](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/basesubstrate/subsurface)
+). The **`transmission_weight`** parameter selects between these models. Note that technically a mix weight between 0 and 1 produces a physically ambiguous state (since there are then superimposed bulk media with different properties), so we expect that normally this weight acts as a Boolean selector.
+
+The opaque-base substrate is assumed to be a dielectric with dense subsurface volumetric absorption and scattering, which tends to an idealized “glossy-diffuse” BSDF in the limit of infinite density medium. In some cases a blend of subsurface and completely opaque glossy-diffuse scattering is desired, for example in skin rendering where the diffuse component provides the surface details of the skin (freckles, blemishes, makeup, etc.) and the subsurface component provides the color detail of the underlying veins and tissue. To support this, we make the opaque-base substrate be a statistical mix of glossy-diffuse and subsurface models (described in the [Glossy-diffuse](https://academysoftwarefoundation.github.io/OpenPBR/#glossy-diffuse)
+ section and the [Subsurface](https://academysoftwarefoundation.github.io/OpenPBR/#subsurface)
+ section respectively): \\begin{eqnarray} M\_\\textrm{opaque-base} &=& \\mathrm{\\mathbf{mix}}(M\_\\textrm{glossy-diffuse}, S\_\\mathrm{subsurface}, \\mathtt{S}) \\end{eqnarray} where \\(\\mathtt{S} = \\mathtt{subsurface\\\_weight}\\).
+
+1\-subsurface\_weightsubsurface\_weightopaque\-base\=\=glossy\-diffusesubsurface\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-
+
+Both the opaque and translucent dielectric-base share the same dielectric interface BSDF \\(f\_\\mathrm{dielectric}\\), whose parameters are termed “specular” since they control the primary specular reflection lobe which is provided by the base dielectric (and the coat provides a secondary specular lobe, see the [Coat](https://academysoftwarefoundation.github.io/OpenPBR/#coat)
+ section):
+
+*   The specular lobe shape is controlled by the roughness properties of the surface, parametrized by **`specular_roughness`** and **`specular_roughness_anisotropy`** (see the section on the [Microfacet model](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/microfacetmodel)
+     NDF).
+    
+*   The **`specular_ior`** parameter controls the index of refraction (IOR) of the dielectric. The **`specular_weight`** parameter provides a convenient, texturable linear \\(\[0, 1\]\\) multiplier of the dielectric reflectivity at normal incidence via reduction of the IOR below the reference value. When **`specular_weight`** is \\(0\\), the specular reflection disappears entirely, as the IOR of the dielectric is then equal to that of the surrounding medium. As a convenience, we also allow the **`specular_weight`** to exceed \\(1\\), thus increasing the reflectivity via increase of the IOR above the reference value. Equation \\ref{modulated\_ior} below gives the formula for the applied IOR modulation.
+    
+*   The **`specular_color`** parameter modulates the Fresnel factor of \\(f\_\\mathrm{dielectric}\\), but only for the initial reflection of light incident from above, while the light transmitted from above or below (or reflected from below) is assumed to be unaffected. This is technically unphysical if altered from the default white color (as real dielectrics have a Fresnel factor dependent only on the index of refraction), but can be useful in practice to artificially tint the specular highlight without disturbing other aspects of the light transport, i.e. the reflection due to scattering from the internal medium, or the reflection from below, or the transmission from above or below.
+
+The formula for the specular IOR modulation controlled via **`specular_weight`** is as follows. Given the existing **`specular_ior`**, the ratio \\(\\eta\_s\\) of this to the IOR of the surrounding medium is computed (which should take into account the presence of the coat, according to equation \\ref{specular\_ior\_ratio} in the [Coat](https://academysoftwarefoundation.github.io/OpenPBR/#coat)
+ section). Given this ratio, the dielectric Fresnel reflection factor of \\(f\_\\mathrm{dielectric}\\) at normal incidence is given by \\begin{equation} \\label{unmodulated\_fresnel} F\_s = \\left|\\frac{1 - \\eta\_s}{1 + \\eta\_s}\\right|^2 \\ . \\end{equation} This Fresnel factor (of the initial reflection from above) is then modulated by multiplying by \\(\\xi\_s\\) = **`specular_weight`**. Thus solving for the new IOR ratio \\(\\eta^\\prime\_s\\) after the modulation: \\begin{equation} \\label{modulated\_ior} \\eta^\\prime\_s = \\frac{1 + \\epsilon} {1 - \\epsilon} \\quad \\mathrm{with} \\quad \\epsilon = \\mathrm{sgn}(\\eta\_s-1)\\sqrt{\\xi\_s F\_s} \\ . \\end{equation} Applying this modulated IOR ratio \\(\\eta^\\prime\_s\\) in the angle-dependent dielectric Fresnel formula \\(F(\\mu, \\eta^\\prime\_s)\\) then produces the desired reflectivity modulation at any incident angle cosine \\(\\mu\\). The Fresnel transmission factor and refraction into and out of the base dielectric should also be consistent with the IOR ratio \\(\\eta^\\prime\_s\\).
+
+For convenience, we also allow \\(\\xi\_s = \\mathtt{specular\\\_weight}\\) to exceed 1 so that the reflectivity is increased above the level set by **`specular_ior`**. Note though there is a constraint \\(\\xi\_s \\le 1/F\_s\\) since the scaled reflection coefficient cannot exceed \\(1\\). So there needs to be an internal clamp to ensure \\(\\xi\_s \\in \[0, 1/F\_s\]\\).
+
+| Specular params | Label | Type | Range | Norm | Default | Description |
+| --- | --- | --- | --- | --- | --- | --- |
+| **`specular_weight`** | Weight | `float` | \\( \[0, \\infty) \\) | \\( \[0, 1\] \\) | \\( 1 \\) | Modulates the dielectric reflectivity at normal incidence |\
+| **`specular_color`** | Color | `color3` | \\( \[0, 1\]^3 \\) |     | \\( (1, 1, 1) \\) | Tints the dielectric Fresnel factor |\
+| **`specular_roughness`** | Roughness | `float` | \\( \[0, 1\] \\) |     | \\( 0.3 \\) | Roughness of NDF of dielectric BSDF \\(f\_\\mathrm{dielectric}\\) |\
+| **`specular_roughness_anisotropy`** | Anisotropy | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) | Anisotropy of NDF of dielectric BSDF \\(f\_\\mathrm{dielectric}\\) |\
+| **`specular_ior`** | IOR | `float` | \\( (0, \\infty) \\) | \\( \[1, 3\] \\) | \\( 1.5 \\) | Refractive index of \\(V\_\\mathrm{dielectric}\\) |\
+\
+|     |     |     |\
+| --- | --- | --- |\
+| [![](https://academysoftwarefoundation.github.io/OpenPBR/images/spec_ior1.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/spec_ior1.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/spec_ior2.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/spec_ior2.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/spec_ior3.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/spec_ior3.png) |\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/dummy)](https://academysoftwarefoundation.github.io/OpenPBR/dummy)\
+\
+ **Figure 4:** Varying the **`specular_ior`** from (left to right): 1.1, 1.3, 1.5 (default)\
+\
+   \
+\
+### Metal\
+\
+Metals are completely opaque and have a characteristic and familiar form of specularity due to the Fresnel factor for conductors differing from that for dielectrics. The metallic base is thus represented as a separate bulk slab which consists of an opaque GGX microfacet conductor BRDF \\(f\_\\mathrm{conductor}\\), whose NDF is parametrized by **`specular_roughness`** and **`specular_roughness_anisotropy`** (overloading the same parameters used for the dielectric BSDF \\(f\_\\mathrm{dielectric}\\), as noted in the [Microfacet model](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/microfacetmodel)\
+ section): \\begin{equation} S\_\\mathrm{metal} = \\mathrm{Slab}(f\_\\mathrm{conductor}) \\ . \\end{equation}\
+\
+The conductor Fresnel reflection curve is parametrized by the colors at normal and near-grazing incidence (**`base_color`** and **`specular_color`** respectively, scaled by the corresponding weights). This allows for art-directable variation in reflectivity toward the grazing edges by directly specifying the (texturable) colors at normal and grazing incidence to simulate the dip in reflectivity observed in real metals, or just for artistic effect \[[Hoffman2019](https://academysoftwarefoundation.github.io/OpenPBR/#citation-hoffman2019)\
+\]. Note that these two color parameters are also used for the non-metallic (i.e. dielectric) specular and diffuse BRDFs, as discussed above.\
+\
+As noted previously, this non-transmissive metallic base is blended as a statistical mixture with the dielectric-base according to the **`base_metalness`** parameter: \\begin{eqnarray} M\_\\textrm{base-substrate} &=& \\mathrm{\\mathbf{mix}}(M\_\\textrm{dielectric-base}, S\_\\mathrm{metal}, \\mathtt{M}) \\ . \\end{eqnarray} where \\(\\mathtt{M}\\) = **`base_metalness`**.\
+\
+The specific model we stipulate for the metallic Fresnel factor \\(\\mathbf{F}\_{\\mathrm{metal}}(\\mu)\\) is the “F82-tint” model of \[[Kutz2021](https://academysoftwarefoundation.github.io/OpenPBR/#citation-kutz2021)\
+\], which extends previous work by \[[Hoffman2019](https://academysoftwarefoundation.github.io/OpenPBR/#citation-hoffman2019)\
+\]. This is based on the standard Schlick approximation to the metallic Fresnel factor (where \\(\\mathbf{F}\_0\\) is the RGB reflectivity at normal incidence i.e. **`base_weight`** \* **`base_color`**, and \\(\\mu\\) is the cosine of the incident angle): \\begin{equation} \\mathbf{F}\_{\\mathrm{Schlick}}(\\mu) = \\mathbf{F}\_0 + (1 - \\mathbf{F}\_0) (1 - \\mu)^5 \\ . \\end{equation} To better approximate the actual Fresnel curve of metals, in the F82-tint model the Schlick approximation is augmented with a correction term: \\begin{equation} \\mathbf{F}\_{82}(\\mu) = \\mathbf{F}\_{\\mathrm{Schlick}}(\\mu) - \\frac{\\mu (1 - \\mu)^6}{\\bar{\\mu}(1 - \\bar{\\mu})^6} \\Bigl(\\mathbf{F}\_{\\mathrm{Schlick}}(\\bar{\\mu}) - \\mathbf{F}(\\bar{\\mu})\\Bigr) \\end{equation} where \\(\\bar{\\mu} = 1/7\\), and \\(\\mathbf{F}(\\bar{\\mu})\\) is the desired metallic reflectivity at that “grazing edge” angle cosine corresponding roughly to \\(82^\\circ\\) (i.e. around silhouettes), ensuring \\(\\mathbf{F}\_{82}(\\bar{\\mu}) = \\mathbf{F}(\\bar{\\mu})\\). This desired edge reflectivity is user-specified as a fractional tint of the Schlick curve, controlled via **`specular_color`**, i.e. \\begin{equation} \\mathbf{F}(\\bar{\\mu}) = \\mathtt{specular\\\_color} \* \\mathbf{F}\_\\mathrm{Schlick}(\\bar{\\mu}) \\ . \\end{equation} The final metallic Fresnel term we employ is then given by an overall multiplication by **`specular_weight`**, ensuring that entire metallic lobe is suppressed as the weight goes to zero: \\begin{equation} \\mathbf{F}\_{\\mathrm{metal}}(\\mu) = \\mathtt{specular\\\_weight} \* \\mathbf{F}\_{82}(\\mu) \\ . \\end{equation} This formulation has the useful property that it reduces to the regular Schlick reflectivity at the default values of **`specular_weight`** and **`specular_color`**. Note that the edge cannot be brighter than the standard Schlick term, but this is generally true in real metals. We consider this a benefit of this parametrization, as it makes it impossible to produce physically implausible metals with excessively bright edges.\
+\
+| Metal params | Label | Type | Range | Default | Description |\
+| --- | --- | --- | --- | --- | --- |\
+| **`base_weight`** | Weight | `float` | \\( \[0, 1\] \\) | \\( 1 \\) | Scalar multiplier to **`base_color`** |\
+| **`base_color`** | Color | `color3` | \\( \[0, 1\]^3 \\) | \\( (0.8, 0.8, 0.8) \\) | Color of Fresnel reflection albedo at normal incidence, \\(\\mathbf{F}\_0\\) |\
+| **`specular_weight`** | Weight | `float` | \\( \[0, 1\] \\) | \\( 1 \\) | Overall multiplier of the metallic Fresnel |\
+| **`specular_color`** | Color | `color3` | \\( \[0, 1\]^3 \\) | \\( (1, 1, 1) \\) | Tint color of metallic Fresnel reflection albedo at near-grazing incidence (i.e. around silhouettes) |\
+| **`specular_roughness`** | Roughness | `float` | \\( \[0, 1\] \\) | \\( 0.3 \\) | Roughness of NDF of conductor BRDF \\(f\_\\mathrm{conductor}\\) |\
+| **`specular_roughness_anisotropy`** | Anisotropy | `float` | \\( \[0, 1\] \\) | \\( 0 \\) | Anisotropy of NDF of conductor BRDF \\(f\_\\mathrm{conductor}\\) |\
+\
+|     |     |\
+| --- | --- |\
+| [![](https://academysoftwarefoundation.github.io/OpenPBR/images/metal_with_default_edge_tint.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/metal_with_default_edge_tint.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/metal_with_correct_edge_tint.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/metal_with_correct_edge_tint.png) |\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/dummy)](https://academysoftwarefoundation.github.io/OpenPBR/dummy)\
+\
+ **Figure 5:** Metals produced (in **`base_metalness`\=1** mode) by setting only the **`base_color`** parameter (left) compared with metals produced by correctly setting both the **`base_color`** and **`specular_color`** parameters (right)\
+\
+   \
+\
+### Glossy-diffuse\
+\
+The glossy-diffuse slab represents the base dielectric (parametrized as described in the Dielectric base section), embedding a semi-infinite bulk of extremely dense scattering material. The BRDF of the slab is the combination of a “glossy” specular lobe provided by immediate reflection from the dielectric interface, and a diffuse lobe provided by scattering off the embedded substrate. This models for example the reflection from shiny, totally opaque surfaces such as dense plastic, rock, and concrete.\
+\
+We choose to model this concretely as a layer of dielectric “gloss” on top of an (index-matched) opaque slab with a diffuse BRDF: \\begin{eqnarray} M\_\\textrm{glossy-diffuse} = \\mathrm{\\mathbf{layer}}(S\_\\mathrm{diffuse}, S\_\\textrm{gloss}) \\end{eqnarray}\
+\
+glossdiffuse\
+\
+where \\(S\_\\textrm{gloss}\\) is a thin slab of dielectric with the rough dielectric microfacet BRDF as parametrized in the Dielectric base section, and the same internal medium as the base dielectric except with zero extinction due to infinitesimal layer thickness: \\begin{eqnarray} S\_\\textrm{gloss} = \\mathrm{Slab}(f\_\\mathrm{dielectric}, V\_\\mathrm{dielectric}) \\ . \\end{eqnarray} Since the diffuse base is index-matched with the gloss, Fresnel reflection is only generated from the top interface of the gloss. The opaque substrate slab has a diffuse BRDF lobe: \\begin{eqnarray} S\_\\textrm{diffuse} = \\mathrm{Slab}(f\_\\mathrm{diffuse}) \\end{eqnarray} where \\(f\_\\mathrm{diffuse}\\) is based on the classic Oren-Nayar model (\[[Oren1994](https://academysoftwarefoundation.github.io/OpenPBR/#citation-oren1994)\
+\], \[[Pharr2023](https://academysoftwarefoundation.github.io/OpenPBR/#citation-pharr2023)\
+\]), which is a V-cavity based microfacet model in which the microfacets are assumed to be individually Lambertian. The Oren-Nayar model is parametrized by roughness \\(\\sigma\\) and an overall RGB scale factor \\(\\boldsymbol{\\rho}\\). The roughness models the “flattening” effect ([Figure 6](https://academysoftwarefoundation.github.io/OpenPBR/#figure_rough_diffuse)\
+), which is observed in real rough diffuse materials \[[Oren1994](https://academysoftwarefoundation.github.io/OpenPBR/#citation-oren1994)\
+\].\
+\
+|     |     |\
+| --- | --- |\
+| [![](https://academysoftwarefoundation.github.io/OpenPBR/images/diffuse_smooth.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/diffuse_smooth.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/diffuse_rough.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/diffuse_rough.png) |\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/dummy)](https://academysoftwarefoundation.github.io/OpenPBR/dummy)\
+\
+ **Figure 6:** Zero roughness (\\(\\sigma=0\\), left) and maximum roughness (\\(\\sigma=1\\), right) diffuse materials with \\(\\textbf{EON}\\) BRDF.\
+\
+Unfortunately, the original model suffers from artifacts and also does not conserve energy (i.e. is too dark). We thus opt to define the diffuse BRDF to be a popular improved version of Oren-Nayar introduced by Fujii \[[Fujii2012](https://academysoftwarefoundation.github.io/OpenPBR/#citation-fujii2012)\
+\], augmented with a simple analytical, reciprocal energy compensation term: \\begin{eqnarray} \\label{EON\_brdf} f\_\\mathrm{diffuse}(\\omega\_i, \\omega\_o) = f\_\\mathrm{ON}(\\omega\_i, \\omega\_o) + f^\\mathrm{comp}\_\\mathrm{ON}(\\omega\_i, \\omega\_o) \\ . \\end{eqnarray} This form of the Oren-Nayar model is termed “energy-preserving Oren-Nayar” or \\(\\textbf{EON}\\) \[[Portsmouth2024](https://academysoftwarefoundation.github.io/OpenPBR/#citation-portsmouth2024)\
+\]. The Oren-Nayar term \\(f\_\\mathrm{ON}\\) is given by the \[[Fujii2012](https://academysoftwarefoundation.github.io/OpenPBR/#citation-fujii2012)\
+\] form[7](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-oren_nayar_formula)\
+ \\begin{eqnarray} \\label{FON\_brdf} f\_\\mathrm{ON}(\\omega\_i, \\omega\_o) = \\frac{w\_\\mathrm{d} \\boldsymbol{\\rho}}{\\pi} \\Bigl( A(\\sigma) + B(\\sigma) \\frac{s}{t} \\Bigr) \\ . \\end{eqnarray} The roughness parameter \\(\\sigma \\in \[0,1\]\\) is given by **`base_diffuse_roughness`**. The overall weight \\(w\_\\mathrm{d}\\) = **`base_weight`**. The RGB \\(\\boldsymbol{\\rho}\\) parameter is determined by the specified **`base_color`**, as described below.\
+\
+The directional albedo \\(E\_\\mathrm{ON}(\\omega) = w\_\\mathrm{d} \\boldsymbol{\\rho}\\,\\hat{E}\_\\mathrm{ON}(\\omega)\\), and corresponding _average albedo_ \\(\\langle\\hat{E}\_\\mathrm{ON}\\rangle\\), of the Oren-Nayar term can be determined analytically \[[Portsmouth2024](https://academysoftwarefoundation.github.io/OpenPBR/#citation-portsmouth2024)\
+\]. The energy compensation term \\(f^{\\mathrm{comp}}\_\\mathrm{ON}\\) is given in terms of the albedo \\(\\langle\\hat{E}\_\\mathrm{ON}\\rangle\\) by \\begin{equation} \\label{EON\_comp} f^\\mathrm{comp}\_\\mathrm{ON}(\\omega\_i, \\omega\_o) = \\frac{w\_\\mathrm{d} \\boldsymbol{\\rho}\_\\mathrm{ms}}{\\pi} \\bigl(1 - \\hat{E}\_\\mathrm{ON}(\\omega\_i)\\bigr) \\bigl(1 - \\hat{E}\_\\mathrm{ON}(\\omega\_o)\\bigr) \\ , \\end{equation} where the factor \\(\\boldsymbol{\\rho}\_\\mathrm{ms}\\) accounts approximately for multiple scattering on the microfacet surface: \\begin{equation} \\boldsymbol{\\rho}\_\\mathrm{ms} = \\frac{\\boldsymbol{\\rho}^2}{\\pi} \\frac{\\langle\\hat{E}\_\\mathrm{ON}\\rangle / (1 - \\langle \\hat{E}\_\\mathrm{ON}\\rangle)}{1 - \\boldsymbol{\\rho} \\bigl(1 - \\langle \\hat{E}\_\\mathrm{ON}\\rangle\\bigr)} \\ . \\end{equation} One can verify that as \\(\\boldsymbol{\\rho} \\rightarrow 1\\), the total directional albedo of the BRDF of Equation \\ref{EON\_brdf}, \\(E\_\\mathrm{diffuse}(\\omega) \\rightarrow 1\\) (in the \\(w\_\\mathrm{d}=1\\) case), thus the compensation term ensures that the white furnace test passes. Note that in the the zero roughness (\\(\\sigma \\rightarrow 0\\)) limit, the energy compensation term vanishes, and the parameter \\(\\boldsymbol{\\rho}\\) is equal to the albedo of \\(f\_\\mathrm{diffuse}\\). As roughness increases, the albedo of \\(f\_\\mathrm{diffuse}\\) becomes slightly more dark and saturated than \\(\\boldsymbol{\\rho}\\) due to the multiple scattering, which is physically realistic.\
+\
+Physically there will be additional darkening and saturation of the observed color due to multiple inter-reflections (scattering) within the gloss layer, as described in the coat [darkening](https://academysoftwarefoundation.github.io/OpenPBR/#darkening)\
+ section. However in this case, we wish to automatically compensate for this effect by adjusting the \\(\\boldsymbol{\\rho}\\) parameter of \\(f\_\\mathrm{diffuse}\\) in order to make the observed color match the input color \\(\\mathbf{C} =\\) **`base_color`** (in a similar spirit to the albedo remapping described in the [Subsurface](https://academysoftwarefoundation.github.io/OpenPBR/#subsurface)\
+ section). To define the meaning of the specified color in terms of the underlying base albedo, we write the normal-direction reflectance of the glossy-diffuse slab (in the \\(w\_\\mathrm{d}=1\\) case), \\(\\mathbf{E}\_\\textrm{glossy-diffuse}\\) in the general form \\begin{eqnarray} \\mathbf{E}\_\\textrm{glossy-diffuse} = \\mathbf{E}\_\\textrm{spec} + \\mathbf{E}\_\\textrm{diffuse} \\end{eqnarray} where \\(\\mathbf{E}\_\\mathrm{spec}\\) is the normal-direction reflectance of all energy reflected from the dielectric interface _without_ macroscopic transmission, while \\(\\mathbf{E}\_\\mathrm{diffuse}\\) is the normal-direction reflectance of all remaining energy due to (macroscopic) transmission through the interface, multiple scattering in the diffuse medium, and transmission back out.\
+\
+We then _define_ \\(\\mathbf{C} =\\) **`base_color`** to be such that the reflectance of the remaining energy transmitted into the slab, \\(\\mathbf{E}\_\\textrm{diffuse}\\) in the Lambertian case of _zero_ **`base_diffuse_roughness`** (i.e. \\(\\sigma = 0\\)), is given by \\begin{eqnarray} \\label{glossy\_diffuse\_albedo\_constraint} \\mathbf{E}\_\\textrm{diffuse} = \\bigl( 1 - \\mathbf{E}\_\\textrm{spec} \\bigr) \\mathbf{C} \\ . \\end{eqnarray} In other words, the selected color \\(\\mathbf{C}\\) parametrizes the fraction of the energy transmitted into the dielectric layer that is subsequently transmitted back out due to reflection from a Lambertian interface. Thus since \\(0 \\le \\mathbf{C} \\le 1\\), \\(\\mathbf{E}\_\\textrm{glossy-diffuse} \\le 1\\) so energy is always conserved, and if \\(\\mathbf{C}=1\\) then \\(\\mathbf{E}\_\\textrm{glossy-diffuse}=1\\) which guarantees that a white \\(\\mathbf{C}\\) passes the furnace test. According to this definition, \\(\\mathbf{C}\\) is the observed reflection color (viewed at normal incidence under uniform illumination) in areas where the Fresnel reflection is negligible, and otherwise the observed color is a blend of \\(\\mathbf{C}\\) with the gray Fresnel reflection that conserves total reflected energy.\
+\
+Given the required diffuse albedo \\(\\mathbf{E}\_\\textrm{diffuse}\\) according to the formula above, then in principle, the \\(\\boldsymbol{\\rho}\\) parameter of the Oren-Nayar model \\(f\_\\mathrm{diffuse}(\\omega\_i, \\omega\_o)\\) which generates the required \\(\\mathbf{E}\_\\textrm{diffuse}\\) can be determined. A reasonable practical, albeit non-reciprocal, approximation to the resulting BRDF of the glossy-diffuse slab, which satisfies this requirement is obtained via the non-reciprocal albedo-scaling approximation of equation \\ref{non-reciprocal-albedo-scaling}: \\begin{equation} f\_\\textrm{glossy-diffuse}(\\omega\_i, \\omega\_o) \\approx f\_\\mathrm{dielectric}(\\omega\_i, \\omega\_o) + \\bigl(1 - E\_\\mathrm{dielectric}(\\omega\_o)\\bigr) \\,f\_\\mathrm{diffuse}(\\omega\_i, \\omega\_o) \\ . \\end{equation} In this approximation, the \\(\\boldsymbol{\\rho}\\) parameter of the Oren-Nayar model in Equation \\ref{FON\_brdf} and Equation \\ref{EON\_comp} must be simply \\(\\boldsymbol{\\rho} = \\mathbf{C}\\) in order to satisfy equation \\ref{glossy\_diffuse\_albedo\_constraint}.\
+\
+If a reciprocal formulation is desired, the classic Ashikhmin-Shirley or Kelemen model (\[[Ashikhmin2000](https://academysoftwarefoundation.github.io/OpenPBR/#citation-ashikhmin2000)\
+\], \[[Kelemen2001](https://academysoftwarefoundation.github.io/OpenPBR/#citation-kelemen2001)\
+\], \[[Kulla2017](https://academysoftwarefoundation.github.io/OpenPBR/#citation-kulla2017)\
+\], \[[Kutz2021](https://academysoftwarefoundation.github.io/OpenPBR/#citation-kutz2021)\
+\]) form is \\begin{equation} f\_\\textrm{glossy-diffuse}(\\omega\_i, \\omega\_o) \\approx f\_\\mathrm{dielectric}(\\omega\_i, \\omega\_o) + \\mathcal{N} \\bigl(1 - E\_\\mathrm{dielectric}(\\omega\_i)\\bigr) \\bigl(1 - E\_\\mathrm{dielectric}(\\omega\_o)\\bigr) \\,f\_\\mathrm{diffuse}(\\omega\_i, \\omega\_o) \\ , \\end{equation} where \\(\\mathcal{N}\\) is a normalization factor such that equation \\ref{glossy\_diffuse\_albedo\_constraint} is satisfied. In the case of a zero roughness (i.e. Lambertian) Oren-Nayar base \\(\\mathcal{N}\\) can be tabulated in terms of the dielectric IOR (\[[Kutz2021](https://academysoftwarefoundation.github.io/OpenPBR/#citation-kutz2021)\
+\]), and the required \\(\\boldsymbol{\\rho}\\) of the Lambertian base is equal to \\(\\mathbf{C}\\) as in the non-reciprocal albedo-scaling approximation. Extending this to the more general case of a non-Lambertian rough Oren-Nayar base would require adding the roughness dimension to the tabulation, and the required Oren-Nayar \\(\\boldsymbol{\\rho}\\) will then _not_ simply equal \\(\\mathbf{C}\\). We leave the specific choice of model and these details to the implementation.\
+\
+| Glossy-diffuse params | Label | Type | Range | Default | Description |\
+| --- | --- | --- | --- | --- | --- |\
+| **`base_weight`** | Weight | `float` | \\( \[0, 1\] \\) | \\( 1 \\) | Scalar multiplier of \\(f\_\\mathrm{diffuse}\\) |\
+| **`base_color`** | Color | `color3` | \\( \[0, 1\]^3 \\) | \\( (0.8, 0.8, 0.8) \\) | Base reflection albedo color according to equation \\ref{glossy\_diffuse\_albedo\_constraint}. |\
+| **`base_diffuse_roughness`** | Diffuse Roughness | `float` | \\( \[0, 1\] \\) | \\( 0 \\) | Roughness of the diffuse lobe \\(f\_\\mathrm{diffuse}\\) |\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/images/glossy-diffuse.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/glossy-diffuse.png)\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/dummy)](https://academysoftwarefoundation.github.io/OpenPBR/dummy)\
+\
+ **Figure 7:** Wood rendered as glossy-diffuse, composed of diffuse lobe (left), specular lobe (middle), and their normalized sum. Near the specular highlight the diffuse lobe is automatically reduced since energy is conserved.\
+\
+   \
+\
+### Subsurface\
+\
+The subsurface slab represents a dielectric embedding a dense scattering volumetric medium, which generates significant light bleeding effects due to light propagation and diffusion under the surface, where the exiting ray leaves at a different surface location than the incident ray. Physically, as for the slabs defined in the [Glossy-diffuse](https://academysoftwarefoundation.github.io/OpenPBR/#glossy-diffuse)\
+ section and [Translucent base](https://academysoftwarefoundation.github.io/OpenPBR/#translucentbase)\
+ section, this is a dielectric substrate with surface BSDF \\(f\_\\mathrm{dielectric}\\) and homogeneous interior medium \\(V^\\infty\_\\mathrm{subsurface}\\):\
+\
+\\begin{equation} S\_\\mathrm{subsurface} = \\mathrm{Slab}(f\_\\mathrm{dielectric}, V^\\infty\_\\mathrm{subsurface}) \\ . \\end{equation}\
+\
+As in the cases of the [glossy-diffuse](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/basesubstrate/glossy-diffuse)\
+ slab and the [translucent-base](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/basesubstrate/translucentbase)\
+, the subsurface is bounded by a dielectric interface with BSDF \\(f\_\\mathrm{dielectric}\\), which generates the primary specular reflection lobe parametrized via the “specular” parameters as described in the Dielectric base section. Combined with this is the reflection generated by light which is transmitted through the dielectric interface into the underlying embedded subsurface medium, where it scatters around and eventually transmits back out. In this case the subsurface medium \\(V^\\infty\_\\mathrm{subsurface}\\) is given a parametrization which is particularly convenient for controlling the volumetric effect of dense subsurface scattering:\
+\
+*   **`subsurface_radius`** \* **`subsurface_radius_scale`**: the _mean free path_ (MFP) per RGB channel, \\(\\mathbf{r}\\), i.e. the average distance that a ray of light travels through the medium before being absorbed or scattered. This thus controls the apparent density of the medium. In the limit of zero MFP, the medium tends towards infinite density, and approaches the look of an opaque diffuse surface. Being a length, **`subsurface_radius`** can be any value greater than or equal to zero. For convenience, we make the soft range \\(\[0, 1\]\\), thus covering common cases such as skin where the MFP is lower than the scene length units. The **`subsurface_radius_scale`** controls the color channel dependence of the MFP, and thus this color is visible in the light transmitted through thinner regions of the subsurface volume.\
+*   **`subsurface_color`**: the observed RGB reflection albedo color taking into account all orders of multiple scattering, \\(\\mathbf{C}\\) (where the sense in which this parametrizes the observed color is discussed in detail below).\
+*   **`subsurface_scatter_anisotropy`**: the medium's phase function, parametrized by the scalar anisotropy \\(g \\in \[-1, 1\]\\). In practice implementations may want to internally clamp the anisotropy as the phase function becomes ill-defined and the rendering unstable near the −1, 1 limits.\
+\
+We now define in detail how these subsurface parameters collectively determine the underlying volumetric parameters (per-channel _extinction_ \\(\\boldsymbol{\\mu}\_t\\) and _single-scattering albedo_ \\(\\boldsymbol{\\alpha}\\), and scalar phase function anisotropy \\(g\\)).\
+\
+The extinction coefficient is simply given by the reciprocal of the MFP per channel: \\(\\boldsymbol{\\mu}\_t = 1/\\mathbf{r}\\) (this may need to be regularized in the limit \\(\\mathbf{r} \\rightarrow 0\\) to avoid numerical issues). Note that since the extinction \\(\\boldsymbol{\\mu}\_t\\) is independent of the anisotropy \\(g\\), the anisotropy has the familiar physical effect of allowing light to transmit more deeply into the medium when positive than when negative.\
+\
+To define the meaning of the observed **`subsurface_color`** \\(\\mathbf{C}\\) in terms of the underlying medium, the reflection from the medium needs to be separated from the Fresnel reflection at the dielectric interface. To make this precise, we denote by \\(\\mathbf{E}\_\\mathrm{subsurface}\\) the directional reflectance along the the normal direction (according to the definition of equation \\ref{directional-reflectance-definition}). This can be broken into two components: \\begin{equation} \\mathbf{E}\_\\mathrm{subsurface} = \\mathbf{E}\_\\mathrm{spec} + \\mathbf{E}\_\\mathrm{multi-scatter} \\ . \\end{equation} Here \\(\\mathbf{E}\_\\mathrm{spec}\\) is the normal-direction reflectance of all energy reflected from the dielectric interface _without_ macroscopic transmission. While the _multiple-scattering albedo_ \\(\\mathbf{E}\_\\mathrm{multi-scatter}\\) is the normal-direction reflectance of all remaining reflected energy due to (macroscopic) transmission through the interface, multiple scattering in the subsurface medium, and transmission back out. We then _define_ the **`subsurface_color`** \\(\\mathbf{C}\\) to parametrize, assuming correct physical light transport and semi-infinite homogeneous slab geometry, the fraction of the energy transmitted through the interface that is transmitted back out and observed, i.e.: \\begin{equation} \\label{subsurface\_albedo\_constraint} \\mathbf{E}\_\\mathrm{multi-scatter} = \\left( 1 - \\mathbf{E}\_\\mathrm{spec} \\right) \\mathbf{C} \\ . \\end{equation} Thus since \\(0 \\le \\mathbf{C} \\le 1\\), \\(\\mathbf{E}\_\\mathrm{subsurface} \\le 1\\) so energy is always conserved, and if \\(\\mathbf{C}=1\\) then \\(\\mathbf{E}\_\\mathrm{subsurface}=1\\) which guarantees that a white **`subsurface_color`** passes the furnace test. According to this definition, the **`subsurface_color`** \\(\\mathbf{C}\\) is the observed reflection color (viewed at normal incidence under uniform illumination) in areas where the Fresnel reflection is negligible, and otherwise the observed color is a blend of \\(\\mathbf{C}\\) with the gray Fresnel reflection that conserves total reflected energy.\
+\
+Given the required multiple-scattering albedo \\(\\mathbf{E}\_\\mathrm{multi-scatter}\\) according to the formula above, then in principle, the single-scattering albedo \\(\\boldsymbol{\\alpha}\\) which generates the required \\(\\mathbf{E}\_\\mathrm{multi-scatter}\\) can be determined (assuming the given extinction \\(\\boldsymbol{\\mu}\_t\\) and anisotropy \\(g\\)). We do not require any particular theoretical formula for \\(\\boldsymbol{\\alpha}(\\mathbf{C})\\) be used, but the closer it is to satisfying equation \\ref{subsurface\_albedo\_constraint} the closer it is to the ground truth. Ideally, this formula should take into account all the properties of the medium as well as the dielectric interface. A number of such approximate formulas have been derived in the literature. A well-known approximation is due to van de Hulst (\[[Kulla2017](https://academysoftwarefoundation.github.io/OpenPBR/#citation-kulla2017)\
+\], \[[d'Eon2021](https://academysoftwarefoundation.github.io/OpenPBR/#citation-d'eon2021)\
+\]), which assumes an index-matched boundary (i.e. \\(\\mathbf{E}\_\\mathrm{spec} = 0\\), thus \\(\\mathbf{E}\_\\mathrm{multi-scatter} = \\mathbf{C}\\)), where: \\begin{equation} \\mathbf{C} = \\frac{(1 - \\mathbf{s})(1 - 0.139 \\mathbf{s})}{1 + 1.17 \\mathbf{s}} \\ , \\quad \\mathbf{s} = \\sqrt{\\frac{1 - \\boldsymbol{\\alpha}}{1 - \\boldsymbol{\\alpha}\\, g}} \\ . \\end{equation} Inversion of this gives the per-channel single-scatter albedo \\(\\boldsymbol{\\alpha}\\) in terms of the **`subsurface_color`** \\(\\mathbf{C}\\) and anisotropy \\(g\\): \\begin{equation} \\boldsymbol{\\alpha} = \\frac{1 - \\mathbf{s}^2}{1 - g\\,\\mathbf{s}^2} \\ , \\quad \\mathbf{s} = 4.09712 + 4.20863\\mathbf{C} - \\sqrt{9.59217 + 41.6808C + 17.7126\\mathbf{C}^2} \\ . \\end{equation} This gives one approximate \\(\\boldsymbol{\\alpha}(\\mathbf{C})\\) mapping, but as noted it ignores the presence of the dielectric boundary. Other approximate forms which take into account the dielectric interface are presented in various sources (e.g. \[[d'Eon2021](https://academysoftwarefoundation.github.io/OpenPBR/#citation-d'eon2021)\
+\], \[[Burley2018](https://academysoftwarefoundation.github.io/OpenPBR/#citation-burley2018)\
+\]). We also note that the relevant approximation may depend on the specific assumptions made about the subsurface interface, for example in some cases renderers may approximate the boundary BSDF via a diffuse lobe, for efficiency and improved convergence. In that case, it would be more appropriate to use an \\(\\boldsymbol{\\alpha}(\\mathbf{C})\\) designed for this specific interface BSDF, in order to satisfy equation \\ref{subsurface\_albedo\_constraint}.\
+\
+The phase function anisotropy \\(g\\) of the medium is taken to be given directly by the **`subsurface_scatter_anisotropy`** parameter[8](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-anisotropy_g)\
+. It is assumed that the phase function has the standard Henyey—Greenstein form.\
+\
+Once the underlying volumetric medium properties \\(\\boldsymbol{\\mu}\_t\\), \\(\\boldsymbol{\\alpha}\\) and \\(g\\) are determined, implementations are free to choose how to compute the light transport in the subsurface medium according to their use case, for example accurately via volumetric path tracing (\[[Novak2018](https://academysoftwarefoundation.github.io/OpenPBR/#citation-novak2018)\
+\], \[[Pharr2023](https://academysoftwarefoundation.github.io/OpenPBR/#citation-pharr2023)\
+\]), or approximately via a bidirectional scattering surface reflectance distribution (BSSRDF) model using e.g. the dipole approximation \[[Jensen2001](https://academysoftwarefoundation.github.io/OpenPBR/#citation-jensen2001)\
+\].\
+\
+Note that the default value of **`subsurface_radius_scale`** is set at \\((1, 0.5, 0.25)\\) to approximate the effect of Rayleigh scattering. If we roughly approximate the wavelength corresponding to each of the RGB channels as \\(\\lambda/\\mathrm{nm} \\approx 650, 550, 450\\) and assume the radii scale like the reciprocal of the extinction, then since in Rayleigh scattering the extinction scales like \\(\\lambda^{-4}\\) for light of wavelength \\(\\lambda\\) the expected relative magnitudes of the radii are \\((1, (550/650)^4, (450/650)^4) \\approx (1, 0.5, 0.25)\\), hence the chosen default. This provides a slightly more realistic default look for the subsurface than resulting from gray radii.\
+\
+| Subsurface params | Label | Type | Range | Norm | Default | Description |\
+| --- | --- | --- | --- | --- | --- | --- |\
+| **`subsurface_weight`** | Weight | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) | Mix weight between subsurface and diffuse slabs |\
+| **`subsurface_color`** | Color | `color3` | \\( \[0, 1\] \\) |     | \\( (0.8, 0.8, 0.8) \\) | The observed reflection color of \\(V^\\infty\_\\mathrm{subsurface}\\) |\
+| **`subsurface_radius`** | Radius | `float` | \\( \[0, \\infty) \\) | \\( \[0, 1\] \\) | \\( 1 \\) | Length scale of MFP |\
+| **`subsurface_radius_scale`** | Radius scale | `color3` | \\( \[0, 1\]^3 \\) |     | \\( (1.0, 0.5, 0.25) \\) | RGB multiplier to **`subsurface_radius`**, giving the per-channel MFPs |\
+| **`subsurface_scatter_anisotropy`** | Anisotropy | `float` | \\( \[-1, 1\] \\) |     | \\( 0 \\) | Anisotropy of the Henyey—Greenstein phase function of the interior medium \\(V^\\infty\_\\mathrm{subsurface}\\) |\
+\
+|     |     |     |\
+| --- | --- | --- |\
+| [![](https://academysoftwarefoundation.github.io/OpenPBR/images/subsurface1.jpg)](https://academysoftwarefoundation.github.io/OpenPBR/images/subsurface1.jpg) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/subsurface2.jpg)](https://academysoftwarefoundation.github.io/OpenPBR/images/subsurface2.jpg) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/subsurface3.jpg)](https://academysoftwarefoundation.github.io/OpenPBR/images/subsurface3.jpg) |\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/dummy)](https://academysoftwarefoundation.github.io/OpenPBR/dummy)\
+\
+ **Figure 8:** The effect of varying the subsurface scattering radius (**`subsurface_radius`**)\
+\
+   \
+\
+### Translucent base\
+\
+For cases where the substrate medium is translucent, i.e. transmits and refracts a significant quantity of light, we provide a separate parametrization of the underlying medium more appropriate for this use case than the subsurface model, where the **`transmission_weight`** mix weight selects this model rather than the opaque mix of glossy-diffuse and subsurface. This is a more traditional volumetric parametrization specifying the properties of a homogeneous medium interior to the object, with or without absorption and scattering, which is useful for modeling materials ranging from clear or colored absorbing-only glass and liquids to translucent materials with visually significant scattering such as honey, fruit juice, murky water, opalescent glass, or milky glass.\
+\
+As for the dielectric slabs defined in the [Glossy-diffuse](https://academysoftwarefoundation.github.io/OpenPBR/#glossy-diffuse)\
+ section and [Subsurface](https://academysoftwarefoundation.github.io/OpenPBR/#subsurface)\
+ section, the top interface is described by a rough GGX microfacet BSDF \\(f\_\\mathrm{dielectric}\\) whose “specular” parameters are described in the Dielectric base section. The bulk of the dielectric, \\(V^\\infty\_\\mathrm{dielectric}\\) is a volumetric medium supporting absorption and scattering: \\begin{equation} S\_\\textrm{translucent-base} = \\mathrm{Slab}(f\_\\mathrm{dielectric}, V^\\infty\_\\mathrm{dielectric}) \\ . \\end{equation}\
+\
+The index of refraction of \\(V^\\infty\_\\mathrm{dielectric}\\) is specified by **`specular_ior`** (as for the entire dielectric-base).\
+\
+The volumetric properties of \\(V^\\infty\_\\mathrm{dielectric}\\) are specified as follows. The RGB **`transmission_color`** \\(\\mathbf{T}\\) and scalar **`transmission_depth`** \\(\\lambda\\) parameter pair is a commonly used artist-friendly way to set the volumetric medium extinction coefficient \\(\\boldsymbol{\\mu}\_t\\).\
+\
+The **`transmission_depth`** is the distance traveled inside the medium by white light before its color becomes exactly **`transmission_color`** by Beer's law, determining the extinction coefficient of the interior medium \\(\\boldsymbol{\\mu}\_t\\) as follows: \\begin{equation} \\boldsymbol{\\mu}\_t = - \\frac{\\ln \\mathbf{T}} {\\lambda} \\ . \\end{equation} Being a length, **`transmission_depth`** can be any value greater than or equal to zero. For convenience, we make the soft range \\(\[0, 1\]\\), thus covering common cases. However when **`transmission_depth`** \\(\\lambda\\) is zero, it is assumed that the interior medium is absent (\\(\\boldsymbol{\\mu}\_t=0\\)) and **`transmission_color`** is used instead to non-physically tint the dielectric refraction Fresnel factor multiplicatively by a constant amount (ignoring the dielectric energy balance).\
+\
+The **`transmission_scatter`** parameter \\(\\mathbf{S}\\) directly sets the medium scattering coefficient \\(\\boldsymbol{\\mu}\_s\\) (as a multiple of the inverse **`transmission_depth`**): \\begin{equation} \\boldsymbol{\\mu}\_s = \\frac{\\mathbf{S}} {\\lambda} \\ . \\end{equation} The **`transmission_scatter`** color thus controls the observed color of the single-scattered light. (Note that in the case **`transmission_depth`** \\(\\lambda\\) is zero, however, the scattering coefficient is ignored). The absorption coefficient \\(\\boldsymbol{\\mu}\_a\\) is then computed as \\begin{equation} \\boldsymbol{\\mu}\_a = \\boldsymbol{\\mu}\_t - \\boldsymbol{\\mu}\_s \\ . \\end{equation} If any component of \\(\\boldsymbol{\\mu}\_a\\) is negative, then \\(\\boldsymbol{\\mu}\_a\\) is shifted by enough gray to make all the components positive, i.e. (in an obvious notation): \\begin{eqnarray} && \\mathrm{if \\;\\; min(\\boldsymbol{\\mu}\_a)} < 0 \\nonumber \\\\ && \\quad\\quad \\boldsymbol{\\mu}\_a \\leftarrow \\boldsymbol{\\mu}\_a - \\mathrm{min}(\\boldsymbol{\\mu}\_a) \\ . \\end{eqnarray} After this shifting, the final extinction coefficient is given by the new \\(\\boldsymbol{\\mu}\_a + \\boldsymbol{\\mu}\_s\\). This formulation produces volumetric parameters which reproduce reasonably well the independently specified colors of the transmitted and single-scattered light. Finally the medium phase function anisotropy \\(g \\in \[-1, 1\]\\) is given by **`transmission_scatter_anisotropy`** (the standard Henyey—Greenstein phase function is assumed[8](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-anisotropy_g)\
+).\
+\
+|     |     |     |\
+| --- | --- | --- |\
+| [![](https://academysoftwarefoundation.github.io/OpenPBR/images/transmission1.jpg)](https://academysoftwarefoundation.github.io/OpenPBR/images/transmission1.jpg) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/transmission2.jpg)](https://academysoftwarefoundation.github.io/OpenPBR/images/transmission2.jpg) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/transmission3.jpg)](https://academysoftwarefoundation.github.io/OpenPBR/images/transmission3.jpg) |\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/dummy)](https://academysoftwarefoundation.github.io/OpenPBR/dummy)\
+\
+ **Figure 9:** The effect of **`transmission_scatter_anisotropy`**. From left to right: −0.5 (back scattering), 0 (isotropic), 0.5 (forward scattering).\
+\
+The phenomenon known as _optical dispersion_ (i.e. variation of the IOR with wavelength) produces familiar rainbow-like colors when light refracts through dielectrics such as water, glass and diamond. Control over dispersion is grouped with the transmission parameters since this effect is only significant in highly transparent refractive media. Dispersion is parametrized by the _Abbe number_ \\(V\_d\\), which is the ratio between differences of refractive indices at short, medium, and long wavelengths as follows: \\begin{equation} V\_d = \\frac{n\_{\\mathrm{medium}} - 1}{n\_{\\mathrm{short}} - n\_{\\mathrm{long}}} \\ , \\end{equation} where in the standard modern definition \\(n\_{\\mathrm{long}} = n\_C\\), \\(n\_{\\mathrm{medium}} = n\_d\\) and \\(n\_{\\mathrm{short}} = n\_F\\) are the IORs of the material at the wavelengths of the Fraunhofer C, d, and F spectral lines (at \\(\\lambda\_C\\)=656.3 nm, \\(\\lambda\_d\\)=587.6 nm, and \\(\\lambda\_F\\)=486.1 nm respectively). The amount of dispersion (i.e. angular separation of colors) is roughly proportional to the reciprocal of the Abbe number. The IOR at any wavelength can be determined from the Cauchy empirical formula: \\begin{equation} n(\\lambda) = A + \\frac{B}{\\lambda^2} \\ . \\end{equation} It follows that if the Abbe number \\(V\_d\\) and IOR \\(n\_d = n(\\lambda\_d)\\) are given, the coefficients in the Cauchy formula are given by \\begin{eqnarray} B &=& \\frac{n\_d - 1}{V\_d \\; (\\lambda^{-2}\_F - \\lambda^{-2}\_C)} \\ , \\nonumber \\\\ A &=& n\_d - \\frac{B}{\\lambda^2\_d} \\ . \\end{eqnarray} We assume that **`specular_ior`** (including any modulation via **`specular_weight`** as in equation \\ref{modulated\_ior}) defines \\(n(\\lambda\_d)\\). Thus the IOR \\(n\\) at any wavelength \\(\\lambda\\) is determined, given \\(V\_d\\). A renderer can use this known \\(n(\\lambda)\\) function to model the effect of dispersion, for example by stochastically choosing a wavelength sample and tracing the refracted ray direction according to the corresponding IOR.\
+\
+However the Abbe number itself is not very intuitive to work with, as the dispersion effect increases as the Abbe number decreases (zero dispersion occurs at infinite Abbe number). We therefore prefer to use a more artist-friendly parametrization, where the Abbe number is specified by \\begin{equation} V\_d = \\frac{\\mathtt{transmission\\\_dispersion\\\_abbe\\\_number}} {\\mathtt{transmission\\\_dispersion\\\_scale}} \\ . \\end{equation} At the default **`transmission_dispersion_scale`** of zero, the Abbe number is infinite, which corresponds to no dispersion. At the maximum of 1, the Abbe number peaks at \\(V\_d\\) = **`transmission_dispersion_abbe_number`** which defaults to 20.\
+\
+The default 20 was chosen since common real materials with the highest dispersion have Abbe numbers roughly greater than or equal to this (for example, different types of glass have Abbe numbers between 20 and 91 \[[Schott2023](https://academysoftwarefoundation.github.io/OpenPBR/#citation-schott2023)\
+\], water and diamond both have Abbe numbers between 55 and 56, while the oxide mineral rutile, composed of titanium dioxide, exhibits extremely high dispersion with an Abbe number of 9.87 \[[Polyanskiy2023](https://academysoftwarefoundation.github.io/OpenPBR/#citation-polyanskiy2023)\
+\]). In most cases the **`transmission_dispersion_scale`** therefore functions as a convenient roughly linear slider from low to high dispersion. For those special cases where the Abbe number of a specific material is wanted, the Abbe number itself can be changed via **`transmission_dispersion_abbe_number`**.\
+\
+|     |     |     |     |     |\
+| --- | --- | --- | --- | --- |\
+| [![](https://academysoftwarefoundation.github.io/OpenPBR/images/dispersion_0percent.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/dispersion_0percent.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/dispersion_25percent.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/dispersion_25percent.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/dispersion_50percent.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/dispersion_50percent.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/dispersion_75percent.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/dispersion_75percent.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/dispersion_100percent.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/dispersion_100percent.png) |\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/dummy)](https://academysoftwarefoundation.github.io/OpenPBR/dummy)\
+\
+ **Figure 10:** Increasing the **`transmission_dispersion_scale`** of glass from 0 to 1\
+\
+| Translucent base params | Label | Type | Range | Norm | Default | Description |\
+| --- | --- | --- | --- | --- | --- | --- |\
+| **`transmission_weight`** | Weight | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) | Mix weight between translucent base and opaque base slabs |\
+| **`transmission_color`** | Color | `color3` | \\( \[0, 1\]^3 \\) |     | \\( (1, 1, 1) \\) | Transmission color, specifies the extinction of \\(V^\\infty\_\\mathrm{dielectric}\\) |\
+| **`transmission_depth`** | Depth | `float` | \\( \[0, \\infty) \\) | \\( \[0, 1\] \\) | \\( 0 \\) | Controls the depth into the volume at which the **`transmission_color`** is realized; if zero, acts as a constant (on-surface) transmission tint |\
+| **`transmission_scatter`** | Scatter | `color3` | \\( \[0, 1\]^3 \\) |     | \\( (0, 0, 0) \\) | Scattering coefficient of the interior medium |\
+| **`transmission_scatter_anisotropy`** | Anisotropy | `float` | \\( \[-1, 1\] \\) |     | \\( 0 \\) | Anisotropy of the Henyey—Greenstein phase function of the interior medium \\(V^\\infty\_\\mathrm{dielectric}\\) |\
+| **`transmission_dispersion_scale`** | Dispersion scale | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) | Linearly scales the amount of dispersion |\
+| **`transmission_dispersion_abbe_number`** | Abbe number | `float` | \\( \[0, \\infty) \\) | \\( \[9, 91\] \\) | \\( 20 \\) | Physical Abbe number of the base dielectric medium |\
+\
+   \
+\
+Thin-film iridescence\
+---------------------\
+\
+_Iridescence_ is the occurrence of rainbow-like color fringes in the reflection when a thin dielectric film with thickness on the order of the wavelength of light is placed on top of a material, due to interference between light reflected from the film's top and bottom surfaces, including internal reflections. To model this, we assume such a thin film sits atop the base substrate (whether metal or dielectric), parametrized by:\
+\
+*   **`thin_film_weight`**: the coverage (presence) weight of the film,\
+*   **`thin_film_thickness`**: the thickness of the film in micrometers (\\(\\mathrm{\\mu m}\\)),\
+*   **`thin_film_ior`**: the index of refraction (IOR) of the film.\
+\
+The thickness and IOR together affect the intensity, spacing, and hue of the color fringes. The coverage weight acts as a blend between the BSDF with and without the presence of the film, allowing the overall strength of the effect to be adjusted without altering its structure or color.\
+\
+The currently recommended thin-film model is that of Belcour and Barla \[[Belcour2017](https://academysoftwarefoundation.github.io/OpenPBR/#citation-belcour2017)\
+\]. This model provides an efficient, high-quality approximation of thin-film interference suitable for typical RGB-based production rendering.\
+\
+Implementations that operate in a spectral rendering context (or that otherwise wish to account for wavelength-dependent IOR and extinction) may alternatively compute the thin-film Fresnel effect directly from first principles by evaluating Fresnel and thin-film interference at one or more wavelengths and integrating the result according to the renderer's spectral pipeline. In such implementations, the thin-film effect is typically evaluated using an Airy-style multi-bounce formulation (e.g., Equation 3 in \[[Belcour2017](https://academysoftwarefoundation.github.io/OpenPBR/#citation-belcour2017)\
+\]) together with wavelength-dependent Fresnel amplitude and phase at the film interfaces. Results should be validated against the recommended Belcour and Barla model in the parameter regimes where that model applies.\
+\
+Regardless of which approach is used, several considerations apply:\
+\
+*   The shape and color of the fringe patterns in the reflection from the film are affected by the complex IOR of the adjacent media above and below the film, which in general are a statistical mix of metal and dielectric below, and of coat and ambient medium above (to which the fuzz is index-matched). [Figure 11](https://academysoftwarefoundation.github.io/OpenPBR/#figure_ior_configs)\
+     illustrates the eight possible different structures depending on the presence of both the film and coat, each of which leads to different Fresnel effects due to the differing IORs at the interfaces. In principle the implementation should account for all of these configurations accurately, though the precise modeling of these effects is implementation-dependent.\
+    \
+*   The thin-film thickness is assumed to be smaller than the scale of the microfacets and the film is assumed to be smooth. With this assumption, in practice the effect is most easily incorporated directly into the Fresnel factor of the microfacet BSDFs of both the metal and dielectric-base layers (thus it is _not_ represented by incorporating an explicit thin-film Slab into the model).\
+    \
+*   In the case of a dielectric base, the thin film should also generate color fringes in the transmission lobe. This is important, for example, when rendering soap bubbles (see \[[Belcour2017](https://academysoftwarefoundation.github.io/OpenPBR/#citation-belcour2017)\
+    \]).\
+    \
+*   In the case of a metallic base the physics is somewhat ambiguous since, as described in the [Metal](https://academysoftwarefoundation.github.io/OpenPBR/#metal)\
+     section, the Fresnel factor for metal is defined according to the Schlick-based “F82-tint” parametrization, which does not specify the underlying physical complex IOR. We suggest that some reasonable approximation is employed to map the Fresnel factor to a best-matching effective complex IOR, for example that described by \[[Gulbrandsen2014](https://academysoftwarefoundation.github.io/OpenPBR/#citation-gulbrandsen2014)\
+    \].\
+    \
+*   Because the thin film is non-absorbing and interference-based, it only redistributes the probabilities of reflection and transmission; therefore, it should not violate energy conservation.\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/images/IOR_configs.svg)](https://academysoftwarefoundation.github.io/OpenPBR/images/IOR_configs.svg)\
+\
+ **Figure 11:** Schematic of all 8 possible IOR configurations, including those involving the thin-film.\
+\
+  \
+\
+| Thin-film params | Label | Type | Range | Norm | Default | Description |\
+| --- | --- | --- | --- | --- | --- | --- |\
+| **`thin_film_weight`** | Weight | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) | Coverage weight of the thin film |\
+| **`thin_film_thickness`** | Thickness | `float` | \\( \[0, \\infty) \\) | \\( \[0, 1\] \\) | \\( 0.5 \\) | Thickness of the film in micrometers (\\(\\mathrm{\\mu m}\\)) |\
+| **`thin_film_ior`** | IOR | `float` | \\( (0, \\infty) \\) | \\( \[1, 3\] \\) | \\( 1.4 \\) | Refractive index of the film |\
+\
+|     |     |     |\
+| --- | --- | --- |\
+| [![](https://academysoftwarefoundation.github.io/OpenPBR/images/thin_film_0nm.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/thin_film_0nm.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/thin_film_300nm.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/thin_film_300nm.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/thin_film_600nm.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/thin_film_600nm.png) |\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/dummy)](https://academysoftwarefoundation.github.io/OpenPBR/dummy)\
+\
+ **Figure 12:** **`thin_film_thickness`** varying over 0, 0.5, 1.0 micrometers\
+\
+   \
+\
+Coat\
+----\
+\
+The coat slab is a layer of dielectric that transmits light without scattering, but with possible absorption. This is intended to support the appearance of objects with a coat of colored varnish or lacquer: \\begin{equation} S\_\\mathrm{coat} = \\mathrm{Slab}(f\_\\mathrm{coat}, V\_\\mathrm{coat}) \\ . \\end{equation} The BSDF of the interface \\(f\_\\mathrm{coat}\\) is that of a GGX microfacet dielectric parametrized by **`coat_roughness`** and **`coat_roughness_anisotropy`** (see the [Microfacet model](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/microfacetmodel)\
+ section). The IOR **`coat_ior`** of this dielectric layer is distinct from that of the base dielectric, as described below. There is also assumed to be an embedded _purely absorbing_ medium \\(V\_\\mathrm{coat}\\).\
+\
+The coat is applied on top of the base substrate, with a coverage weight \\(\\mathtt{C}\\) = **`coat_weight`** as follows: \\begin{equation} M\_\\textrm{coated-base} = \\mathrm{\\mathbf{layer}}(M\_\\textrm{base-substrate}, S\_\\textrm{coat}, \\mathtt{C}) \\ . \\end{equation}\
+\
+coatbase\-substrate\
+\
+The IOR \\(n\_c = \\mathtt{coat\\\_ior}\\) of the coat medium \\(V\_\\mathrm{coat}\\) will alter the Fresnel factor of both the coat top interface and the underlying metal or dielectric. If there is a fractional \\(\\mathtt{coat\\\_weight}\\) \\(\\mathtt{C}\\), then the surrounding IOR of the base dielectric or metal varies statistically across the surface depending on whether the coat is locally present (and the fuzz layer can be assumed to have the ambient IOR \\(n\_a\\)). The ratio between the specular IOR \\(n\_b = \\mathtt{specular\\\_ior}\\) and the surrounding medium can thus reasonably be approximated as \\begin{equation} \\label{specular\_ior\_ratio} \\eta\_s = \\mathrm{lerp}(n\_b/n\_a, n\_b/n\_c, \\mathtt{C}) \\ . \\end{equation} This ratio then determines the specular Fresnel factor, as in equation \\ref{modulated\_ior}. (Note that as discussed in the coat [TIR](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/coat/totalinternalreflection)\
+ section, evaluation of the specular Fresnel factor may need to be further modified to model the refraction of the ray inside the coat).\
+\
+The absorption of the medium \\(V\_\\mathrm{coat}\\) is parametrized by **`coat_color`**, which is assumed to specify the _square_ of the transmittance of the coat at normal incidence (i.e. \\(T\_\\mathrm{coat}\\) = **`coat_color`** in the notation of equation \\ref{non-reciprocal-albedo-scaling-with-T}). Thus the observed tint color of the underlying base due to absorption in the coat is approximately given by **`coat_color`** due to the absorption along the incident and outgoing rays (note that the specular reflection from the coat itself is _not_ tinted).\
+\
+In the full light transport within the coat, various physical effects[9](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-porosity)\
+ occur which we assume are accounted for in the ground truth appearance.\
+\
+*   The observed color of the coated base is darkened and saturated due to multiple internal reflections from the inside of the coat, which causes light to strike the underlying material multiple times and undergo more absorption. This effect is controlled via the **`coat_darkening`** parameter, as described in the coat [Darkening](https://academysoftwarefoundation.github.io/OpenPBR/#darkening)\
+     section.\
+    \
+*   The observed **`coat_color`** tint also darkens as the incidence angle changes due to the change in path length in the medium, as described in the [View-dependent absorption](https://academysoftwarefoundation.github.io/OpenPBR/#view-dependentabsorption)\
+     section.\
+    \
+*   The presence of a rough coat will increase the apparent roughness of the BSDF lobes of the underlying base. A recommendation for implementation of this effect is given in the coat [Roughening](https://academysoftwarefoundation.github.io/OpenPBR/#roughening)\
+     section.\
+    \
+*   Care needs to be taken in the implementation to account for the refraction of the ray direction inside the coat. This is discussed in the [Total internal reflection](https://academysoftwarefoundation.github.io/OpenPBR/#totalinternalreflection)\
+     section.\
+\
+  \
+\
+| Coat params | Label | Type | Range | Norm | Default | Description |\
+| --- | --- | --- | --- | --- | --- | --- |\
+| **`coat_weight`** | Weight | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) | Coverage weight of coat slab |\
+| **`coat_color`** | Color | `color3` | \\( \[0, 1\]^3 \\) |     | \\( (1, 1, 1) \\) | Square of normal-incidence transmittance of \\(V\_\\mathrm{coat}\\) |\
+| **`coat_roughness`** | Roughness | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) | Roughness of NDF of coat BSDF \\(f\_\\mathrm{coat}\\) |\
+| **`coat_roughness_anisotropy`** | Anisotropy | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) | Anisotropy of NDF of coat BSDF \\(f\_\\mathrm{coat}\\) |\
+| **`coat_ior`** | IOR | `float` | \\( (0, \\infty) \\) | \\( \[1, 3\] \\) | \\( 1.6 \\) | Refractive index of \\(V\_\\mathrm{coat}\\) |\
+| **`coat_darkening`** | Darkening | `float` | \\( \[0, 1\] \\) |     | \\( 1 \\) | Modulates the physical coat [darkening](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/coat/darkening)<br> effect. |\
+\
+|     |     |\
+| --- | --- |\
+| [![](https://academysoftwarefoundation.github.io/OpenPBR/images/coat_0.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/coat_0.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/coat_1.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/coat_1.png) |\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/dummy)](https://academysoftwarefoundation.github.io/OpenPBR/dummy)\
+\
+ **Figure 13:** Coat adds a secondary specular highlight and optional absorption tint\
+\
+   \
+\
+### Darkening\
+\
+[Figure 14](https://academysoftwarefoundation.github.io/OpenPBR/#figure_coat_darkening_grid)\
+ shows the physically-correct change in appearance (at normal incidence) of a textured diffuse base with a wood texture and smooth clear-coat as the IOR of the clear-coat is varied, exhibiting darkening of the base — due to the internal reflections in the coat — which increases as IOR increases.\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/images/coat_darkening_grid.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/coat_darkening_grid.png)\
+\
+ **Figure 14:** Diffuse base with a clear-coat, for coats of different relative IOR \\(\\eta\_c\\)\
+\
+However this darkening may not always be desirable artistically, as in some applications it is beneficial for the observed color of the coated color to “match” the input base color (in a sense defined more precisely below in equation \\ref{undarkened\_coat\_albedo}). We allow for this by introducing a **`coat_darkening`** parameter, \\(\\delta\\). By default \\(\\delta\\) = \\(1\\), in which case the physically correct darkening effect due to internal reflections occurs as normal. In the case \\(\\delta\\) = \\(0\\) however, the base albedo is instead _boosted_ uniformly by just enough to counteract the darkening effect. The boost factor is reduced to 1 linearly as \\(\\delta \\rightarrow 1\\).\
+\
+What we mean by “counteract the darkening” is defined as the albedo of the coated base viewed at normal incidence, \\(E\_c\\), being equal to the “un-darkened” albedo \\begin{equation} \\label{undarkened\_coat\_albedo} E\_c = F\_0 + E\_b (1 - F\_0) = \\mathrm{lerp}(F\_0, 1, E\_b) \\end{equation} where \\(E\_b\\) is the base albedo at normal incidence, which is a straightforward interpretation of the requirement for the observed color of the coated base to match the uncoated base, taking into account the presence of the Fresnel effect of the coat. Due to the physical effect of the darkening due to the internal reflections, the base BSDF would generally need to be boosted by some compensating uniform “boost” factor \\(B\_0\\) in order for the coated base to achieve this un-darkened albedo. The effect of \\(\\delta\\) = **`coat_darkening`** is then defined to be the following modulation of the applied boost factor: \\begin{equation} \\label{boost\_factor} B(\\delta) = \\mathrm{lerp}(B\_0, 1, \\delta) \\ . \\end{equation} While this defines the behavior at a physical level, in practice implementations will need to develop some specific approximation for the coat darkening effect. While this can be implementation dependent, we suggest here a reasonably simple, efficient scheme which captures the essential behavior.\
+\
+It can be shown that in the case of a Lambertian base with (constant) albedo \\(E\_b\\) and a perfectly smooth dielectric clear-coat — the so-called _interfaced Lambertian_ model (\[[Elias2001](https://academysoftwarefoundation.github.io/OpenPBR/#citation-elias2001)\
+\], \[[d'Eon2021](https://academysoftwarefoundation.github.io/OpenPBR/#citation-d'eon2021)\
+\]) — that the exact directional albedo of the coated base has the albedo-scaling-like form (where \\(\\eta\_c\\) is the ratio of the coat IOR to the ambient IOR, and \\(F\\) is the corresponding coat Fresnel factor): \\begin{equation} \\label{interfaced\_lambertian\_albedo} E\_c(\\omega\_o) = F(\\omega\_o, \\eta\_c) + E\_b \\Bigl(1 - F(\\omega\_o, \\eta\_c)\\Bigr) \\Delta(E\_b, \\eta\_c) \\end{equation} where \\(\\Delta(E\_b, \\eta\_c)\\) is a darkening factor given by \\begin{equation} \\label{general\_darkening\_formula} \\Delta(E\_b, \\eta\_c) = \\frac{1 - K}{1 - E\_b K} \\ . \\end{equation} We can thus approximate the required boost factor as the reciprocal of this, i.e. \\(B\_0 \\approx \\Delta^{-1}\\). Note that as \\(E\_b \\rightarrow 1\\), the darkening factor \\(\\Delta \\rightarrow 1\\), as required since physically no energy is lost if the base reflects all incident energy (in the clear-coat case). If the base albedo \\(E\_b\\) is boosted by \\(B(\\delta)\\), then clearly at \\(\\delta=0\\) the darkening factor cancels and equation \\ref{undarkened\_coat\_albedo} is satisfied as required.\
+\
+Here \\(K \\in \[0,1\]\\) is the _internal diffuse reflection coefficient_, which corresponds to the fraction of the energy leaving the base which returns to the base due to internal reflection from the coat. Higher values of \\(K\\) lead to more internal reflections, thus more darkening and saturation. In the case of a Lambertian base (which should be a reasonable approximation to the rough metal, dielectric, or diffuse cases), \\(K = K\_r\\) where, with relative coat IOR \\(\\eta\_c\\): \\begin{equation} \\label{internal\_diffuse\_reflection\_coefficient\_for\_rough\_base} K\_r = 1 - \\Bigl(1 - E\_F(\\eta\_c)\\Bigr)/\\eta\_c^2 \\ . \\end{equation} The albedo \\(E\_F(\\eta\_c)\\) is the _hemispherical_ (or _average_) albedo of the coat Fresnel factor[10](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-avg_fresnel)\
+. If the base has specular reflection (due to a smooth metallic or dielectric interface) then equation \\ref{general\_darkening\_formula} still applies, but the appropriate value of the internal diffuse reflection coefficient \\(K\\) should be closer to: \\begin{equation} \\label{internal\_diffuse\_reflection\_coefficient\_for\_smooth\_base} K\_s = F(\\omega\_o, \\eta\_c) \\ , \\end{equation} which becomes exact in the limit of a perfectly smooth metallic or dielectric base. There is significantly less darkening in the case of a smooth base, as the specular reflection from the base is less likely to generate total internal reflection at the coat boundary.\
+\
+We thus recommend in the general case that the darkening factor of equation \\ref{general\_darkening\_formula} be applied, but taking \\begin{equation} \\label{internal\_diffuse\_reflection\_coefficient\_for\_general\_base} K = \\mathrm{lerp}(K\_s, K\_r, r\_b) \\end{equation} where \\(r\_b\\) is an estimate of the effective base roughness, a blend between dielectric \\(r\_d\\) and metal \\(r\_m\\) roughness estimates according to the **`base_metalness`** \\(\\mathtt{M}\\): \\begin{equation} \\label{base\_roughness\_estimate} r\_b = \\mathrm{lerp}(r\_d, r\_m, \\mathtt{M}) \\ . \\end{equation} The base dielectric roughness \\(r\_d\\) can reasonably be estimated as a mix between the high roughness of an assumed underlying base and the microfacet dielectric roughness \\(r\\) = **`specular_roughness`**, according to the base dielectric Fresnel factor modulated via **`specular_weight`** \\(\\xi\_s\\) (see equation \\ref{unmodulated\_fresnel} and equation \\ref{modulated\_ior}): \\begin{equation} \\label{dielectric\_roughness\_estimate} r\_d = \\mathrm{lerp}(1, r, \\xi\_s F\_s) \\end{equation} while the metallic roughness can be taken to be \\(r\_m = r\\). (Note that in this formula for \\(r\_d\\), a clamp must be applied to ensure that \\(\\xi\_s F\_s \\in \[0, 1\]\\)).\
+\
+Given the general formula equation \\ref{general\_darkening\_formula} for the darkening, a reasonable approximate scheme — assuming no other compensation is made to approximate the effect — is to multiply the base BSDF by the uniform _modulated darkening factor_ (taking into account the presence weight \\(\\mathtt{C}\\) = **`coat_weight`** and the darkening parameter \\(\\delta\\) = **`coat_darkening`**): \\begin{equation} \\label{modulated\_darkening\_factor} (1-\\mathtt{C}) + \\mathtt{C} \\, B(\\delta) \\,\\Delta = \\mathrm{lerp}(1, \\Delta, \\mathtt{C}\\,\\delta) \\ , \\end{equation} with \\(\\Delta\\) evaluated via equation \\ref{general\_darkening\_formula} with internal diffuse reflection coefficient, accounting for base roughness, given by equation \\ref{internal\_diffuse\_reflection\_coefficient\_for\_general\_base}.\
+\
+The base albedo \\(E\_b\\) which appears in equation \\ref{general\_darkening\_formula} represents the normal-incidence albedo of the entire base beneath the coat. This albedo can be approximated as the normal-incidence albedos of the individual slabs of the base, blended according to their mix weights.\
+\
+   \
+\
+### View-dependent absorption\
+\
+In the case of an absorbing coat, there is also enhanced darkening and saturation at grazing angles due to increased path-length within the coat medium. The effect of this can be modeled via a factor in the coat BRDF of \\begin{equation} T\_\\mathrm{coat}^\\mbox{\\(1/\\mu^t\_i + 1/\\mu^t\_o\\)} \\end{equation} where \\(\\mu^t\_i\\) is the angle cosine of the incident ray refracted into the coat, i.e. \\begin{equation} \\mu^t\_i =\\sqrt{1 - \\frac{1 - \\mu^2\_i}{\\eta^2\_c}} \\end{equation} and similarly for \\(\\mu^t\_o\\). Note that at normal incidence, this factor reduces to \\(T^2\_\\mathrm{coat}\\) which we defined to equal **`coat_color`**.[11](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-absorption_effect_on_k)\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/images/coat_view_dependent_absorption_color.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/coat_view_dependent_absorption_color.png)\
+\
+ **Figure 15:** The color of an absorbing coat becomes darker and more saturated at grazing angles.\
+\
+   \
+\
+### Roughening\
+\
+If the coat is rough, the microfacet BSDF lobes of the underlying base substrate (metal and dielectric) are also effectively roughened. If this is not otherwise accounted for by the light transport, it can instead be reasonably approximated by directly altering the NDF of the base BSDFs.\
+\
+A formula we recommend for this is obtained by identifying the NDF of each microfacet lobe as corresponding approximately to a Gaussian in slope-space with variance given by \\(\\alpha\_t^2 + \\alpha\_b^2 = r^4\\) (in the notation of the [Microfacet model](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/microfacetmodel)\
+ section). Modeling the effect of the roughening as the convolution of these Gaussian NDFs (and double counting the coat variance since the reflection passes through the coat boundary twice), the resulting modified roughness of the base, \\(r'\_\\mathrm{B}\\), (taking into account the presence weight of the coat, \\(\\mathtt{C}=\\) **`coat_weight`**) is given by \\begin{equation} r'\_\\mathrm{B} = \\mathrm{lerp}\\Bigl( r\_\\mathrm{B}, \\mathrm{min} \\bigl(1, r^4\_\\mathrm{B} + 2 r^4\_\\mathrm{C} \\bigr)^\\frac{1}{4}, \\mathtt{C} \\Bigr) \\end{equation} where \\(r\_\\mathrm{B}=\\) **`specular_roughness`** and \\(r\_\\mathrm{C}=\\) **`coat_roughness`**.\
+\
+   \
+\
+### Total internal reflection\
+\
+A technical issue which can cause difficulties in the implementation of the BRDF of the coated dielectric base should also be mentioned. See [Figure 16](https://academysoftwarefoundation.github.io/OpenPBR/#figure_coat_base_schematic)\
+ for a schematic of a ray refracting from the ambient exterior medium (with IOR \\(n\_a\\)) into the coat (with IOR \\(n\_c\\)), and then into the base dielectric (with IOR \\(n\_b\\)):\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/images/dielectric_tir_issue.svg)](https://academysoftwarefoundation.github.io/OpenPBR/images/dielectric_tir_issue.svg)\
+\
+ **Figure 16:** Ray configuration at coat-base boundary.\
+\
+If the coat IOR \\(n\_c\\) exceeds the IOR of the base dielectric \\(n\_b\\), then rays incident to the base can in general undergo total internal reflection (TIR) at the base-coat boundary surface \\(S\_\\mathrm{bc}\\) (with IOR ratio \\(\\eta\_\\mathrm{bc} = n\_b/n\_c\\)). In this case the reflection from the base (the dashed line) is enhanced since no refraction into the base along the \\(\\mu\_b\\) direction occurs.\
+\
+However if the surfaces are smooth and parallel, it is easy to show that _no such TIR is possible_ for a ray incident from the exterior due to the refraction of the ray at the upper coat-ambient boundary \\(S\_\\mathrm{ca}\\) (with IOR ratio \\(\\eta\_\\mathrm{ca} = n\_c/n\_a\\)). In the general case of rough boundaries, TIR can occur though it will be increasingly suppressed as the roughness decreases. Thus if the implementation of the dielectric base BSDF does not account for the refraction of the incident ray in the coat, spurious TIR will be generated, which produces an obviously incorrect appearance manifesting as a bright “ring” near grazing angles. In an implementation which reduces the model to a [mixture of independent lobes](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/reductiontoamixtureoflobes)\
+ sampled as a function of incident direction, it is non-obvious how to account for this.\
+\
+We suggest as a reasonable practical approximation (following \[[Kutz2021](https://academysoftwarefoundation.github.io/OpenPBR/#citation-kutz2021)\
+\]) to simply invert the IOR ratio at the coat-base boundary, i.e. replace \\(\\eta\_\\mathrm{bc}\\) as follows: \\begin{equation} \\label{specular\_ior\_ratio\_with\_tir\_fix} \\eta\_\\mathrm{bc} \\rightarrow \\begin{cases} \\eta\_\\mathrm{cb} = n\_c/n\_b & \\quad\\mathrm{if} \\;\\; n\_c > n\_b \\\\ \\eta\_\\mathrm{bc} & \\quad\\mathrm{if} \\;\\; n\_c \\le n\_b \\ . \\end{cases} \\end{equation} This eliminates the TIR, while plausibly maintaining the specular reflection. Then to account for partial coat coverage, this modified \\(\\eta\_\\mathrm{bc}\\) is used in place of the \\(n\_b/n\_c\\) term in equation \\ref{specular\_ior\_ratio}.\
+\
+An alternative approach is to explicitly modify the refraction angle cosine of the incident direction to the base. Assuming for simplicity that in the local space of the base microfacet the overlying coat microfacet has matching micronormal, the angle cosine \\(\\mu\_c\\) to the base micronormal is given by refraction of the incident angle cosine \\(\\mu\_i\\) as follows: \\begin{equation} \\label{refracted\_coat\_dir} \\mu\_c^2 = 1 - (1 - \\mu\_i^2) / \\eta^2\_\\mathrm{ca} \\ . \\end{equation} The resultant Fresnel factor can then be approximated as a blend of the Fresnel factors evaluated at the original and refracted incident directions, according to the presence weight of the coat: \\begin{equation} \\mathrm{lerp}(F(\\mu\_i, \\eta\_\\mathrm{ba}), F(\\mu\_c, \\eta\_\\mathrm{bc}), \\mathtt{C}) \\ , \\end{equation} where \\(\\eta\_\\mathrm{ba} = n\_b/n\_a\\), and this blended Fresnel factor then substituted into the microfacet BRDF (this replaces the Fresnel calculation of equation \\ref{specular\_ior\_ratio} which ignores the coat refraction). If \\(\\eta\_\\mathrm{ca} < 0\\) then TIR at \\(S\_\\mathrm{ca}\\) may occur (i.e. \\(\\mu\_c^2 \\le 0\\) in equation \\ref{refracted\_coat\_dir}), in which case the Fresnel factor \\(F(\\mu\_c, \\eta\_\\mathrm{bc})\\) can be assumed to be zero.\
+\
+Both these schemes produce a plausible appearance that eliminates the spurious TIR. A more physically-correct approach would require something similar to the Weidlich-Wilkie layering model \[[Weidlich2007](https://academysoftwarefoundation.github.io/OpenPBR/#citation-weidlich2007)\
+\], or the layered material model described in _Physically Based Rendering_ \[[Pharr2023](https://academysoftwarefoundation.github.io/OpenPBR/#citation-pharr2023)\
+\], where the scattering through the layers is explicitly modeled via Monte Carlo simulation.\
+\
+   \
+\
+Fuzz\
+----\
+\
+The topmost scattering layer supports the appearance of textiles, “fuzzy” surfaces, or dusty surfaces, where the surface consists of opaque colored fibers oriented with axes primarily parallel to the surface normal, producing a specular highlight at grazing angles.\
+\
+\\begin{equation} S\_\\textrm{fuzz} = \\mathrm{Slab}(f\_\\mathrm{fuzz}, V\_\\mathrm{fuzz}) \\ . \\end{equation}\
+\
+Conceptually the fibers will cover only some fraction of the surface, which is represented by a cover operation with the coverage weight \\(\\mathtt{F}\\) = **`fuzz_weight`**: \\begin{equation} M\_\\mathrm{surface} = \\mathrm{\\mathbf{layer}}(M\_\\textrm{coated-base}, S\_\\mathrm{fuzz}, \\mathtt{F}) \\ . \\end{equation}\
+\
+fuzzcoated\-base\
+\
+The fuzz BRDF \\(f\_\\mathrm{fuzz}\\) and VDF \\(V\_\\mathrm{fuzz}\\) are assumed to be derived from an anisotropic microflake volume model with a fiber-like distribution. We recommend the specific model of \[[Zeltner2022](https://academysoftwarefoundation.github.io/OpenPBR/#citation-zeltner2022)\
+\] (based on the earlier work of \[[Heitz2015](https://academysoftwarefoundation.github.io/OpenPBR/#citation-heitz2015)\
+\]), which has the following characteristics:\
+\
+*   The fuzz represents a homogeneous volumetric layer with a fiber-like SGGX microflake \[[Heitz2015](https://academysoftwarefoundation.github.io/OpenPBR/#citation-heitz2015)\
+    \] phase function. This is approximated using a Linearly Transformed Cosines (LTC) model \[[Heitz2016b](https://academysoftwarefoundation.github.io/OpenPBR/#citation-heitz2016b)\
+    \] fitted to volumetric simulations. The microflake fibers are assumed to have a single-scattering albedo that effectively produces a reflection tinted with the **`fuzz_color`** after multiple scattering, allowing the fuzz to darken as well as lighten.\
+*   The volumetric fuzz layer is assumed to have a fixed unit optical thickness in all channels, and is purely scattering so no energy is absorbed. Thus any light not reflected after multiple scattering is assumed to transmit to the lower layers, and the transmittance is gray so the base is not tinted by the fuzz. The amount of this fixed thickness fuzz is controlled via the layer coverage weight **`fuzz_weight`**. The fuzz layer is also assumed to be index-matched with the adjacent slab above it, i.e. the fibers are embedded in the surrounding dielectric medium, thus there is no Fresnel reflection from the slab.\
+*   The **`fuzz_roughness`** parameter controls how fibre-like the microflake distribution of the layer is. At low roughness the microflakes are highly fibre-like (i.e. thin fibres oriented along the normal) producing a high-sheen fabric appearance, while at high roughness the microflakes are spherical producing a dusty appearance.\
+\
+The form of this model is the following (with \\(\\mu\_i, \\mu\_o\\) the angle cosines to the normal of \\(\\omega\_i, \\omega\_o\\)): \\begin{equation} \\mu\_i \\, f\_\\mathrm{fuzz}(\\omega\_i, \\omega\_o) = \\mathbf{F} \\, E\_\\mathrm{fuzz}(\\mu\_o, \\alpha) \\, D(\\mu\_i | \\mu\_o, \\alpha) \\end{equation} where \\(\\mathbf{F}\\) = **`fuzz_color`**, \\(E\_\\mathrm{fuzz}(\\mu\_o, \\alpha)\\) (termed \\(R\\) in \[[Zeltner2022](https://academysoftwarefoundation.github.io/OpenPBR/#citation-zeltner2022)\
+\]) is the reflectance at angle cosine \\(\\mu\_o\\) given roughness \\(\\alpha\\) = **`fuzz_roughness`** \\(\\in \[0,1\]\\), and \\(D(\\mu\_i | \\mu\_o, \\alpha)\\) is a lobe defined by linear transformations of a cosine lobe (LTCs), where the transformation matrices (and \\(E\_\\mathrm{fuzz}\\)) are tabulated in a grid in the \\((\\mu\_o, \\alpha)\\) plane, with values fitted to a simulation of the scattering in the volumetric fuzz microflake layer. Since the LTC lobe \\(D\\) is a normalized PDF over the hemisphere, the resulting albedo of \\(f\_\\mathrm{fuzz}\\) is \\(\\mathbf{F} \\, E\_\\mathrm{fuzz}(\\mu\_o, \\alpha)\\).\
+\
+If using the albedo-scaling interpretation of layering, a reasonable approximation of the reflection from the fuzz layer combined with the reflection from the base is to take \\begin{eqnarray} \\mathrm{\\mathbf{layer}}(M\_\\textrm{coated-base}, S\_\\mathrm{fuzz}) &\\rightarrow& f\_\\mathrm{fuzz} + \\bigl(1 - E\_\\mathrm{fuzz} \\bigr) \\,f\_\\textrm{coated-base} \\ , \\end{eqnarray} where the albedo-scaling is explicitly modified to not tint the base since the tint \\(\\mathbf{F}\\) appears only in the first term via \\(f\_\\mathrm{fuzz}\\). Then accounting for the coverage weight of the fuzz layer, \\(\\mathtt{F}\\) = **`fuzz_weight`**, gives: \\begin{eqnarray} \\mathrm{\\mathbf{layer}}(M\_\\textrm{coated-base}, S\_\\mathrm{fuzz}, \\mathtt{F}) &\\rightarrow& \\mathtt{F} \\,f\_\\mathrm{fuzz} + \\bigl(1 - \\mathtt{F}\\,E\_\\mathrm{fuzz}\\bigr) \\,f\_\\textrm{coated-base} \\ . \\label{fuzz-layering-approx} \\end{eqnarray}\
+\
+The fuzz shading normal is assumed to inherit from that of the substrate layer, the physical picture being that the fuzz volume settles and conforms to the geometry of the substrate. The substrate is generally a mixture of coat and uncoated base. Thus physically the fuzz model should be evaluated with each of the **`geometry_coat_normal`** and **`geometry_normal`** separately (if they differ), and the final result blended according to the **`coat_weight`**. As a practical approximation, it may be more convenient and efficient to instead approximate the fuzz normal by interpolating the coat and base normal according to **`coat_weight`**.\
+\
+| Fuzz params | Label | Type | Range | Default | Description |\
+| --- | --- | --- | --- | --- | --- |\
+| **`fuzz_weight`** | Weight | `float` | \\( \[0, 1\] \\) | \\( 0 \\) | Coverage weight of fuzz slab |\
+| **`fuzz_color`** | Color | `color3` | \\( \[0, 1\]^3 \\) | \\( (1, 1, 1) \\) | Reflection albedo color of \\(f\_\\mathrm{fuzz}\\) |\
+| **`fuzz_roughness`** | Roughness | `float` | \\( \[0, 1\] \\) | \\( 0.5 \\) | Reflection roughness of \\(f\_\\mathrm{fuzz}\\) |\
+\
+|     |     |     |\
+| --- | --- | --- |\
+| [![](https://academysoftwarefoundation.github.io/OpenPBR/images/fuzz_dust_r0.25.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/fuzz_dust_r0.25.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/fuzz_dust_r0.5.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/fuzz_dust_r0.5.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/fuzz_dust_r0.75.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/fuzz_dust_r0.75.png) |\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/dummy)](https://academysoftwarefoundation.github.io/OpenPBR/dummy)\
+\
+ **Figure 17:** Varying the **`fuzz_roughness`** over 0.25, 0.5 (default), 0.75.\
+\
+   \
+\
+Emission\
+--------\
+\
+It is assumed that the base substrate below the coat may emit light, with a directionally uniform EDF. One can image the light being emitted from the interior of the base substrate with an isotropic luminance given by \\(L\_e\\).\
+\
+We put emission below the coating so that emitted light will be tinted due to the absorption in the coat and fuzz layers. This allows for the convenient rendering of low-emission materials that are bounded by a reflective surface (e.g. glow sticks, LEDs, display screens, etc.) without explicit modeling of the emitter and the bounding object.\
+\
+emissionfuzzcoatbase\-substrate\
+\
+The intensity of the EDF is controlled by a luminance and a color multiplier. The **`emission_luminance`** parameter controls the luminance the emissive layer would have when **`emission_color`** is set to (1, 1, 1) and in the absence of coat and fuzz. The **`emission_color`** acts as a multiplier, i.e. the HDR emission in the model color space is defined to have a color given by **`emission_color`** \* **`emission_luminance`**, thus the resulting luminance may be less than the input parameter, or even zero if the **`emission_color`** is set to (0, 0, 0). Note that the **`emission_color`** components may exceed 1, in order to be able to plug in an HDR texture.[4](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-ingamut)\
+\
+Moreover, the overall material luminance may be further reduced in the presence of coat or fuzz, as they can absorb light coming from the emissive layer before it exits the surface. The emission from the top surface should in principle gain a directional dependence due to the combined effects of absorption, total internal reflection (TIR) and multiple bounces in the coat layer, and absorption in the fuzz layer. The combined effect should result mostly in darkening and saturation at grazing angles.\
+\
+Being an intensity, **`emission_luminance`** can be any value greater than or equal to zero. For convenience, we make the soft range \\(\[0, 1000\]\\), corresponding to the typical range of home appliances.\
+\
+| Emission params | Label | Type | Range | Norm | Default | Description |\
+| --- | --- | --- | --- | --- | --- | --- |\
+| **`emission_luminance`** | Luminance | `float` | \\(\[0, \\infty)\\) | \\( \[0, 1000\] \\) | \\( 0 \\) | Emission luminance, in cd/m2 (aka. nits) |\
+| **`emission_color`** | Color | `color3` | \\(\[0, \\infty)^3\\) |     | \\( (1, 1, 1) \\) | Emission color multiplier |\
+\
+|     |     |\
+| --- | --- |\
+| [![](https://academysoftwarefoundation.github.io/OpenPBR/images/emitting_lava.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/emitting_lava.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/emission_under_coat.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/emission_under_coat.png) |\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/dummy)](https://academysoftwarefoundation.github.io/OpenPBR/dummy)\
+\
+ **Figure 18:** Left: A texture map representing hot lava connected to **`emission_color`**. Right: Emission from under an absorbing coat (driven by **`coat_color`**) acting like a dark mask with colored inserts.\
+\
+   \
+\
+Opacity / Transparency\
+----------------------\
+\
+The final surface is defined as a mix of the entire \\(\\mathrm{surface}\\) bulk with the ambient medium: \\begin{equation} M\_\\mathrm{PBR} = \\mathrm{\\mathbf{mix}}(S\_\\mathrm{ambient\\; medium}, M\_\\mathrm{surface}, \\mathtt{\\alpha}) \\end{equation} where \\(\\mathtt{\\alpha} = \\mathtt{geometry\\\_opacity}\\) is the presence weight of the entire surface, thus functioning effectively as a linear “alpha blend”.\
+\
+1\-geometry\_opacitygeometry\_opacityPBR\=\=ambientmediumsurface\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\
+\
+Note that in the case of a non-thin-walled material, \\(\\mathtt{\\alpha} < 1\\) doesn't make strict physical sense unless the entire surface is removed, whereas in the [thin-walled mode](https://academysoftwarefoundation.github.io/OpenPBR/index.html#thin-walledmode)\
+ the opacity has a clear physical interpretation as the presence weight of the wall (or “cutout” areas where \\(\\mathtt{\\alpha} = 0\\)) like in the leaf render below.\
+\
+We generally leave it as an implementation detail for a renderer to determine how connections to light sources be made through the surface. However a very common approximation used by many renderers is “transparent shadows”, where a straight-line connection is made to lights and the contribution of the light determined by the total transmittance along the ray, ignoring any refraction events. We give here a suggested form for this shadow ray transmittance.\
+\
+The computed transmittance should take into account the presence weight of the entire geometry (**`geometry_opacity`**), and the transmittance through the geometry if present. The latter is the transmittance through the base dielectric only (as the metal is opaque), denoted \\(\\mathbf{T}\_\\mathrm{dielectric}\\), which should take into account the Fresnel factor of the dielectric interface and the extinction in the volumetric media (in general a statistical mixture of the subsurface medium \\(V^\\infty\_\\mathrm{subsurface}\\) and translucent-base medium \\(V^\\infty\_\\mathrm{dielectric}\\)). The mix weight of the base dielectric is \\(w\_\\mathrm{dielectric} = 1 - \\mathtt{M}\\) where \\(\\mathtt{M} = \\mathtt{base\\\_metalness}\\). The total transmittance can thus be approximated as[3](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-lerp)\
+ \\begin{eqnarray} \\mathbf{T}\_\\mathrm{pbr} &=& \\mathrm{lerp}(1, w\_\\mathrm{dielectric} \\mathbf{T}\_\\mathrm{dielectric}, \\mathtt{\\alpha}) \\nonumber \\\\ &=& 1 - \\mathtt{\\alpha} \\bigl(1 - (1 - M) \\mathbf{T}\_\\mathrm{dielectric}\\bigr) \\ . \\end{eqnarray}\
+\
+| Opacity params | Label | Type | Range | Default | Description |\
+| --- | --- | --- | --- | --- | --- |\
+| **`geometry_opacity`** | Opacity | `float` | \\( \[0, 1\] \\) | \\( 1 \\) | Opacity of the surface |\
+\
+|     |     |     |\
+| --- | --- | --- |\
+| [![](https://academysoftwarefoundation.github.io/OpenPBR/images/leaf_alpha.png)](https://academysoftwarefoundation.github.io/OpenPBR/images/leaf_alpha.png) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/leaf_texture.jpg)](https://academysoftwarefoundation.github.io/OpenPBR/images/leaf_texture.jpg) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/leaf-rendered-driving-the-opacity-using-a-mask.jpg)](https://academysoftwarefoundation.github.io/OpenPBR/images/leaf-rendered-driving-the-opacity-using-a-mask.jpg) |\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/dummy)](https://academysoftwarefoundation.github.io/OpenPBR/dummy)\
+\
+ **Figure 19:** Alpha map driving **`geometry_opacity`**, texture map (driving e.g. **`base_color`**), and rendered leaf.\
+\
+   \
+\
+Normal maps\
+-----------\
+\
+The geometry of the surface is assumed to be given externally to the model, defining a local unperturbed shading normal and tangent space frame.\
+\
+However we allow for normal mapping, which (optionally) alters this unperturbed shading frame, as a part of the material model, as this alters the light transport and appearance fundamentally.\
+\
+There are assumed to be separate normal inputs **`geometry_normal`**, **`geometry_coat_normal`** defining the perturbation of the shading normal for the base and coat BSDF models. Separately perturbing the coat normal allows for the appearance of a finite thickness coat on top of the base.\
+\
+The **`geometry_tangent`** and **`geometry_coat_tangent`** may also be specified, to define the direction of the microfacet anisotropy on the base layer and coat layer, for effects such as brushed metal. Similar to normal mapping, the tangent may be transformed with a 2D vector map to alter the direction of the anisotropy.\
+\
+The perturbed normals and tangents will of course be specified by input textures (or possibly procedurally). As noted in the [Metadata](https://academysoftwarefoundation.github.io/OpenPBR/#metadata)\
+ section, the particular parametrization which maps the contents of the texture to the perturbation of the normal or tangent in the shading frame is not defined in the model itself, as this can be done in multiple ways. It is instead just assumed that the material is packaged with metadata that makes this mapping unambiguous.\
+\
+The normal and tangent are assumed to be unit vectors. Reconstruction filtering techniques such as texture filtering may cause the interpolated value to not be normalized, which can be corrected with a renormalization to reduce visible artifacts caused by this filtering.\
+\
+   \
+\
+Thin-walled mode\
+----------------\
+\
+If the **`geometry_thin_walled`** Boolean is enabled, then the surface is assumed to be in a “thin-walled” mode.\
+\
+In this case we make the assumption that the surface is essentially the bulk structure but mirrored around the base, with the slabs at the base assumed to be thin enough that macroscopically the material can be treated as a 2d sheet with no interior. This sheet thus appears identical viewed from either side:\
+\
+emissionfuzzcoatthin\-filmmetaltranslucent\-basesubsurfaceglossy\-diffusethin\-filmcoatambientmediumfuzzemission\
+\
+A convenient rough approximation of this is to ignore the coat and fuzz layers on the underside, and assume that the surface is automatically oriented so that the incident ray is always entering the surface from the top, so the surface appears the same viewed from above or below. Though a crude approximation, this is quite convenient as the light transport can always be dealt with essentially the same as in the bulk case except with a modified base layer (i.e. incident rays enter top-down, and leave from the base layer without further interaction).\
+\
+A more general interpretation would be to allow each side of the thin-wall to be defined by a distinct thin-walled OpenPBR Surface (one associated to the top, in the direction of the normal, and one to the bottom in the opposite direction) so that the thin base slabs meet in the middle. Then if there are different translucent-base or subsurface parameters on each side, these need to be resolved somehow (e.g. the parameters could be blended, or the light transport could model the presence of the two distinct thin layers of dielectric). If this is supported, we assume it is dealt with in a renderer-specific fashion by assigning separate shaders to each side.\
+\
+In the thin-wall structure, the base slabs are interpreted as infinitesimally thin sheets, thus their behavior is assumed to change as follows:\
+\
+*   As noted above, **`geometry_opacity`** makes physical sense as a fractional value in the thin-walled case (unlike the bulk case), controlling the overall presence weight of the thin wall.\
+    \
+*   The \\(\\textrm{metal}\\) and \\(\\textrm{glossy-diffuse}\\) slabs remain but are considered double-sided, with the top BSDF mirrored to the bottom (and a totally opaque, albeit infinitesimally thin, interior).\
+    \
+*   The \\(\\textrm{translucent-base}\\) slab can be considered an infinitesimally thin sheet of dielectric (absorbing but non-scattering), with the BSDF \\(f\_\\mathrm{dielectric}\\) on both sides. A ladder of inter-reflections occurs inside this slab producing a reflected lobe and un-deflected refracted lobe. The **`transmission_color`** can be assumed to give the transmittance through the thin sheet at normal incidence (due to absorption). In the smooth case the BRDF and BTDF of this sheet can be solved exactly by summing over a geometrical series of terms containing Fresnel and absorption factors, and this can be extended to a good approximation of the rough case by appropriately roughening the transmission lobe (as described in \[[Kulla2017](https://academysoftwarefoundation.github.io/OpenPBR/#citation-kulla2017)\
+    \]). This model of thin-walled glass is a cheaper, much more convenient way to render windows than a finite thickness non-thin-walled mesh.\
+    \
+*   The \\(\\textrm{subsurface}\\) slab is considered to degenerate into an infinitesimally thin sheet of dense scattering material (bounded by dielectric interfaces \\(f\_\\mathrm{dielectric}\\)), which scatters a fraction \\(S = \\texttt{subsurface\_color}\\) of the incident light, split between a diffuse reflection lobe \\(f^R\_\\mathrm{diffuse}\\) and diffuse transmission lobe \\(f^T\_\\mathrm{diffuse}\\) according to \\(g = \\texttt{subsurface\_scatter\_anisotropy} \\in \[-1, 1\]\\). That is, where \\(f\_+\\), \\(f\_-\\) are albedo 1 diffuse lobes in the positive and negative hemisphere respectively: \\begin{eqnarray} f^R\_\\mathrm{diffuse} &=& \\frac{1}{2} S (1 - g)\\, f\_+ \\ , \\nonumber \\\\ f^T\_\\mathrm{diffuse} &=& \\frac{1}{2} S (1 + g)\\, f\_- \\ . \\label{thin\_wall\_subsurface} \\end{eqnarray} This form ensures total energy conservation, i.e. the sum of the reflection and transmission albedos is less than 1: \\begin{equation} E\_R\[f^R\_\\mathrm{diffuse}\] + E\_T\[f^T\_\\mathrm{diffuse}\] = S \\le 1 \\ . \\end{equation} At the default of zero anisotropy (\\(g=0\\)) the energy is balanced equally between diffuse reflection and transmission. The diffuse transmission lobe shape (in both hemispheres) is assumed to be controlled by the **`base_diffuse_roughness`** parameter. Typically the diffuse lobes \\(f\_+\\), \\(f\_-\\) will be represented by an Oren-Nayar lobe flipped into the appropriate hemisphere (which technically should be modified due to the dielectric boundaries, though a renderer may choose to ignore this). Note that in this mode, the **`subsurface_radius`** and **`subsurface_radius_scale`** are ignored and have no effect, since the scattering MFP is infinitesimal.\
+    \
+    This model is useful for rendering cases such as light scattering through a thin sheet of paper ([Figure 20](https://academysoftwarefoundation.github.io/OpenPBR/#figure_thinwalled)\
+    ).\
+    \
+\
+|     |     |\
+| --- | --- |\
+| [![](https://academysoftwarefoundation.github.io/OpenPBR/images/thin_walled1.jpg)](https://academysoftwarefoundation.github.io/OpenPBR/images/thin_walled1.jpg) | [![](https://academysoftwarefoundation.github.io/OpenPBR/images/thin_walled2.jpg)](https://academysoftwarefoundation.github.io/OpenPBR/images/thin_walled2.jpg) |\
+\
+[![](https://academysoftwarefoundation.github.io/OpenPBR/dummy)](https://academysoftwarefoundation.github.io/OpenPBR/dummy)\
+\
+ **Figure 20:** Opaque paper plane (left) vs diffuse transmission enabled via subsurface in thin-walled mode (right)\
+\
+   \
+\
+Reduction to a mixture of lobes\
+-------------------------------\
+\
+In various practical models such as Disney's Principled Shader \[[Burley2012](https://academysoftwarefoundation.github.io/OpenPBR/#citation-burley2012)\
+\], Autodesk 3ds Max's Physical Material \[[Andersson2016](https://academysoftwarefoundation.github.io/OpenPBR/#citation-andersson2016)\
+\] and Autodesk Standard Surface \[[Georgiev2019](https://academysoftwarefoundation.github.io/OpenPBR/#citation-georgiev2019)\
+\], the model is defined as a mixture (i.e. linear combination) of BSDF/BSSRDFs corresponding to the constituent BSDF lobes of the reflection and transmission. The light transport between the layers and overall energy balance is approximated via the mix weights. Given such a representation, the integration into a renderer is relatively straightforward as the individual lobes can be importance sampled according to their albedos and combined with direct lighting estimates via standard techniques such as multiple importance sampling (MIS) \[[Veach1997](https://academysoftwarefoundation.github.io/OpenPBR/#citation-veach1997)\
+\].\
+\
+As an example, we give here a brief derivation of a mixture model representation analogous to Autodesk Standard Surface, from the stated material structure of OpenPBR. Following Autodesk Standard Surface, we assume here that layering is implemented via the non-reciprocal albedo-scaling of equation \\ref{non-reciprocal-albedo-scaling}. This derivation also informs how we implement our MaterialX [reference implementation](https://academysoftwarefoundation.github.io/OpenPBR/reference/open_pbr_surface.mtlx)\
+.\
+\
+   \
+\
+### Non-thin-walled mode\
+\
+Consider first the default non-thin-walled mode (i.e. **`geometry_thin_walled`** is false). For brevity, in the following we suppress all the direction arguments, and use the notation of the tree diagram in the [Model](https://academysoftwarefoundation.github.io/OpenPBR/#model)\
+ section for the weight factors i.e.: \\begin{eqnarray} \\mathtt{\\alpha} &=& \\mathtt{geometry\\\_opacity} \\nonumber \\\\ \\mathtt{F} &=& \\mathtt{fuzz\\\_weight} \\nonumber \\\\ \\mathtt{C} &=& \\mathtt{coat\\\_weight} \\nonumber \\\\ \\mathtt{M} &=& \\mathtt{base\\\_metalness} \\nonumber \\\\ \\mathtt{T} &=& \\mathtt{transmission\\\_weight} \\nonumber \\\\ \\mathtt{S} &=& \\mathtt{subsurface\\\_weight} \\nonumber \\\\ \\end{eqnarray}\
+\
+The base substrate is a mix which can be mapped to a BSDF as follows (where the \\(\\color{darkblue}{\\mathrm{blue}}\\) color indicates a primitive BSDF lobe): \\begin{equation} f\_\\textrm{base-substrate} = \\mathrm{lerp}\\left(f\_\\textrm{dielectric-base}, \\color{darkblue}{f\_\\mathrm{conductor}}, \\mathtt{M}\\right) \\ . \\end{equation} Similarly the dielectric-base mix can be written: \\begin{equation} f\_\\textrm{dielectric-base} = \\mathrm{lerp}\\left(f\_\\textrm{opaque-base}, f\_\\textrm{translucent-base}, \\mathtt{T}\\right) \\ , \\end{equation} and the opaque-base mix as \\begin{equation} f\_\\textrm{opaque-base} = \\mathrm{lerp}\\left(f\_\\textrm{glossy-diffuse}, f\_\\textrm{subsurface}, \\mathtt{S}\\right) \\ . \\end{equation} All of \\(f\_\\textrm{translucent-base}\\), \\(f\_\\textrm{subsurface}\\) and \\(f\_\\textrm{glossy-diffuse}\\) represent the BSDF of a microfacet dielectric interface bounding the dielectric interior and its volumetric media. In each case the BSDF can be represented as the sum of a “primary specular” BRDF \\(\\color{darkblue}{f^R\_\\textrm{specular}}\\) corresponding to reflection from the dielectric surface without interaction with the internal medium, and a substrate lobe corresponding to the effect of transmission into and scattering within the medium: \\begin{align} f\_\\textrm{translucent-base} &= \\color{darkblue}{f^R\_\\textrm{specular}} + \\!\\!\\!\\!\\!\\!\\!\\!\\!\\! &(1 - E\[\\color{darkblue}{f^R\_\\textrm{specular}}\]) &\\,\\color{darkblue}{f^T\_\\textrm{specular}} \\ , \\nonumber \\\\ f\_\\textrm{subsurface} &= \\color{darkblue}{f^R\_\\textrm{specular}} + \\!\\!\\!\\!\\!\\!\\!\\!\\!\\! &(1 - E\[\\color{darkblue}{f^R\_\\textrm{specular}}\]) &\\,\\color{darkblue}{f\_\\textrm{SSS}} \\ , \\nonumber \\\\ f\_\\textrm{glossy-diffuse} &= \\color{darkblue}{f^R\_\\textrm{specular}} + \\!\\!\\!\\!\\!\\!\\!\\!\\!\\! &(1 - E\[\\color{darkblue}{f^R\_\\textrm{specular}}\]) &\\,\\color{darkblue}{f\_\\mathrm{diffuse}} \\ . \\end{align} where, as described in the [Slabs](https://academysoftwarefoundation.github.io/OpenPBR/#slabs)\
+ section, \\(E\[f\_X\]\\) denotes the directional albedo of \\(f\_X\\).\
+\
+Here the substrate lobes \\(\\color{darkblue}{f^T\_\\textrm{specular}}\\) and \\(\\color{darkblue}{f\_\\textrm{SSS}}\\) are technically BSSRDFs, which model the entry into the internal medium via the dielectric interface, transport of light from entry point to exit points including absorption and scattering processes, and exit from the medium back though the interface, generating both a reflection and transmission component.[12](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-bsdf_bssrdf_sum)\
+ The “specular” BTDF/BSSRDF \\(\\color{darkblue}{f^T\_\\textrm{specular}}\\) corresponds to transmission into the medium parametrized in the [Translucent base](https://academysoftwarefoundation.github.io/OpenPBR/#translucentbase)\
+ section, and BSSRDF \\(\\color{darkblue}{f\_\\textrm{SSS}}\\) corresponds to transmission into the medium parametrized in the [Subsurface](https://academysoftwarefoundation.github.io/OpenPBR/#subsurface)\
+ section. In the case of \\(f\_\\textrm{glossy-diffuse}\\), the BSSRDF degenerates into the BRDF \\(\\color{darkblue}{f\_\\mathrm{diffuse}}\\) as described in the [Glossy-diffuse](https://academysoftwarefoundation.github.io/OpenPBR/#glossy-diffuse)\
+ section.\
+\
+Note that in this albedo-scaling approximation, the transmission Fresnel factor associated with \\(\\color{darkblue}{f^T\_\\textrm{specular}}\\) and \\(\\color{darkblue}{f\_\\textrm{SSS}}\\) can be _omitted_ as the energy conservation of the dielectric BSDF as a whole is maintained automatically, even without explicit multiple scattering compensation or in the presence of modifications to the reflection Fresnel factor via **`specular_color`**.\
+\
+Since \\(\\color{darkblue}{f^R\_\\textrm{specular}}\\) appears in each of the three component slabs of the dielectric base, it follows that on collecting terms, \\(f\_\\textrm{dielectric-base}\\) reduces to: \\begin{equation} f\_\\textrm{dielectric-base} = \\color{darkblue}{f^R\_\\textrm{specular}} + (1 - E\[\\color{darkblue}{f^R\_\\textrm{specular}}\]) \\,f^T\_\\mathrm{dielectric-base} \\ , \\end{equation} where \\(f^T\_\\mathrm{dielectric-base}\\), the total effective transmission lobe of the dielectric-base, is: \\begin{align} f^T\_\\mathrm{dielectric-base} &= \\mathtt{T} \\color{darkblue}{f^T\_\\textrm{specular}} + (1 - \\mathtt{T}) \\left(\\mathtt{S} \\,\\color{darkblue}{f\_\\textrm{SSS}} + (1 - \\mathtt{S}) \\,\\color{darkblue}{f\_\\mathrm{diffuse}}\\right) \\nonumber \\\\ &= \\mathrm{lerp}\\left(\\mathrm{lerp}(\\color{darkblue}{f\_\\mathrm{diffuse}}, \\color{darkblue}{f\_\\textrm{SSS}}, \\mathtt{S}), \\color{darkblue}{f^T\_\\textrm{specular}}, \\mathtt{T}\\right) \\ . \\end{align}\
+\
+Next, the coat is layered on top of the base substrate with the coverage weight \\(\\mathtt{C}\\), where the BRDF of the coat dielectric interface is taken to be \\(\\color{darkblue}{f\_\\mathrm{coat}}\\), with a transmittance \\(T\_\\mathrm{coat}\\). As in equation \\ref{coat\_layering\_formula\_with\_albedo\_scaling}, this can be expressed as: \\begin{equation} f\_\\mathrm{coated-base} = \\mathtt{C} \\,\\color{darkblue}{f\_\\mathrm{coat}} + \\mathrm{lerp}\\left(1, T\_\\mathrm{coat} (1 - E\[\\color{darkblue}{f\_\\mathrm{coat}}\]), \\mathtt{C}\\right) f\_\\textrm{base-substrate} \\ . \\end{equation}\
+\
+Similarly, the fuzz layer is applied with coverage weight \\(\\mathtt{F}\\) (with albedo-scaling adjusted to account for the gray transmission, according to equation \\ref{fuzz-layering-approx}), producing (where \\(\\color{darkblue}{\\overline{f\_\\mathrm{fuzz}}}\\) is the fuzz BRDF with the tint color set to white): \\begin{equation} f\_\\mathrm{surface} = \\mathtt{F} \\,\\color{darkblue}{f\_\\mathrm{fuzz}} + \\mathrm{lerp}\\left(1, 1 - E\[\\color{darkblue}{\\overline{f\_\\mathrm{fuzz}}}\], \\mathtt{F}\\right) f\_\\textrm{coated-base} \\ . \\end{equation}\
+\
+Finally, the opacity mix operation is applied producing: \\begin{equation} f\_\\mathrm{PBR} = \\mathtt{\\alpha} \\,f\_\\mathrm{surface} + (1 - \\mathtt{\\alpha}) \\,\\color{darkblue}{f\_\\textrm{transparent}} \\end{equation} where \\(\\color{darkblue}{f\_\\textrm{transparent}}\\) is understood to denote a delta-function BSDF corresponding to the absence of any surface interaction.\
+\
+If \\(\\mathtt{E}\\) represents the isotropic emission luminance from the base, then the total EDF lobe \\(\\color{darkblue}{L\_e}\\) can be modeled according to the absorption in the coat layer as: \\begin{eqnarray} \\color{darkblue}{L\_e} &=& (1 - \\mathtt{C}) \\,\\mathtt{E} + \\mathtt{C} \\,T\_\\mathrm{coat} \\mathtt{E} \\nonumber \\\\ &=& \\mathrm{lerp}\\left(1, T\_\\mathrm{coat}, \\mathtt{C}\\right) \\mathtt{E} \\ . \\end{eqnarray} which in principle is a function of direction due to the varying transmittance. This can also be thought of as a lobe in its own right (representing light self-emitted, rather than reflected or transmitted).\
+\
+To summarize, we have thus expressed the model as the following linear combination of component BRDF/BTDF/BSSRDF lobes (and a separate EDF lobe): \\begin{equation} \\color{red} { \\boxed{ \\color{black}{ \\begin{aligned} \\; f\_\\mathrm{PBR} &=& \\!\\!\\!\\!\\!\\!\\!\\!\\!\\! &\\mathrm{lerp}\\left(\\color{darkblue}{f\_\\textrm{transparent}}, f\_\\mathrm{surface} , \\mathtt{\\alpha}\\right) \\ , \\; \\nonumber \\\\ \\; f\_\\mathrm{surface} &=& \\!\\!\\!\\!\\!\\!\\!\\!\\!\\!\\mathtt{F} \\,\\color{darkblue}{f\_\\mathrm{fuzz}} + &\\mathrm{lerp}\\left(1, \\quad\\quad\\; 1 - E\[\\color{darkblue}{\\overline{f\_\\mathrm{fuzz}}}\] , \\;\\mathtt{F} \\right) f\_\\textrm{coated-base} \\ , \\; \\nonumber \\\\ \\; f\_\\mathrm{coated-base} &=& \\!\\!\\!\\!\\!\\!\\!\\!\\!\\!\\mathtt{C} \\,\\color{darkblue}{f\_\\mathrm{coat}} + &\\mathrm{lerp}\\left(1, T\_\\mathrm{coat} (1 - E\[\\color{darkblue}{f\_\\mathrm{coat}}\]) , \\mathtt{C} \\right) f\_\\textrm{base-substrate} \\ , \\; \\nonumber \\\\ \\; \\color{darkblue}{L\_e} &=& \\!\\!\\!\\!\\!\\!\\!\\!\\!\\! &\\mathrm{lerp}\\left(1, T\_\\mathrm{coat} , \\mathtt{C} \\right) \\mathtt{E} \\ , \\; \\nonumber \\\\ \\; f\_\\textrm{base-substrate} &=& \\!\\!\\!\\!\\!\\!\\!\\!\\!\\! &\\mathrm{lerp}\\left(f\_\\textrm{dielectric-base}, \\color{darkblue}{f\_\\mathrm{conductor}} , \\mathtt{M} \\right) \\ , \\; \\nonumber \\\\ \\; f\_\\textrm{dielectric-base} &=& \\!\\!\\!\\!\\!\\!\\!\\!\\!\\!\\color{darkblue}{f^R\_\\textrm{specular}} + &(1 - E\[\\color{darkblue}{f^R\_\\textrm{specular}}\]) f^T\_\\mathrm{dielectric-base} \\ , \\; \\nonumber \\\\ \\; f^T\_\\mathrm{dielectric-base} &=& \\!\\!\\!\\!\\!\\!\\!\\!\\!\\! &\\mathrm{lerp}(\\mathrm{lerp}(\\color{darkblue}{f\_\\mathrm{diffuse}}, \\color{darkblue}{f\_\\textrm{SSS}}, \\mathtt{S}), \\color{darkblue}{f^T\_\\textrm{specular}}, \\mathtt{T}) \\ . \\; \\end{aligned} } } } \\end{equation}\
+\
+Where the component lobes are listed below.\
+\
+| Lobe name | Lobe symbol | Description | parameters |\
+| --- | --- | --- | --- |\
+| Transparency | \\(\\color{darkblue}{f\_\\textrm{transparent}}\\) | pass-through (delta BTDF) | as in the [Opacity / Transparency](https://academysoftwarefoundation.github.io/OpenPBR/#opacity/transparency)<br> section |\
+| Coating | \\(\\color{darkblue}{f\_\\mathrm{coat}}\\) | coat BRDF | as in the [Coat](https://academysoftwarefoundation.github.io/OpenPBR/#coat)<br> section |\
+| Emission | \\(\\color{darkblue}{L\_e}\\) | emission EDF | as in the [Emission](https://academysoftwarefoundation.github.io/OpenPBR/#emission)<br> section |\
+| Metal | \\(\\color{darkblue}{f\_\\mathrm{conductor}}\\) | metal BRDF | as in the [Metal](https://academysoftwarefoundation.github.io/OpenPBR/#metal)<br> section |\
+| Specular reflection | \\(\\color{darkblue}{f^R\_\\textrm{specular}}\\) | specular BRDF | as in the Dielectric-base section |\
+| Specular transmission | \\(\\color{darkblue}{f^T\_\\textrm{specular}}\\) | specular BTDF/BSSRDF | as in the Translucent-base section |\
+| Fuzz | \\(\\color{darkblue}{f\_\\mathrm{fuzz}}\\) | fuzz BRDF | as in the [Fuzz](https://academysoftwarefoundation.github.io/OpenPBR/#fuzz)<br> section |\
+| Subsurface scattering | \\(\\color{darkblue}{f\_\\textrm{SSS}}\\) | subsurface BSSRDF | as in the [Subsurface](https://academysoftwarefoundation.github.io/OpenPBR/#subsurface)<br> section |\
+| Diffuse reflection | \\(\\color{darkblue}{f\_\\mathrm{diffuse}}\\) | diffuse BRDF | as in the [Glossy-diffuse](https://academysoftwarefoundation.github.io/OpenPBR/#glossy-diffuse)<br> section |\
+\
+   \
+\
+### Thin-walled mode\
+\
+In the [thin-walled mode](https://academysoftwarefoundation.github.io/OpenPBR/index.html#model/thin-walledmode)\
+ (i.e. when **`geometry_thin_walled`** is true), the simplest approximation is to assume the coat and fuzz are ignored on the underside, and the surface always flipped so that incident rays enter top-down. Then the derivation is the same as above except the translucent-base and subsurface slabs behave differently:\
+\
+*   The translucent-base reduces to a thin sheet of dielectric. This can just be considered the thin-wall limit of the BTDF \\(\\color{darkblue}{f^T\_\\textrm{specular}}\\). Note that in this limit, the reflection lobe from the dielectric \\(\\color{darkblue}{f^R\_\\textrm{specular}}\\) will also technically be modified due to the internal bounces in the sheet.\
+    \
+*   The subsurface lobe \\(\\color{darkblue}{f\_\\textrm{SSS}}\\) degenerates into diffuse reflection and transmission lobes \\({f^R\_\\textrm{diffuse}}\\), \\({f^T\_\\textrm{diffuse}}\\) as given in equation \\ref{thin\_wall\_subsurface}.\
+\
+The full representation in code of this linear combination of BRDF/BTDF/BSSRDF lobes will depend on renderer-specific details.\
+\
+   \
+\
+### Entering versus exiting\
+\
+An aspect that has been ignored in this approximation (in the non-thin-walled mode) is the different light transport for rays incident from the top or the bottom side. In reality the physical effect of the layers differs in these cases. For entering rays:\
+\
+*   The fuzz reflection is not tinted by the coat absorption.\
+*   The coat reflection is dimmed and roughened by the fuzz.\
+*   The dielectric reflection and transmission are both dimmed and roughened by both the coat and the fuzz.\
+    \
+\
+While for rays which are exiting:\
+\
+*   The fuzz reflection (viewed from inside) now will be tinted by the coat absorption.\
+*   The reflection from the coat “top” interface (with the fuzz) is not dimmed or roughened by the fuzz. This reflection is also an internal one, so has different Fresnel factor.\
+*   Only dielectric transmission is dimmed/roughened by coat and fuzz, while the reflection is unaffected (except for being an internal reflection as well).\
+\
+A more accurate implementation should in principle account for these effects.\
+\
+   \
+\
+White furnace testing\
+---------------------\
+\
+The ground truth appearance should perfectly preserve energy in various configurations, in which case the material will satisfy a _white furnace test_ where the object should “disappear” (i.e. merge into the background) when illuminated by uniform background light, and rendered in the limit of a large number of bounces. We list here for convenience the configurations in which such a white furnace test should pass, all of which would be useful to check as part of a unit testing framework:\
+\
+*   A fully metallic base (**`base_metalness`**\=1) with white **`base_color`** and white **`specular_color`**.\
+*   A fully dielectric base (**`base_metalness`**\=0), with white **`specular_color`**, including:\
+    *   diffuse base with white **`base_color`**.\
+    *   subsurface (**`subsurface_weight`**\=1) with white **`subsurface_color`**.\
+    *   translucent base (**`transmission_weight`**\=1) with either:\
+        *   white **`transmission_color`** if **`transmission_depth`**\=0, or\
+        *   white **`transmission_scatter`** if **`transmission_depth`** > 0.\
+*   Any mix of the above.\
+*   All of the above, with a coat (**`coat_weight`** > 0) and white **`coat_color`**.\
+*   All of the above, with fuzz (**`fuzz_weight`** > 0) and white **`fuzz_color`**.\
+\
+In all of the above cases, the white furnace test should also continue to pass regardless of:\
+\
+*   the presence of thin-film (via **`thin_film_weight`**) as the film is non-absorptive.\
+*   NDF roughness or anisotropy (**`specular_roughness`**, **`specular_roughness_anisotropy`**, and **`coat_roughness`**, **`coat_roughness_anisotropy`**).\
+*   volume anisotropy (**`subsurface_scatter_anisotropy`**, **`transmission_scatter_anisotropy`**).\
+*   the presence of bump/normal mapped base or coat (**`geometry_normal`**, **`geometry_coat_normal`**)\
+*   opacity (**`geometry_opacity`**).\
+\
+   \
+\
+MaterialX reference implementation\
+----------------------------------\
+\
+We provide a [reference implementation](https://academysoftwarefoundation.github.io/OpenPBR/reference/open_pbr_surface.mtlx)\
+ in MaterialX, which is based on the derivation in the previous section and the implementation of Autodesk Standard Surface \[[Georgiev2019](https://academysoftwarefoundation.github.io/OpenPBR/#citation-georgiev2019)\
+\].\
+\
+   \
+\
+Flexibility of implementation\
+=============================\
+\
+We want this material model to be renderable on a wide range of platforms, from offline path tracers all the way to real-time game engines on mobile devices.\
+\
+The [Historical background and objectives](https://academysoftwarefoundation.github.io/OpenPBR/#historicalbackgroundandobjectives)\
+ section explains how the goal of this specification is to provide an ideal, reference appearance. Complete conformance to the specification is defined as reproducing all the physical light transport effects of that ideal appearance.\
+\
+However, a number of features can be computationally expensive and therefore impractical to support under certain constraints. Enforcing a specific implementation would tailor the material model to a particular set of constraints, limiting its versatility, which would ultimately make it less useful. For this reason, the specification focuses solely on defining the target appearance. The choice of the final BSDF implementation and its associated trade-off is left entirely to the implementer, allowing them to best suit it to their needs.\
+\
+Each implementation must decide what level of approximation to use, trading off accuracy for efficiency according to its own particular use case. As a guideline, we suggest approaching those approximations conceptually like different level of detail (LOD) variants of an asset. Just like such an asset would become coarser with distance while retaining as much detail as necessary to remain faithful to the original, an implementation of OpenPBR may decide to make simplifications, as long as the result remains reasonably faithful to the intent given the practical constraints. In the most extreme hypothetical case, the model might even get reduced to as little as a single Lambert BRDF.\
+\
+This means the implementer must carefully consider the handling of parameters they do not plan to fully support. A parameter that drastically modifies the appearance of a material should not be discarded just because the corresponding effect is not supported. As an example, in a renderer that doesn't have subsurface scattering, the subsurface color might be used as the albedo of a diffuse BRDF.\
+\
+   \
+\
+Parameter reference\
+===================\
+\
+To guarantee a non-ambiguous way to transport and present the model across different tools, for each parameter we specify in the following table:\
+\
+*   **Identifier**: its unique identifier string (used in the formal description of the material, and in code).\
+*   **Label**: a suggested, non-unique UI name, where parameter grouping for UI purposes can be inferred based on the common identifier prefix.\
+*   **Type**: one of `float`, `boolean`, `color3`, `vector3`. A `color3` value[4](https://academysoftwarefoundation.github.io/OpenPBR/#endnote-ingamut)\
+     is associated with a color space ([ACEScg](https://docs.acescentral.com/specifications/acescg/)\
+     by default), while a `vector3` value is a raw 3-component vector.\
+*   **Range**: the allowed value range for scalar parameters (per-channel for color and vector parameters).\
+    *   Square brackets \\(\[\]\\) indicate a range the value must be within.\
+        *   Parenthesis \\(()\\) indicate bounds are excluded from that range.\
+    *   Curly brackets `{}` indicate a discrete set of possible values.\
+*   **Norm**: when the range of possible values differs from the range of typically useful values, the latter is indicated in this column. For example, a **`specular_ior`** can take arbitrarily high values, but a refractive index of 3 is considered a very high value already, above that of diamond.\
+*   **Default**: the suggested default value.\
+*   **Unit**: where relevant, otherwise assumed to be dimensionless. Note that lengths (other than `thin_film_thickness`) can be assumed to be in the world space units of the scene.\
+\
+| Identifier | Label | Type | Range | Norm | Default | Unit |\
+| --- | --- | --- | --- | --- | --- | --- |\
+| **Base** |\
+| `base_weight` | Weight | `float` | \\( \[0, 1\] \\) |     | \\( 1 \\) |     |\
+| `base_color` | Color | `color3` | \\( \[0, 1\]^3 \\) |     | \\( (0.8, 0.8, 0.8) \\) |     |\
+| `base_metalness` | Metalness | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) |     |\
+| `base_diffuse_roughness` | Diffuse Roughness | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) |     |\
+| **Specular** |\
+| `specular_weight` | Weight | `float` | \\( \[0, \\infty) \\) | \\( \[0, 1\] \\) | \\( 1 \\) |     |\
+| `specular_color` | Color | `color3` | \\( \[0, 1\]^3 \\) |     | \\( (1, 1, 1) \\) |     |\
+| `specular_roughness` | Roughness | `float` | \\( \[0, 1\] \\) |     | \\( 0.3 \\) |     |\
+| `specular_roughness_anisotropy` | Anisotropy | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) |     |\
+| `specular_ior` | IOR | `float` | \\( (0, \\infty) \\) | \\( \[1, 3\] \\) | \\( 1.5 \\) |     |\
+| **Transmission** |\
+| `transmission_weight` | Weight | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) |     |\
+| `transmission_color` | Color | `color3` | \\( \[0, 1\]^3 \\) |     | \\( (1, 1, 1) \\) |     |\
+| `transmission_depth` | Depth | `float` | \\( \[0, \\infty) \\) | \\( \[0, 1\] \\) | \\( 0 \\) | length |\
+| `transmission_scatter` | Scatter | `color3` | \\( \[0, 1\]^3 \\) |     | \\( (0, 0, 0) \\) |     |\
+| `transmission_scatter_anisotropy` | Anisotropy | `float` | \\( \[-1, 1\] \\) |     | \\( 0 \\) |     |\
+| `transmission_dispersion_scale` | Dispersion scale | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) |     |\
+| `transmission_dispersion_abbe_number` | Abbe number | `float` | \\( (0, \\infty) \\) | \\( \[9, 91\] \\) | \\( 20 \\) |     |\
+| **Subsurface** |\
+| `subsurface_weight` | Weight | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) |     |\
+| `subsurface_color` | Color | `color3` | \\( \[0, 1\] \\) |     | \\( (0.8, 0.8, 0.8) \\) |     |\
+| `subsurface_radius` | Radius | `float` | \\( \[0, \\infty) \\) | \\( \[0, 1\] \\) | \\( 1 \\) | length |\
+| `subsurface_radius_scale` | Radius scale | `color3` | \\( \[0, 1\]^3 \\) |     | \\( (1.0, 0.5, 0.25) \\) |     |\
+| `subsurface_scatter_anisotropy` | Anisotropy | `float` | \\( \[-1, 1\] \\) |     | \\( 0 \\) |     |\
+| **Coat** |\
+| `coat_weight` | Weight | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) |     |\
+| `coat_color` | Color | `color3` | \\( \[0, 1\]^3 \\) |     | \\( (1, 1, 1) \\) |     |\
+| `coat_roughness` | Roughness | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) |     |\
+| `coat_roughness_anisotropy` | Anisotropy | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) |     |\
+| `coat_ior` | IOR | `float` | \\( (0, \\infty) \\) | \\( \[1, 3\] \\) | \\( 1.6 \\) |     |\
+| `coat_darkening` | Darkening | `float` | \\( \[0, 1\] \\) |     | \\( 1 \\) |     |\
+| **Fuzz** |\
+| `fuzz_weight` | Weight | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) |     |\
+| `fuzz_color` | Color | `color3` | \\( \[0, 1\]^3 \\) |     | \\( (1, 1, 1) \\) |     |\
+| `fuzz_roughness` | Roughness | `float` | \\( \[0, 1\] \\) |     | \\( 0.5 \\) |     |\
+| **Emission** |\
+| `emission_luminance` | Luminance | `float` | \\( \[0, \\infty) \\) | \\( \[0, 1000\] \\) | \\( 0 \\) | nits |\
+| `emission_color` | Color | `color3` | \\( \[0, \\infty)^3 \\) |     | \\( (1, 1, 1) \\) |     |\
+| **Thin-film** |\
+| `thin_film_weight` | Weight | `float` | \\( \[0, 1\] \\) |     | \\( 0 \\) |     |\
+| `thin_film_thickness` | Thickness | `float` | \\( \[0, \\infty) \\) | \\( \[0, 1\] \\) | \\( 0.5 \\) | \\(\\mathrm{\\mu m}\\) |\
+| `thin_film_ior` | IOR | `float` | \\( (0, \\infty) \\) | \\( \[1, 3\] \\) | \\( 1.4 \\) |     |\
+| **Geometry** |\
+| `geometry_opacity` | Opacity | `float` | \\( \[0, 1\] \\) |     | \\( 1 \\) |     |\
+| `geometry_thin_walled` | Thin walled | `boolean` | {false, true} |     | false |     |\
+| `geometry_normal` | Normal | `vector3` | N/A |     | unperturbed normal |     |\
+| `geometry_tangent` | Tangent | `vector3` | N/A |     | unperturbed tangent |     |\
+| `geometry_coat_normal` | Coat Normal | `vector3` | N/A |     | unperturbed normal |     |\
+| `geometry_coat_tangent` | Coat Tangent | `vector3` | N/A |     | unperturbed tangent |     |\
+\
+   \
+\
+Acknowledgements\
+================\
+\
+The core authors are Zap Andersson, Paul Edmondson, Julien Guertault, Adrien Herubel, Alan King, Peter Kutz, Andréa Machizaud, Jamie Portsmouth, Frédéric Servant and Jonathan Stone.\
+\
+The authors would also like to thank François Beaune, Henrik Edstrom, Eugene d'Eon, Jerry Gamache, Iliyan Georgiev, Lee Griggs, Niklas Harrysson, Miloš Hašan, Stephen Hill, Chris Kulla, Anders Langlands, Frankie Liu, Thomas Makryniotis, André Mazzone, Nikie Monteleone, Michael Nickelsky, Anton Palmqvist, Guido Quaroni, Nathan Reed, Anthony Salvi, Lukas Stockner, Masuo Suzuki, Brecht van Lommel, Andrea Weidlich and Nicolas Wirrmann for their useful contributions.\
+\
+The “shader playground” scene shown at the top of the document was authored by Nikie Monteleone. The shader ball used in various images is the Standard Shader Ball asset of \[[Mazzone2023](https://academysoftwarefoundation.github.io/OpenPBR/#citation-mazzone2023)\
+\].\
+\
+   \
+\
+References\
+==========\
+\
+\[ **Andersson2016**\] Zap Andersson. _Physical Material_, Autodesk white paper (2016).\
+\
+\[ **Ashikhmin2000**\] Michael Ashikhmin, Simon Premože, and Peter Shirley. _A Microfacet-based BRDF Generator_, ACM Transactions on Graphics (2000).\
+\
+\[ **Belcour2017**\] Laurent Belcour and Pascal Barla. _A Practical Extension to Microfacet Theory for the Modeling of Varying Iridescence_, ACM Transactions on Graphics (2017).\
+\
+\[ **Belcour2018**\] Laurent Belcour. _Efficient Rendering of Layered Materials using an Atomic Decomposition with Statistical Operators_, ACM Transactions on Graphics (2018).\
+\
+\[ **Budge2002**\] Brian Budge. _Simple Nested Dielectrics in Ray Traced Images_, Journal of Graphics Tools (2002).\
+\
+\[ **Burley2012**\] Brent Burley. _Physically Based Shading at Disney_, ACM SIGGRAPH Courses: Practical Physically Based Shading in Film and Game Production (2012).\
+\
+\[ **Burley2018**\] Brent Burley, David Adler, Matt Jen-Yuan Chiang, Hank Driskill, Ralf Habel, Patrick Kelly, Peter Kutz, Yining Karl Li, Daniel Teece. _The Design and Evolution of Disney’s Hyperion Renderer_, ACM TOG (2018).\
+\
+\[ **Cocco2024**\] Giovanni Cocco, Cédric Zanni, and Xavier Chermain. _Anisotropic Specular Image-Based Lighting Based on BRDF Major Axis Sampling_, Eurographics (2024).\
+\
+\[ **Dupuy2023**\] Jonathan Dupuy, Anis Benyoub. _Sampling Visible GGX Normals with Spherical Caps_, High-Performance Graphics (2023).\
+\
+\[ **Elias2001**\] Mady Elias, Lionel Simonot, and Michel Menu. “Bidirectional reflectance of a diffuse background covered by a partly absorbing layer”. In: Optics Communications 191.1 (2001).\
+\
+\[ **d'Eon2021**\] Eugene d’Eon. _A Hitchhiker’s guide to multiple scattering: Exact Analytic, Monte Carlo and Approximate Solutions in Transport Theory_ (2022).\
+\
+\[ **Fujii2012**\] Yasuhiro Fujii. [_A tiny improvement of Oren-Nayar reflectance model_](https://mimosa-pudica.net/improved-oren-nayar.html)\
+ (2018).\
+\
+\[ **Georgiev2019**\] Iliyan Georgiev, Jamie Portsmouth, Zap Andersson, Adrien Herubel, Alan King, Shinji Ogaki, and Frederic Servant. _Autodesk Standard Surface_, Autodesk white paper (2019).\
+\
+\[ **Gritz2010**\] Larry Gritz, Clifford Stein, Chris Kulla, and Alejandro Conty. _Open Shading Language_, ACM SIGGRAPH Talks (2010).\
+\
+\[ **Gulbrandsen2014**\] Ole Gulbrandsen. _Artist Friendly Metallic Fresnel_, Journal of Computer Graphics Techniques (2014).\
+\
+\[ **Heitz2014**\] Eric Heitz. _Understanding the Masking-Shadowing Function in Microfacet-Based BRDFs_, Journal of Computer Graphics Techniques (2014).\
+\
+\[ **Heitz2015**\] Eric Heitz, Jonathan Dupuy, Cyril Crassin, Carsten Dachsbacher. _The SGGX microflake distribution_, ACM Transactions on Graphics (2015).\
+\
+\[ **Heitz2016a**\] Eric Heitz, Johannes Hanika, Eugene d’Eon and Carsten Dachsbacher. _Multiple-Scattering Microfacet BSDFs with the Smith Model_, ACM Transactions on Graphics (2016).\
+\
+\[ **Heitz2016b**\] Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt. _Real-Time Polygonal-Light Shading with Linearly Transformed Cosines_, ACM SIGGRAPH (2016).\
+\
+\[ **Heitz2018**\] Eric Heitz. _Sampling the GGX Distribution of Visible Normals_, Journal of Computer Graphics Techniques (2018).\
+\
+\[ **Hery2017**\] Christophe Hery, Ryusuke Villemin, Junyi Ling. _Pixar's Foundation for Materials_, Pixar technical report (2017).\
+\
+\[ **Hoffman2019**\] Naty Hoffman. _Fresnel Equations Considered Harmful_, EGSR (2019).\
+\
+\[ **Jakob2014**\] Wenzel Jakob, Eugene d'Eon, Otto Jakob, and Steve Marschner. _A Comprehensive Framework for Rendering Layered Materials_, ACM Transactions on Graphics (2014).\
+\
+\[ **Jensen2001**\] Henrik Wann Jensen, Stephen R. Marschner, Marc Levoy, and Pat Hanrahan. _A Practical Model for Subsurface Light Transport_, ACM SIGGRAPH (2001).\
+\
+\[ **Karis2013**\] Brian Karis, _Real Shading in Unreal Engine 4_, ACM SIGGRAPH Courses: Physically Based Shading in Theory and Practice (2013).\
+\
+\[ **Kelemen2001**\] Csaba Kelemen and Laszlo Szirmay-Kalos. _A Microfacet Based Coupled Specular-Matte BRDF Model with Importance Sampling_, Eurographics (2001).\
+\
+\[ **Kettner2015**\] Lutz Kettner, Matthias Raab, Daniel Seibert, Jan Jordan, Alexander Keller. _The Material Definition Language_, Eurographics (2015).\
+\
+\[ **Kulla2017**\] Christopher Kulla and Alejandro Conty Estevez. _Revisiting Physically Based Shading at Imageworks_, ACM SIGGRAPH Courses: Physically Based Shading in Theory and Practice (2017).\
+\
+\[ **Kutz2021**\] Peter Kutz, Miloš Hašan, Paul Edmondson. _Novel aspects of the Adobe Standard Material_, Adobe white paper (2021).\
+\
+\[ **Lagarde2014**\] Sébastien Lagarde, Charles de Rousiers. _Moving Frostbite to Physically Based Rendering 3.0_, ACM SIGGRAPH Courses: Physically Based Shading in Theory and Practice (2014).\
+\
+\[ **Langlands2014**\] Anders Langlands. _Physically Based Shader Design in Arnold_, ACM SIGGRAPH Talks (2014).\
+\
+\[ **Mazzone2023**\] André Mazzone and Chris Rydalch. [_Standard Shader Ball: A Modern and Feature-Rich Render Test Scene_](https://github.com/usd-wg/assets/tree/main/full_assets/StandardShaderBall)\
+, ACM SIGGRAPH Asia (2023).\
+\
+\[ **McAuley15**\] Stephen McAuley, _Rendering the World of Far Cry 4_, GDC (2015).\
+\
+\[ **McDermott2018**\] Wes McDermott. [_The PBR Guide_](https://substance3d.adobe.com/tutorials/courses/the-pbr-guide-part-1)\
+, Allegorithmic white paper (2018).\
+\
+\[ **Neubelt13**\] David Neubelt, Matt Pettineo. _Crafting a Next-Gen Material Pipeline for The Order: 1886_, ACM SIGGRAPH Courses: Physically Based Shading in Theory and Practice (2013).\
+\
+\[ **Novak2018**\] Jan Novák, Iliyan Georgiev, Johannes Hanika, Wojciech Jarosz. _Monte Carlo Methods for Volumetric Light Transport Simulation_, Computer Graphics Forum (2018).\
+\
+\[ **Oren1994**\] Michael Oren and Shree K. Nayar. _Generalization of Lambert's reflectance model_, ACM SIGGRAPH (1994).\
+\
+\[ **Pharr2023**\] Matt Pharr, Wenzel Jakob and Greg Humphreys. _Physically Based Rendering (4th edition)_ (2023).\
+\
+\[ **Polyanskiy2023**\] Mikhail N. Polyanskiy. [_Refractive Index Database_](https://refractiveindex.info/)\
+ (2023).\
+\
+\[ **Portsmouth2024**\] Jamie Portsmouth, Peter Kutz and Stephen Hill. [_EON: A practical energy-preserving rough diffuse BRDF_](https://arxiv.org/abs/2410.18026)\
+ (2024).\
+\
+\[ **Revie2011**\] Donald Revie, _Implementing Fur Using Deferred Shading_, GPU Pro 2 (2011).\
+\
+\[ **Schott2023**\] SCHOTT. [_Interactive Abbe Diagram_](https://www.schott.com/en-gb/interactive-abbe-diagram)\
+ (2023).\
+\
+\[ **Smythe2016**\] Doug Smythe and Jonathan Stone. [_MaterialX: An Open Standard for Network-Based CG Object Looks_](https://materialx.org/)\
+\
+\[ **Turquin2019**\] Emmanuel Turquin. _Practical multiple scattering compensation for microfacet models._, Industrial Light & Magic white paper (2019).\
+\
+\[ **Veach1997**\] Eric Veach. _Robust Monte Carlo Methods for Light Transport Simulation_, Ph.D. dissertation, Stanford University (1997).\
+\
+\[ **Walter2007**\] Bruce Walter, Stephen R. Marschner, Hongsong Li, and Kenneth E. Torrance. _Microfacet models for refraction through rough surfaces_, EGSR (2007).\
+\
+\[ **Weidlich2007**\] Andrea Weidlich and Alexander Wilkie. _Arbitrarily Layered Micro-Facet Surfaces_, GRAPHITE '07 (2007).\
+\
+\[ **Zeltner2018**\] Tizian Zeltner and Wenzel Jakob. _The Layer Laboratory: A Calculus for Additive and Subtractive Composition of Anisotropic Surface Reflectance_, ACM Transactions on Graphics (2018).\
+\
+\[ **Zeltner2022**\] Tizian Zeltner, Brent Burley, and Matt Jen-Yuan Chiang. _Practical Multiple-Scattering Sheen Using Linearly Transformed Cosines_, ACM SIGGRAPH Talks (2022).\
+\
+  \
+  \
+  \
+  \
+\
+ 1 The term BSDF is often specialized to BRDF or BTDF to denote the portions of the BSDF which reflect into the same hemisphere, or transmit into the opposite hemisphere, respectively.\
+\
+ 2 Technically, the reciprocity condition also involves the index of refraction \[[Veach1997](https://academysoftwarefoundation.github.io/OpenPBR/#citation-veach1997)\
+\].\
+\
+ 3 Where \\(\\mathrm{lerp}(a, b, t) \\equiv (1 - t) a + tb\\).\
+\
+ 4 Note that we assume that all RGB colors are in-gamut, and that colors representing albedos have components in the \\(\[0,1\]\\) range (otherwise RGB renderers do not produce sensible results). The `emission_color` however is the exception which is permitted to have arbitrarily large (positive) components, since it represents an arbitrary luminance multiplier.\
+\
+ 5 Omitting Jacobian factors.\
+\
+ 6 Omitting normalization factors.\
+\
+ 8 Technically, \\(g\\) is the _mean cosine of deflection_ of the phase function, which is not specific to the Henyey—Greenstein phase function model \[[d'Eon2021](https://academysoftwarefoundation.github.io/OpenPBR/#citation-d'eon2021)\
+\].\
+\
+ 7 The \\(s\\) term is given by (with normal \\(\\mathbf{n}\\)): \\begin{eqnarray\*} s = \\omega\_i \\cdot \\omega\_o - (\\mathbf{n} \\cdot \\omega\_i) (\\mathbf{n} \\cdot \\omega\_o) \\nonumber = \\cos(\\phi\_i-\\phi\_o) \\,\\sin\\theta\_i \\,\\sin\\theta\_o \\end{eqnarray\*} and \\begin{equation} \\frac{1}{t} = \\begin{cases} 1 & \\text{if \\(s \\le 0\\)}\\\\ 1 / \\max\\left(\\mathbf{n} \\cdot \\omega\_i, N \\cdot \\omega\_o\\right) & \\text{if \\(s > 0\\) .} \\end{cases} \\end{equation} The \\(A, B\\) coefficients are \\begin{eqnarray} A &=& \\frac{1}{1 + \\left(\\frac{1}{2} - \\frac{2}{3\\pi}\\right)\\sigma}\\ , \\nonumber \\\\ B &=& \\sigma A \\ . \\end{eqnarray}\
+\
+ 9 In reality, coats can also darken the underlying surface due to a different mechanism where the coat modifies the Fresnel factor of the base due to the coat material filling in air gaps between granules or threads of a porous base material, which reduces the relative IORs at the internal interfaces. This occurs e.g. on adding water to sand or fabric, or adding a penetrating wood finish. We assume here that this effect explicitly does _not_ occur, at present, since we do not have enough knowledge about the properties of the underlying substance to model it. We can only safely assume that the first mechanism of darkening, i.e. internal reflections, occurs.\
+\
+ 10 The hemispherical (or average) albedo of the Fresnel factor is defined as \\(E\_F(\\eta) \\equiv 2 \\int\_0^1 F(\\mu, \\eta)\\,\\mu\\,\\mathrm{d}\\mu\\). This can be tabulated, or one can use the convenient analytical approximation \[[d'Eon2021](https://academysoftwarefoundation.github.io/OpenPBR/#citation-d'eon2021)\
+\] (accurate to within 0.2% in the limited range \\(\\eta \\in \[1,3\]\\)): \\begin{equation} E\_F(\\eta) \\approx \\ln \\biggl( \\frac{10893\\eta - 1438.2}{-774.4\\eta^2 + 10212\\eta + 1} \\biggr) \\ . \\end{equation} (The more complicated exact formula is also provided in \[[d'Eon2021](https://academysoftwarefoundation.github.io/OpenPBR/#citation-d'eon2021)\
+\], which we do not reproduce here). Values of \\(E\_F(\\eta)\\) for \\(\\eta < 1\\) are related to the values for \\(\\eta > 1\\) via: \\begin{equation} E\_F(\\eta) = 1 - \\eta^2 \\bigl(1 - E\_F(1/\\eta)\\bigr) \\ . \\end{equation}\
+\
+ 11 Technically, the _internal diffuse reflection coefficient_ \\(K\\) described in the [Darkening](https://academysoftwarefoundation.github.io/OpenPBR/#darkening)\
+ section should also be modified to account for the absorption, but the effect of this can reasonably be ignored.\
+\
+ 12 This sum of BSDF and BSSRDF can be justified mathematically by interpreting a BSDF as the special case of a BSSRDF restricted to equal exit and entry points.\
+\
+_formatted by [Markdeep 1.04](http://casual-effects.com/markdeep)_  \
+\
+✒
