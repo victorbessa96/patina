@@ -12,9 +12,9 @@ delivery-side audit trail.
 | Template-driven export, naming tokens | **Partial** | The token ENGINE is complete (expand_template, unknown tokens pass through — tested); the DRIVER feeds only `$textureSet` today (d64a65c). $mesh/$udim/$colorSpace/$srcMap/$layerName need driver-side sources — the CLI export knows mesh name; wiring is mechanical once painted maps exist. Presets serialize as files (to_json/from_json, roundtripped). |
 | Channel packing, per-output slot mapping | **Done** | `ChannelWiring {map, slot}` per output channel (a1490ad fixed the bare-slot design gap); ORM/gltf-metR packings verified end-to-end in driver tests (5eb9cff). |
 | Engine presets (glTF/Unreal/Unity/Blender) | **Done** | All four + JSON round-trip (a1490ad); Unreal ORM map-index wiring, Unity smoothness source, Blender passthroughs pinned by tests. |
-| Bit depths 8/16/32F; PNG/EXR/TIFF/JPEG | **Done minus dithering** | PNG8 (wave-2), PNG16 (73d8dc0, u16 + 16-bit sRGB curve), EXR 32F (f3b6bd9), TIFF + JPEG (73d8dc0 — JPEG alpha-dropped, documented: YCbCr has no alpha plane). **Dithering option: NOT built** (8-bit banding mitigation — open). |
+| Bit depths 8/16/32F; PNG/EXR/TIFF/JPEG | **Done** | PNG8 (wave-2), PNG16 (73d8dc0, u16 + 16-bit sRGB curve), EXR 32F (f3b6bd9), TIFF + JPEG (73d8dc0 — JPEG alpha-dropped, documented: YCbCr has no alpha plane). Dithering: DONE (6edd477) — Floyd-Steinberg `dither_quantize_rgba8` at the f32→u8 boundary, alpha excluded, deterministic. |
 | Normal-convention conversion (DX/GL Y-flip) | **Done** | Driver flips green for normal outputs only, decode-verified 200→55 (5eb9cff); the TBN bake takes directx_y_flip (2d7fa0a). |
-| Padding: dilation + fill modes + 3D-neighbor | **Partial** | Dilation: done — 8-neighbor ping-pong, flag-driven, Bessa's transfer fix (b5a2e2d, 6b728ae→f2c29ee arc). **Infinite dilation: not built** (finite iterations only). **Transparent/default-color fill: not built. 3D-neighbor-aware (triangle-adjacency) padding: not built** (screen-space 8-neighbor only). |
+| Padding: dilation + fill modes + 3D-neighbor | **Mostly done** | Dilation: done — 8-neighbor ping-pong, flag-driven, Bessa's transfer fix (b5a2e2d). Infinite dilation: DONE (a04e243) — `dilate_map_filled`, w+h bound covers every connected texel. Fill modes: DONE (0694344) — `fill_uncovered` for default-color, transparent mode is the documented no-op default. **3D-neighbor-aware (triangle-adjacency) padding: not built** (screen-space 8-neighbor only) — needs the seam-graph pass. |
 | 8K export | Deferred (P1 wave 5) | Not started — as planned. |
 
 ## §9 Color management
@@ -28,8 +28,8 @@ delivery-side audit trail.
 
 ## Honest gaps (the next hunts)
 
-1. Dithering option (§6) — small, CPU-side in the format writers.
+1. ~~Dithering option (§6)~~ — DONE (6edd477).
 2. Driver token sources beyond $textureSet (§6) — mechanical after painted maps.
-3. Infinite dilation + fill modes + 3D-neighbor-aware padding (§6 padding row).
+3. ~~Infinite dilation + fill modes~~ — DONE (a04e243, 0694344). Remaining in the padding row: 3D-neighbor-aware padding (needs the seam-graph pass).
 4. Real-OCIO bundled build + golden tests against the CPU reference (§9).
 5. GPU display LUT via shader extraction (§9) — the viewport HDR path.
