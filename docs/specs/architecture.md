@@ -12,14 +12,17 @@
        │              │               │               │
   ┌────▼────┐   ┌────▼─────┐   ┌─────▼─────┐  ┌─────▼─────┐
   │ stylus  │   │ umber-    │   │ umber-    │  │ umber-    │
-  │ (input) │   │ brush     │   │ gpu       │  │ mesh      │
-  └────┬────┘   └────┬─────┘   └─────┬─────┘  └─────┬─────┘
-       │              │               │               │
-       └──────────────┴───────┬───────┴───────────────┘
-                               │
-                        ┌──────▼──────┐
-                        │ umber-core  │  document model + undo
-                        └──────┬──────┘
+  │ (input) │──▶│ brush     │──▶│ gpu       │  │ mesh      │
+  └─────────┘   └────┬─────┘   └─────▲─────┘  └─────┬─────┘
+       (pen events      │               │              │
+        to brush;      │        all GPU submits       │
+        core gets      │        funnel through       │
+        state sync)    │        umber-gpu only        │
+                     ┌▼──────────────┐               │
+                     │ umber-core    │◀──────────────┘
+                     │ (document +   │   (mesh/state edges;
+                     │  undo)        │    GPU work still
+                     └──────┬───────┘    goes via umber-gpu)
                    ┌───────────┼───────────┬─────────────┐
              ┌─────▼────┐ ┌────▼─────┐ ┌────▼────┐ ┌────▼─────┐
              │ umber-   │ │ umber-   │ │ umber-  │ │ umber-   │
@@ -45,7 +48,7 @@ Thread 1: winit main loop          Thread 2: paint scheduler        Thread 3+: w
 ```
 
 - **Event flow:** winit drains events first, then acquires the frame (wgpu#2269 — avoids a frame of latency; never vsync-block with pending input).
-- Pen events bypass egui's input model entirely (egui#2104 workaround): `stylus` crate → normalized `StrokeEvent` → ring buffer → brush thread. Mouse stays through egui.
+- Pen events bypass egui's input model entirely (egui#2104 workaround): `stylus` crate → normalized `StrokeEvent` → ring buffer → umber-brush thread (NOT through umber-core; the diagram's merge arrow is a state-sync edge only). Mouse stays through egui.
 - Paint submits never wait on present; present never blocks paint (separate command buffers; dirty-tile list bridges them).
 
 ## Paint data flow (stylus → texel) [05]
@@ -53,7 +56,7 @@ Thread 1: winit main loop          Thread 2: paint scheduler        Thread 3+: w
 ```
 stylus event (pressure, tilt, position, time)
   → one-euro filter + lazy-mouse pull (stroke input conditioning)
-  → umber-brush state machine (libmypoint-lineage: inputs→curves→dab params;
+  → umber-brush state machine (libmypaint-documented-semantics lineage: inputs→curves→dab params;
     residual partial-dab spacing; dabs-per-radius)
   → dab stream {uv, size, color, flow, hardness, alpha_mode}
   → 3D-space stroke evaluation:
@@ -76,6 +79,7 @@ stylus event (pressure, tilt, position, time)
 - Paint targets own per-channel page pools; bake targets reuse the same pool allocator.
 - Eviction policy under paint traffic + mip updates = the hard 20% (budgeted as core-engine work, Wave 2–3).
 - No wgpu sparse residency exists; this design uses only stable primitives (storage-buffer arrays, per-draw rebinds) with the `as_hal` Vulkan hatch as insurance [03].
+- **v0.1 scope honesty:** the tile-pool architecture ships in v0.1 (Wave 2 foundation, Wave 3 bake integration); >4K in-app streaming operation is post-0.1.
 
 ## Layer stack evaluation
 

@@ -17,7 +17,7 @@
 | Lazy mouse (radius-based stroke offset smoothing) + one-euro filter smoothing (Casiez CHI'12) with Krita-style stabilizer panel (samples@min/max speed, delay dead-zone) | P0 | 2 |
 | Hardness/stamp falloff (radial gradient dabs); alpha source: bitmap textures + procedural | P0 | 2 |
 | Eraser (sets layer alpha to zero — non-destructive; per-channel enable) | P0 | 2 |
-| Fill layer + fill projections: UV, Tri-planar, Planar, Spherical, Cylindrical | P0 | 3 |
+| Fill layer + fill projections: UV, Tri-planar, Planar, Spherical, Cylindrical | P0 | 3 (fill layer ships with its projections — no projection-less staging) |
 | Smudge (sample+blur blend), Clone (source offset + follow-stroke) | P1 | 3 |
 | Symmetry: mirror (axis+offset+manipulator) and radial (count, flip U/V) — brush + fill-layer projections | P1 | 3 |
 | Straight-line constraint; angle snap | P1 | 3 |
@@ -26,7 +26,7 @@
 | Path tools (paint/erase/smudge along 3D curve; per-vertex size+opacity; filled path) | P1 | 5 |
 | Brush presets (.abr import optional; native preset files) | P0 | 2 |
 | Seam-aware stamping: strokes crossing UV seams land consistently in both islands; 3D-space-neighbor padding/dilation | P0 | 2 |
-| Stroke evaluated in 3D space, not per-tile (UDIM continuity) | P0 | 2 |
+| Stroke evaluated in 3D space, not per-tile (works single-tile; UDIM cross-tile continuity arrives with UDIM in Wave 4) | P0 | 2 |
 | Paint-what-you-see projection modes beyond UV (Mari-style paint buffer) | P1 | 4 |
 
 ## 2. Layer + channel system — [01]
@@ -40,7 +40,7 @@
 | Masks: grayscale paint mask, bitmap mask, black/white; mask stacks with effects | P0 | 2 |
 | Layer instancing (source-edits propagate, cycle detection) | P1 | 4 |
 | Anchors (reference any layer/channel/mask as generator input within same texture set) | P1 | 4 |
-| Per-channel resolution; in-app 4K default, 8K export support | P0 | 2/3 |
+| Per-channel resolution; in-app 4K default (8K export → §6, single source of truth) | P0 | 2 |
 | UDIM multi-tile texture sets; per-tile resolution; cross-tile painting | P0 | 4 (data model from 1) |
 | Smart materials (folder presets applied with mesh-map-driven generators) | P1 | 4 |
 | Dynamic material layering (shader-declared sub-stacks) | P2 | 6+ |
@@ -62,7 +62,7 @@
 
 | Requirement | Priority | Wave |
 |---|---|---|
-| Original node-graph engine: DAG, topological eval, dirty-region propagation; graphs serialize as **MaterialX documents** (nodes = MaterialX standard nodes; interchange with Houdini/UE/UsdMtlx free) | P0 | 4 |
+| Original node-graph engine: DAG, topological eval, dirty-region propagation; graphs serialize as **MaterialX documents** — nodes with MaterialX standard-node equivalents map to standard nodes; painter-specific nodes ship as **declared custom nodedefs** (consuming DCCs read the document and evaluate what they support; no automatic full-fidelity interchange is claimed) | P0 | 4 |
 | Node set v1 (~40 core): noise family (perlin/value/worley), gradients, patterns, blur/sharpen, levels, curves, color ops, direction warp, flood fill from masks, edge detect, histogram ops | P0 | 4 |
 | Generator nodes driven by baked mesh maps (AO/curvature/position/WS-normal inputs plumbed automatically) | P0 | 4 |
 | Smart masks (effect-stack presets) | P1 | 4 |
@@ -74,8 +74,8 @@
 
 | Requirement | Priority | Wave |
 |---|---|---|
-| PBR viewport: **OpenPBR 1.1 über-shader in WGSL** (native channel model = OpenPBR parameter names; spec is ASWF/Apache-2.0 with reference C++ to transliterate) | P0 | 1 (basic Blinn-Phong-ish PBR), 2 (OpenPBR) |
-| IBL environment lighting (HDR env maps, exposure, rotation, blur) | P0 | 1 |
+| PBR viewport: **OpenPBR 1.1 über-shader in WGSL** (native channel model = OpenPBR parameter names; spec is ASWF/Apache-2.0 with reference C++ to transliterate) | P0 | 1 (basic Blinn-Phong-ish PBR), 2 (OpenPBR + conformance suite) |
+| IBL environment lighting (HDR env maps, exposure, rotation, blur) | P0 | 1 (bundled env maps; HDR file import lands W2 with image import) |
 | View modes: lit / unlit single-channel solo (±display transform) / mesh-map preview | P0 | 1 |
 | 2D UV view alongside 3D view (synchronized) | P0 | 2 |
 | Camera: orbit/pan/zoom, perspective + orthographic | P0 | 1 |
@@ -96,7 +96,7 @@
 | Bit depths 8/16/32F; formats: PNG, EXR, TIFF, JPEG (via image/exr crates); dithering option | P0 | 3 |
 | Normal-convention conversion (DirectX vs OpenGL Y-flip) at export | P0 | 3 |
 | Padding: dilation (finite/infinite), transparent/default-color fill; 3D-neighbor aware | P0 | 3 |
-| 8K export (from 4K in-app) | P1 | 5 |
+| 8K export (up-sampled from 4K in-app) — canonical row for this requirement (also referenced in §2) | P1 | 5 |
 | PSD export (layered) | P2 | 6+ |
 | MaterialX document export (OpenPBR nodedef + image/UDIM tokens) — "beyond raster" interchange | P0 | 3 (basic), 4 (full) |
 | USD export (textures + .usda + material binding via UsdShade→OpenPBR) | P1 | 5 |
@@ -136,9 +136,11 @@
 | Requirement | Priority | Wave |
 |---|---|---|
 | Windows 10/11 + Linux (Vulkan 1.3; DX12 on Windows) | P0 | 1 |
+| CI on GitHub Actions: windows-latest + ubuntu; headless GPU tests via **lavapipe (Linux) and WARP (Windows)** — the Windows path is named, not silently assumed | P0 | 1 |
 | Stylus/tablet: **owned `stylus` crate** — Windows dual-path (Windows Ink WM_POINTER + Wintab32 polling), Linux (Wayland zwp_tablet_v2 + X11 XI2); pressure/tilt/proximity/hover; fork/absorb octotablet; upstream to winit | P0 | 1 (windows-ink basic) → 2 (dual) → 5 (matrix) |
 | Pressure into paint pipeline bypassing egui input (winit raw events → canvas) | P0 | 2 |
 | Plugin runtime: wasmtime + WASI 0.3 component model (sandboxed; host-API for stamps/ops — plugins orchestrate, never execute inner paint loops) | P1 | 6 |
+| **AI-assisted texturing — P2 research track, out of v0.1** (docs/research/04 §13: Painter has no first-party AI; local-first inpainting/seamless-tile generation via candle or sidecar is the open flank). v0.1 ships only the plugin/provider-interface design hook (Wave 6); delivery is post-0.1 | P2 | 6 (interface only) |
 | Scripting/automation: headless CLI (bake/export/render-batch), project format is the API | P1 | 6 |
 | Distribution: cargo-dist (MSI + GH releases), Flatpak + AppImage on Linux; CI on windows-latest + ubuntu with lavapipe GPU tests | P0 (CI) | 1 (CI), 6 (installers) |
 | Profiling: tracy-client + profiling facade from day one | P0 | 1 |
@@ -158,11 +160,11 @@
 
 | Budget | Target |
 |---|---|
-| Input-to-photon (stylus event → composited pixel on screen) | < 20 ms at 60Hz; drain-events-then-acquire frame loop [05] |
+| Input-to-photon (stylus event → composited pixel on screen) | < 20 ms at 60Hz, measured by timestamp instrumentation (protocol in docs/perf); drain-events-then-acquire frame loop [05] |
 | Stroke throughput | 4K texture set, no dropped dabs at 200Hz input streams |
-| Viewport | 60 fps, 1M-tri mesh, 4K set, mid-range GPU |
-| Undo RAM | 100 steps at 4K within ~2 GB (dirty-tile snapshots + cumulative merge) [05] |
-| App footprint | release binary < 50 MB (no runtime deps) |
+| Viewport | 60 fps sustained (frame-time P95 < 16.7ms) on the reference GPU class (one named mid-range GPU — e.g. RTX 3060 / RX 6600 class, current driver), 1M-tri mesh, 4K set |
+| Undo RAM | 100 steps at 4K within ~2 GB (dirty-tile snapshots + cumulative merge), soak-tested in CI [05] |
+| Installer size | target < 150 MB (wasmtime + vendored OCIO + codecs make smaller dishonest — tracked per release, not gated); no runtime deps beyond installer contents |
 
 ---
 
@@ -173,3 +175,4 @@
 - Cloud/accounts/telemetry — none, ever
 - macOS — later, contributor-driven
 - Real-time collaboration (CRDT) — P2 research only [04]
+- In-app generative AI — P2 research track, post-0.1 (plugin/provider interface only in v0.1) [04 §13]

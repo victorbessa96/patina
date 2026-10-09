@@ -8,7 +8,7 @@ Umber is a ground-up reimagining of the 3D texture-painting DCC: paint PBR mater
 
 ## Why
 
-Substance Painter is the industry standard for game/film texturing — and it is subscription-only, closed, and cloud-pressured. The open-source alternatives each miss something: ArmorPaint is close but donation-gated with a JS UI layer; Blender's texture paint is a module of a larger tool, not a focused painter; everything else is either dead, film-priced (Mari ~$2k/yr), or discontinued (Quixel Mixer). The world deserves a Rust-native, GPL, community-owned painter with a professional workflow.
+Substance Painter is the industry standard for game/film texturing — and it is subscription-only, closed, and cloud-pressured. The open-source alternatives each miss something: ArmorPaint is close but single-maintainer with a thin material ecosystem; Blender's texture paint is a module of a larger tool, not a focused painter; everything else is either dead, film-priced (Mari ~$2k/yr), or discontinued (Quixel Mixer). The world deserves a Rust-native, GPL, community-owned painter with a professional workflow.
 
 ## Principles
 
@@ -28,7 +28,7 @@ Substance Painter is the industry standard for game/film texturing — and it is
 | Engine-correct export (Unity / Unreal / glTF), AO/normal/curvature bake | 3 |
 | Procedural node graph: generators, filters, smart materials | 4 |
 | Tablet-pressure pipeline end-to-end, dockable UI maturity, theming | 5 |
-| Plugin runtime (Rust-native + sandboxed WASM), headless CLI, v0.1 release | 6 |
+| Sandboxed plugins (WASM/WASI), headless CLI, v0.1 release | 6 |
 
 
 ## License

@@ -16,12 +16,13 @@ Last green commit: see git log — docs/specs consolidation + report 05
 ## Active wave
 
 **Name:** Wave 0 — Research + spec ratification
-**Goal:** Four research claws (Substance Painter feature inventory, competitor autopsy incl. ArmorPaint + name-collision sweep, Rust graphics ecosystem stack, next-gen capability bar) return; findings merge into docs/research/; SPEC.md goes DRAFT → v1.0 with Bessa review.
+**Goal:** Five research claws (Substance Painter feature inventory, competitor autopsy incl. ArmorPaint + name-collision sweep, Rust graphics ecosystem stack, next-gen capability bar, brush-engine architecture) return; findings merge into docs/research/; adversarial review of the consolidation; SPEC.md goes DRAFT → v1.0 with Bessa review.
 **Exit criteria:**
-- [ ] All four claw reports landed in docs/research/
-- [ ] Name-collision sweep confirms Umber (or triggers rename decision)
-- [ ] Requirements + tech-stack + component-architecture document written from claw findings
-- [ ] Roadmap (waves 1-6) validated against research
+- [x] All five claw reports landed in docs/research/ (01–05)
+- [x] Name-collision sweep executed — Patina→Umber rename done (DECISIONS.md [02:41])
+- [x] Requirements + tech-stack + component-architecture documents written from claw findings
+- [x] Adversarial review of SPEC + consolidation docs run; 26 findings reconciled, fixes applied (docs/research/06)
+- [x] Roadmap validated against research
 - [ ] Bessa reviews + approves SPEC.md v1.0
 
 ## Blocked / waiting
