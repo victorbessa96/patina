@@ -26,7 +26,7 @@ use egui::containers::menu::{MenuBar, MenuButton};
 use egui::{CentralPanel, Id, Ui, WidgetText};
 use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
 use export_dialog::{ExportContext, ExportDialog};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use umber_gpu::GpuContext;
 use uv_view::UvView;
 use viewport::Viewport;
@@ -243,6 +243,80 @@ impl UmberApp {
             Err(e) => log::error!("readback failed: {e:#}"),
         }
     }
+
+    /// The texture-set name for project save: the loaded mesh's set
+    /// name, else the fallback default.
+    fn project_texture_set_name(&self) -> String {
+        umber_mesh::texture_set_name(
+            self.state
+                .mesh_path
+                .as_deref()
+                .unwrap_or(Path::new("TextureSet")),
+            self.state
+                .mesh
+                .as_ref()
+                .unwrap_or(&umber_mesh::MeshData::default()),
+        )
+    }
+
+    /// Saves the document as a `.umber` project directory via a save
+    /// dialog: one texture set (named from the loaded mesh), the
+    /// layer stack + project settings through `umber_core::project`.
+    fn save_project(&mut self) {
+        let set_name = self.project_texture_set_name();
+        let Some(dir) = rfd::FileDialog::new()
+            .set_file_name(format!("{set_name}.umber"))
+            .save_file()
+        else {
+            return;
+        };
+        let model = umber_core::project::ProjectModel::new(
+            vec![umber_core::TextureSet::new_default(&set_name)],
+            vec![umber_core::project::TextureSetLayers {
+                texture_set: set_name.clone(),
+                stack: self.state.doc.stack.clone(),
+            }],
+            umber_core::project::ProjectSettings {
+                active_texture_set: Some(set_name.clone()),
+            },
+        );
+        match umber_core::project::save_to_dir(&model, &dir) {
+            Ok(()) => log::info!("project saved: {}", dir.display()),
+            Err(e) => log::error!("project save failed: {e}"),
+        }
+    }
+
+    /// Loads a `.umber` project directory: restores the active texture
+    /// set's layer stack into the document (undo history starts fresh;
+    /// the journal is session-scoped by design).
+    fn open_project(&mut self) {
+        let Some(dir) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+        match umber_core::project::load_from_dir(&dir) {
+            Ok(model) => {
+                let active = model
+                    .settings
+                    .active_texture_set
+                    .or_else(|| model.texture_sets.first().map(|ts| ts.name.clone()));
+                let Some(name) = active else {
+                    log::error!("project has no texture sets: {}", dir.display());
+                    return;
+                };
+                let Some(entry) = model.layers.iter().find(|l| l.texture_set == name) else {
+                    log::error!("texture set {name:?} has no layers entry");
+                    return;
+                };
+                self.state.doc.stack = entry.stack.clone();
+                log::info!(
+                    "project loaded: {} ({} layers in {name:?})",
+                    dir.display(),
+                    self.state.doc.stack.layers.len()
+                );
+            }
+            Err(e) => log::error!("project load failed: {e}"),
+        }
+    }
 }
 
 impl eframe::App for UmberApp {
@@ -267,6 +341,12 @@ impl eframe::App for UmberApp {
                             Err(e) => log::error!("mesh load failed: {e}"),
                         }
                     }
+                }
+                if ui.button("Open Project…").clicked() {
+                    self.open_project();
+                }
+                if ui.button("Save Project…").clicked() {
+                    self.save_project();
                 }
                 let export_enabled = self.state.paint.is_some();
                 if ui
