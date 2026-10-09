@@ -20,7 +20,22 @@ Delete this directory when the render pass lands and is cross-reviewed.
 - Files: `eframe_epi.rs` (CreationContext + RenderState accessors),
   `egui_wgpu_lib.rs` (RenderState struct), `egui_wgpu_renderer.rs`
   (CallbackTrait full source)
+- `wgpu_compute_pass.rs` (wgpu 30 ComputePass: set_pipeline/set_bind_group/
+  dispatch_workgroups), `wgpu_compute_pipeline.rs` (ComputePipelineDescriptor
+  with Option<&str> entry_point), `wgpu_bind_group.rs` (BindGroupDescriptor)
 - Our app currently uses `eframe::run_native("Umber", native, Box::new(|_cc|
   Ok(Box::new(UmberApp::default()))))` — the `_cc` CreationContext is where
   RenderState is obtained. UmberApp currently takes no cc data; you will need
   to restructure `UmberApp::new(cc: &CreationContext)` to capture RenderState.
+
+## Compute-pass facts for the paint-target work (verified vs wgpu 30.0.1 source 2026-10-09)
+
+- `ComputePipelineDescriptor { label, layout: Option<&PipelineLayout>, module: &ShaderModule,
+  entry_point: Option<&str>, compilation_options, cache: Option<&PipelineCache> }` (compute_pipeline.rs:45+)
+- `ComputePass`: `set_pipeline(&ComputePipeline)`, `set_bind_group(index, BG, &[DynamicOffset])`,
+  `dispatch_workgroups(x,y,z)` — encoder.begin_compute_pass(&ComputePassDescriptor) opens it
+- Storage textures: bind via `BindingType::Texture { sample_type, view_dimension, multisampled }`
+  for read and `Texture { access: StorageTextureAccess::WriteOnly|ReadWrite, format, view_dimension }`
+  for write — check wgpu_bind_group.rs + renderer.rs's existing uniform binding for layout patterns
+- Texture format for paint targets: Rgba8Unorm (linear) is the Wave-2 paint surface
+  (sRGB conversion happens at display, not in the paint buffer — matches the scene-linear rule)

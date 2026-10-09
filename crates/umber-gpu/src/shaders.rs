@@ -59,3 +59,90 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(color, 1.0);
 }
 "#;
+
+/// Dab-splat compute pass: one workgroup per dab, rasterizing a filled,
+/// radially-falloff'd circle into a storage texture with premultiplied
+/// alpha-over compositing.
+///
+/// `Dab`'s field order/padding here must match `paint::Dab` byte-for-byte
+/// (see that module's doc comment) — WGSL's `vec4<f32>` forces 16-byte
+/// alignment, which Rust's `[f32; 4]` (4-byte aligned) does not provide for
+/// free.
+///
+/// Workgroup-local contract (see `paint::PaintCompositor::splat_dabs`):
+/// every invocation in a workgroup paints only pixels inside *its own*
+/// dab's clamped bounding box, strided by `local_invocation_index` so no
+/// two invocations in the same workgroup touch the same texel. There is no
+/// such guarantee *across* workgroups in one dispatch — two dabs in the
+/// same batch whose bounding boxes overlap would race on the shared
+/// `read_write` storage texture (no atomics are used). The caller must
+/// therefore keep spatially-overlapping dabs in separate `splat_dabs`
+/// calls; wgpu's automatic hazard tracking orders successive compute
+/// passes on the same texture correctly.
+pub const PAINT_COMPUTE_SHADER: &str = r#"
+struct Dab {
+    pos: vec2<f32>,
+    radius: f32,
+    alpha: f32,
+    color: vec4<f32>,
+    hardness: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+};
+
+@group(0) @binding(0) var<storage, read> dabs: array<Dab>;
+@group(0) @binding(1) var paint_tex: texture_storage_2d<rgba8unorm, read_write>;
+@group(0) @binding(2) var<uniform> dims: vec2<u32>;
+
+const WORKGROUP_SIZE: u32 = 64u;
+
+/// Radial falloff: 1.0 inside `hardness * radius`, smoothly down to 0.0 at
+/// `radius`. `t` is the normalized distance from center (0 at center, 1 at
+/// the edge). Written without WGSL's built-in `smoothstep` so the
+/// `hardness == 1.0` (hard disc) case can't divide by zero.
+fn radial_falloff(t: f32, hardness: f32) -> f32 {
+    let denom = max(1.0 - hardness, 1e-4);
+    let edge_t = clamp((t - hardness) / denom, 0.0, 1.0);
+    return 1.0 - edge_t * edge_t * (3.0 - 2.0 * edge_t);
+}
+
+@compute @workgroup_size(WORKGROUP_SIZE)
+fn cs_main(
+    @builtin(workgroup_id) workgroup_id: vec3<u32>,
+    @builtin(local_invocation_index) local_index: u32,
+) {
+    let dab = dabs[workgroup_id.x];
+    let safe_radius = max(dab.radius, 1e-5);
+
+    let min_xy = vec2<i32>(floor(dab.pos - safe_radius));
+    let max_xy = vec2<i32>(ceil(dab.pos + safe_radius));
+    let clamped_min = max(min_xy, vec2<i32>(0, 0));
+    let clamped_max = min(max_xy, vec2<i32>(dims) - vec2<i32>(1, 1));
+    if (clamped_max.x < clamped_min.x || clamped_max.y < clamped_min.y) {
+        return;
+    }
+
+    let box_w = u32(clamped_max.x - clamped_min.x + 1);
+    let box_h = u32(clamped_max.y - clamped_min.y + 1);
+    let box_count = box_w * box_h;
+
+    for (var i: u32 = local_index; i < box_count; i = i + WORKGROUP_SIZE) {
+        let local_x = i32(i % box_w);
+        let local_y = i32(i / box_w);
+        let texel = clamped_min + vec2<i32>(local_x, local_y);
+
+        let center = vec2<f32>(texel) + vec2<f32>(0.5, 0.5);
+        let dist = distance(center, dab.pos);
+        if (dist > safe_radius) {
+            continue;
+        }
+
+        let coverage = dab.alpha * radial_falloff(dist / safe_radius, dab.hardness);
+        let src = dab.color * coverage;
+        let dst = textureLoad(paint_tex, texel);
+        let out = src + dst * (1.0 - src.a);
+        textureStore(paint_tex, texel, out);
+    }
+}
+"#;
