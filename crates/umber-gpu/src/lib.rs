@@ -16,6 +16,7 @@
 #![warn(missing_docs)]
 
 pub mod camera;
+pub mod golden;
 pub mod renderer;
 pub mod shaders;
 
