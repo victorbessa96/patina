@@ -214,6 +214,7 @@ fn build_pos_triangles(mesh: &MeshData) -> Result<Vec<GpuPosTri>, PositionMapErr
 pub(crate) struct PositionMapGpu {
     pub(crate) position_texture: wgpu::Texture,
     pub(crate) position_view: wgpu::TextureView,
+    pub(crate) normal_texture: wgpu::Texture,
     pub(crate) normal_view: wgpu::TextureView,
     pub(crate) width: u32,
     pub(crate) height: u32,
@@ -279,8 +280,8 @@ pub(crate) fn bake_position_and_normal(
     };
     let (position_texture, position_view) =
         make_target("umber_bake_position_target", wgpu::TextureUsages::COPY_SRC);
-    let (_normal_texture, normal_view) =
-        make_target("umber_bake_normal_target", wgpu::TextureUsages::empty());
+    let (normal_texture, normal_view) =
+        make_target("umber_bake_normal_target", wgpu::TextureUsages::COPY_SRC);
 
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("umber_bake_position_shader"),
@@ -396,6 +397,7 @@ pub(crate) fn bake_position_and_normal(
     Ok(PositionMapGpu {
         position_texture,
         position_view,
+        normal_texture,
         normal_view,
         width,
         height,
@@ -508,6 +510,25 @@ pub fn bake_position_map(
 ) -> Result<Vec<f32>, PositionMapError> {
     let gpu = bake_position_and_normal(device, queue, mesh, params.width, params.height)?;
     read_back_rgba32f(device, queue, &gpu.position_texture, gpu.width, gpu.height)
+}
+
+/// Bakes the world-space normal map: the position pass's per-texel
+/// face normal, read back as `Rgba32Float` (xyz = unit normal, w =
+/// coverage) — the `WorldSpaceNormal` slot in the mesh-map naming
+/// convention. Tangent-space conversion is the exporter's concern.
+///
+/// # Errors
+///
+/// Same surface as [`bake_position_map`] (mesh/target validation,
+/// GPU readback).
+pub fn bake_world_normal_map(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    mesh: &MeshData,
+    params: &PositionMapParams,
+) -> Result<Vec<f32>, PositionMapError> {
+    let gpu = bake_position_and_normal(device, queue, mesh, params.width, params.height)?;
+    read_back_rgba32f(device, queue, &gpu.normal_texture, gpu.width, gpu.height)
 }
 
 #[cfg(test)]
@@ -744,6 +765,37 @@ mod tests {
             // edge at finite resolution).
             assert!((corner[0] - -1.0).abs() < 0.05);
             assert!((corner[1] - 1.0).abs() < 0.05);
+        }
+
+        #[test]
+        fn world_normal_of_flat_quad_is_plus_z_everywhere() {
+            let Some((device, queue)) = try_request_device() else {
+                return;
+            };
+            let map = bake_world_normal_map(
+                &device,
+                &queue,
+                &full_uv_quad(),
+                &PositionMapParams {
+                    width: SIZE,
+                    height: SIZE,
+                },
+            )
+            .expect("bake should succeed");
+            assert_eq!(map.len(), (SIZE * SIZE * 4) as usize);
+
+            // The quad lies in the z=0 plane facing +z: every covered
+            // texel's world normal is (0, 0, 1).
+            for y in 0..SIZE {
+                for x in 0..SIZE {
+                    let n = texel(&map, SIZE, x, y);
+                    assert_eq!(n[3], 1.0, "texel ({x}, {y}) must be covered");
+                    assert!(
+                        (n[0].abs() < 1e-4) && (n[1].abs() < 1e-4) && ((n[2] - 1.0).abs() < 1e-4),
+                        "normal at ({x}, {y}) = {n:?}, expected +z"
+                    );
+                }
+            }
         }
 
         #[test]
