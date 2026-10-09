@@ -28,6 +28,20 @@ Last green commit: fb29d7c (Wave 0 close-out)
 - [ ] Dependency license audit gate: THIRD_PARTY.md before first claw-authored merge
 - [ ] Claws: opencode → umber-mesh importers; claude → umber-gpu + viewport integration; cross-review per standing rule
 
+**Wave-1 progress (2026-10-09 03:25–04:30):**
+- [x] 11-crate workspace scaffolded — builds clean, 12 tests green, clippy 0 warnings, fmt clean (commit ba9fecc)
+- [x] App binary verified live: window boots, wgpu enumerates Vulkan (Intel HD 530) + llvmpipe + GL adapters
+- [x] CLI verified end-to-end: OBJ inspect (3 verts/1 tri/bounds correct)
+- [x] CI workflow (ubuntu+windows matrix) + THIRD_PARTY.md license manifest
+- [ ] glTF/FBX loaders (opencode claw IN FLIGHT, proc_6f43c67f2557, result → /tmp/umber-opencode-result.txt)
+- [ ] wgpu viewport render pass (claude claw IN FLIGHT, proc_372f90fdd7fc, result → /tmp/umber-claude-result.json)
+- [ ] Claw integration + cross-review (next loop iteration)
+- [ ] Push + CI green on GitHub
+
+## Handoff addendum (next loop iteration)
+
+Two claws in flight on the live tree (single-writer discipline: both were told do-not-commit; I integrate their diffs, run gates, cross-review, then commit). opencode owns crates/umber-mesh ONLY (glTF+FBX loaders + LANDING_NOTES.md); claude owns crates/umber-gpu + the Viewport panel in umber-app (wgpu render pass, orbit camera, LANDING_NOTES.md). On wake: (1) poll both processes; (2) read their LANDING_NOTES.md; (3) verify from artifacts — cargo fmt/clippy/test --workspace; (4) cross-review each claw's diff (opencode↔claude per standing rule); (5) commit + push; (6) check CI on GitHub (first real run — windows runner is unproven); (7) if CI green and time remains before 11am, next slice: stylus Windows-Ink backend skeleton or bake-crate compute-pass skeleton.
+
 ## Blocked / waiting
 
 None. Waiting only on background research claws (deleg_a2943965, 4 subagents).
