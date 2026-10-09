@@ -171,6 +171,43 @@ impl UmberApp {
     }
 }
 
+/// App-level actions (kept out of the App impl to keep that block small).
+impl UmberApp {
+    /// Exports the current paint target as an sRGB PNG via a save dialog.
+    ///
+    /// Readback is blocking (one full-target copy); acceptable for a
+    /// user-triggered export at 512².
+    fn export_paint_png(&mut self) {
+        let Some(paint) = self.state.paint.as_ref() else {
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name("painted_map.png")
+            .add_filter("PNG", &["png"])
+            .save_file()
+        else {
+            return;
+        };
+        let target = paint.paint_target();
+        match target.read_back_rgba8(&self.gpu.device, &self.gpu.queue) {
+            Ok(bytes) => {
+                let (w, h) = target.dimensions();
+                match umber_export::png::write_png(
+                    &path,
+                    w,
+                    h,
+                    &bytes,
+                    umber_export::png::Transfer::Srgb,
+                ) {
+                    Ok(()) => log::info!("exported painted map: {}", path.display()),
+                    Err(e) => log::error!("png write failed: {e:#}"),
+                }
+            }
+            Err(e) => log::error!("readback failed: {e:#}"),
+        }
+    }
+}
+
 impl eframe::App for UmberApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         // Top bar: MenuBar container (egui 0.36 API).
@@ -193,6 +230,16 @@ impl eframe::App for UmberApp {
                             Err(e) => log::error!("mesh load failed: {e}"),
                         }
                     }
+                }
+                let export_enabled = self.state.paint.is_some();
+                if ui
+                    .add_enabled(
+                        export_enabled,
+                        egui::Button::new("Export Painted Map (PNG)…"),
+                    )
+                    .clicked()
+                {
+                    self.export_paint_png();
                 }
             });
             MenuButton::new("Help").ui(ui, |ui| {

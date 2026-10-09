@@ -106,6 +106,10 @@ pub enum PaintError {
     /// `mpsc::Sender::send` returns a `Result` that must be handled.
     #[error("paint-thread command channel is closed")]
     ChannelClosed,
+    /// [`PaintTarget::read_back_rgba8`](PaintTarget::read_back_rgba8) failed:
+    /// device poll, buffer-map callback loss, or the map itself.
+    #[error("paint-target readback failed: {0}")]
+    Readback(String),
 }
 
 /// CPU-side staging for a dab batch, uploaded to a GPU storage buffer just
@@ -274,6 +278,84 @@ impl PaintTarget {
     /// paint surface.
     pub fn view(&self) -> &wgpu::TextureView {
         &self.texture_view
+    }
+
+    /// Reads the full target back as tightly-packed RGBA8 bytes
+    /// (width×height×4, row-major), blocking until the copy completes.
+    ///
+    /// Rows are padded to 256 bytes for the GPU copy and de-padded on
+    /// extraction, so callers get exactly `width * height * 4` bytes —
+    /// the format `umber_export::png::write_png` consumes.
+    pub fn read_back_rgba8(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Result<Vec<u8>, PaintError> {
+        let (width, height) = (self.width, self.height);
+        let unpadded_row = width * 4;
+        let padding = (256 - (unpadded_row % 256)) % 256;
+        let padded_row = unpadded_row + padding;
+        let size = padded_row as u64 * height as u64;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("umber_paint_readback"),
+            size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("umber_paint_readback_encoder"),
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(Some(encoder.finish()));
+
+        let slice = buffer.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|e| PaintError::Readback(format!("device poll: {e}")))?;
+        receiver
+            .recv()
+            .map_err(|_| PaintError::Readback("map callback channel closed".into()))?
+            .map_err(|e| PaintError::Readback(format!("buffer map: {e}")))?;
+
+        let data = slice
+            .get_mapped_range()
+            .map_err(|e| PaintError::Readback(format!("mapped range: {e}")))?;
+        let bytes: &[u8] = &data;
+        let mut out = Vec::with_capacity(unpadded_row as usize * height as usize);
+        for row in 0..height as usize {
+            let start = row * padded_row as usize;
+            out.extend_from_slice(&bytes[start..start + unpadded_row as usize]);
+        }
+        drop(data);
+        buffer.unmap();
+        Ok(out)
     }
 }
 
