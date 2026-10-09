@@ -27,6 +27,8 @@ const ZOOM_SENSITIVITY: f32 = 0.08;
 pub struct Viewport {
     camera: OrbitCamera,
     mesh: Option<MeshBuffers>,
+    /// CPU-side copy of the loaded mesh for ray picking (paint mode).
+    mesh_data: Option<umber_mesh::MeshData>,
 }
 
 impl Viewport {
@@ -42,19 +44,45 @@ impl Viewport {
         if let Some((min, max)) = mesh.bounds() {
             self.camera = OrbitCamera::framing(min, max, self.camera.yaw, self.camera.pitch);
         }
+        self.mesh_data = Some(mesh.clone());
         self.mesh = Some(buffers);
         Ok(())
     }
 
-    /// Draws the viewport and handles orbit/pan/zoom input for this frame.
-    pub fn ui(&mut self, ui: &mut Ui, gpu: &GpuContext) {
+    /// Draws the viewport and handles orbit/pan/zoom/paint input.
+    ///
+    /// Paint mode: Ctrl/Cmd (or pen-tip with `ctrl`) + primary drag casts
+    /// the pointer through the camera into the mesh and feeds the hit UV
+    /// to `paint`'s stroke path. Plain drag orbits; shift-drag pans.
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        gpu: &GpuContext,
+        paint: Option<&mut crate::paint_state::PaintState>,
+    ) {
         let rect = ui.available_rect_before_wrap();
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
         let response = ui.allocate_rect(rect, Sense::click_and_drag());
 
-        self.handle_input(ui, &response);
+        let painting = ui.input(|i| i.modifiers.ctrl || i.modifiers.command)
+            && response.dragged_by(PointerButton::Primary)
+            && self.mesh_data.is_some()
+            && paint.is_some();
+        if !painting {
+            self.handle_input(ui, &response);
+        } else if let (Some(mesh), Some(paint)) = (self.mesh_data.as_ref(), paint) {
+            if let Some(pos) = response.interact_pointer_pos() {
+                if let Some(uv) = self.pick_uv(rect, mesh, pos) {
+                    if !paint.is_stroking() {
+                        paint.begin_stroke(egui::Pos2::new(uv[0], uv[1]));
+                    } else {
+                        paint.extend_stroke(egui::Pos2::new(uv[0], uv[1]));
+                    }
+                }
+            }
+        }
 
         ui.painter().rect_filled(rect, 0.0, EMPTY_VIEWPORT_COLOR);
 
@@ -69,6 +97,31 @@ impl Viewport {
             let shape = umber_gpu::mesh_paint_shape(rect, callback);
             ui.painter().add(shape);
         }
+    }
+
+    /// Casts a ray through the pointer position and returns the mesh UV
+    /// at the nearest hit (or `None` on miss). NDC Y matches the
+    /// directx/wgpu convention (up = +1).
+    fn pick_uv(
+        &self,
+        rect: egui::Rect,
+        mesh: &umber_mesh::MeshData,
+        pos: egui::Pos2,
+    ) -> Option<[f32; 2]> {
+        let aspect = rect.width() / rect.height();
+        let ndc_x = (pos.x - rect.left()) / rect.width() * 2.0 - 1.0;
+        let ndc_y = 1.0 - (pos.y - rect.top()) / rect.height() * 2.0;
+        let view_proj = self.camera.view_proj(aspect);
+        let inv = view_proj.inverse();
+        // Unproject the near (z=0) and far (z=1) NDC points (directx
+        // depth convention) to build the ray.
+        let near = inv * glam::Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+        let far = inv * glam::Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+        let near = near.truncate() / near.w;
+        let far = far.truncate() / far.w;
+        let dir = far - near;
+        let hit = umber_mesh::ray_intersect(mesh, self.camera.eye(), dir)?;
+        umber_mesh::uv_at(mesh, hit)
     }
 
     fn handle_input(&mut self, ui: &Ui, response: &Response) {

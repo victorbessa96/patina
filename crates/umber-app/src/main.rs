@@ -72,7 +72,7 @@ impl TabViewer for PanelViewer<'_> {
 
     fn ui(&mut self, ui: &mut Ui, tab: &mut Self::Tab) {
         match tab {
-            Panel::Viewport => self.viewport.ui(ui, self.gpu),
+            Panel::Viewport => self.viewport.ui(ui, self.gpu, self.paint.take()),
             Panel::UvView => self.uv_view.ui(ui, self.mesh, self.gpu, self.paint.take()),
             Panel::LayerStack => document::layers_ui(ui, self.doc),
             Panel::Properties => {
