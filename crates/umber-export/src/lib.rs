@@ -7,6 +7,9 @@
 //!
 //! Wave 1 scope: the naming-token substitution engine — pure string
 //! logic, fully testable headless, and the natural first real code here.
+//! Wave 2 adds PNG encoding ([`png`]) of paint-target readbacks.
+
+pub mod png;
 
 /// Substitute `$token` placeholders in an export path template.
 ///
