@@ -23,10 +23,12 @@ pub mod paint_thread;
 pub mod renderer;
 pub mod shaders;
 pub mod texture_display;
+pub mod tile_pool;
 
 pub use camera::OrbitCamera;
 pub use paint::{Dab, DabBuffer, PaintCompositor, PaintError, PaintTarget};
 pub use paint_thread::{FrameStats, PaintThread, PaintThreadCommand};
+pub use tile_pool::{texel_within_tile, tile_for, TileId, TilePool, TILE_SIZE};
 /// The depth format the app must request from eframe
 /// (`NativeOptions::depth_buffer = 32`) so the egui renderer's render pass
 /// carries a depth attachment matching [`renderer::GpuContext`]'s pipeline.
