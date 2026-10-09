@@ -28,19 +28,25 @@ Last green commit: fb29d7c (Wave 0 close-out)
 - [ ] Dependency license audit gate: THIRD_PARTY.md before first claw-authored merge
 - [ ] Claws: opencode → umber-mesh importers; claude → umber-gpu + viewport integration; cross-review per standing rule
 
-**Wave-1 progress (2026-10-09 03:25–04:30):**
-- [x] 11-crate workspace scaffolded — builds clean, 12 tests green, clippy 0 warnings, fmt clean (commit ba9fecc)
+**Wave-1 progress (2026-10-09 03:25–05:57):**
+- [x] 11-crate workspace scaffolded — builds clean, clippy 0 warnings, fmt clean (ba9fecc)
 - [x] App binary verified live: window boots, wgpu enumerates Vulkan (Intel HD 530) + llvmpipe + GL adapters
 - [x] CLI verified end-to-end: OBJ inspect (3 verts/1 tri/bounds correct)
-- [x] CI workflow (ubuntu+windows matrix) + THIRD_PARTY.md license manifest
-- [ ] glTF/FBX loaders (opencode claw IN FLIGHT, proc_6f43c67f2557, result → /tmp/umber-opencode-result.txt)
-- [ ] wgpu viewport render pass (claude claw IN FLIGHT, proc_372f90fdd7fc, result → /tmp/umber-claude-result.json)
-- [ ] Claw integration + cross-review (next loop iteration)
-- [ ] Push + CI green on GitHub
+- [x] CI workflow (ubuntu+windows matrix) + THIRD_PARTY.md license manifest (rfd + claw deps recorded)
+- [x] glTF/GLB/FBX loaders landed (opencode claw + 14-finding cross-review, fa393d2); real binary-FBX fixture (ufbx upstream cube) un-ignored and green
+- [x] wgpu viewport render pass landed (claude claw + 10-finding cross-review, 93e0140): OrbitCamera, WGSL normal-shaded pass, GpuContext/MeshBuffers/paint-callback, depth via NativeOptions::depth_buffer=32 (verified against vendored eframe source), 32B vertex pad, GPU tests 10/10 on real adapter
+- [x] **CI GREEN BOTH PLATFORMS on 93e0140** (windows-latest ✅ + ubuntu-latest ✅) — toolchain pin 1.97.0 + platform-agnostic tests held
+- [ ] IBL environment lighting (bundled env maps — viewport currently directional+ambient normal-shaded)
+- [ ] Stylus crate Windows-Ink backend skeleton (event vocabulary done; WM_POINTER backend feature-gated = not started)
+- [ ] Wave-1 checkpoint (dragon-checkpoint) once the two items above land
+
+**Claw lessons learned this wave (both claws hit sandbox walls, both rescued the same way):** headless opencode cannot read the cargo registry (auto-rejects external_directory); headless claude cannot WebFetch/cargo-doc without pre-approved allowlists. Fix pattern that worked: vendor the exact dependency sources into docs/claw-artifacts/<crate>/ with a verified-API-facts README, and pass --allowedTools explicitly on claude dispatches. Both rescued dispatches delivered full working code + honest LANDING_NOTES.
 
 ## Handoff addendum (next loop iteration)
 
-Two claws in flight on the live tree (single-writer discipline: both were told do-not-commit; I integrate their diffs, run gates, cross-review, then commit). opencode owns crates/umber-mesh ONLY (glTF+FBX loaders + LANDING_NOTES.md); claude owns crates/umber-gpu + the Viewport panel in umber-app (wgpu render pass, orbit camera, LANDING_NOTES.md). On wake: (1) poll both processes; (2) read their LANDING_NOTES.md; (3) verify from artifacts — cargo fmt/clippy/test --workspace; (4) cross-review each claw's diff (opencode↔claude per standing rule); (5) commit + push; (6) check CI on GitHub (first real run — windows runner is unproven); (7) if CI green and time remains before 11am, next slice: stylus Windows-Ink backend skeleton or bake-crate compute-pass skeleton.
+Wave-1 vertical slice is code-complete through the GPU viewport: workspace + loaders + render pass all committed and CI-green on both platforms (93e0140). Remaining for Wave-1 exit: (1) IBL env-map lighting — the claw-artifacts pattern applies: vendor an HDR example or ship a procedural gradient env-light in shaders.rs first; (2) stylus Windows-Ink WM_POINTER backend skeleton behind the feature gate (event vocabulary already compiles). Then dragon-checkpoint umber --wave 1, and Wave 2 (painting core — the big one: brush engine, seam-aware stamping, layer stack, undo) opens per SPEC.
+
+Claw dispatch recipe (proven twice this wave): vendor dependency sources into docs/claw-artifacts/<crate>/ + verified-API-facts README before dispatch; opencode gets the brief pointing at the artifacts; claude gets --allowedTools with cargo read/write allowlist. Cross-review: the OTHER claw's model reviews each landing (nemotron reviewed both this wave; findings were substantive both times — depth blocker, OBJ validation, GLB spec confirmation). Never trust claw self-reports: verify from artifacts (fmt/clippy/test + behavioral probes) before committing.
 
 ## Blocked / waiting
 
