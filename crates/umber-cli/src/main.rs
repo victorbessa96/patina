@@ -478,18 +478,24 @@ fn export_cmd(args: &[String]) -> Result<()> {
     let position = encode_position_rgba8(&position_f32);
 
     // The driver validates ALL outputs up front. For headless export
-    // with baked-only sources (AO + flat normal today), a full engine
-    // preset errors on BaseColor/Metallic — the honest behavior is
-    // exporting the outputs we CAN fill and warning about the rest.
-    // Strategy: filter the preset to outputs whose maps we hold.
+    // with baked-only sources (AO + baked tangent normal today), a
+    // full engine preset still errors on BaseColor/Metallic — the
+    // honest behavior is exporting the outputs we CAN fill and
+    // warning about the rest. Strategy: filter the preset to outputs
+    // whose maps we hold.
     let mut map_set = umber_export::MapSet::new(flags.size);
     map_set.set(umber_export::MapKind::AmbientOcclusion, ao);
-    let texels = (flags.size * flags.size) as usize;
-    let mut flat_normal = Vec::with_capacity(texels * 4);
-    for _ in 0..texels {
-        flat_normal.extend_from_slice(&[128, 128, 255, 255]);
-    }
-    map_set.set(umber_export::MapKind::Normal, flat_normal);
+    // The REAL baked tangent-space normal (OpenGL working convention;
+    // the driver flips green for DirectX presets).
+    let tnormal = umber_bake::normal_map::bake_tangent_normal_mesh(
+        &ctx.device,
+        &ctx.queue,
+        &mesh,
+        flags.size,
+        flags.size,
+        &umber_bake::normal_map::TangentNormalParams::default(),
+    )?;
+    map_set.set(umber_export::MapKind::Normal, tnormal);
     let _ = position; // position joins when a preset references it
 
     let available: Vec<umber_export::MapKind> = map_set.maps_iter().collect();
