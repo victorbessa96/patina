@@ -27,7 +27,7 @@
 | USD | **openusd 0.7** (pure-Rust) | usda/usdc/usdz R/W, LIVRPS composition; scope: import + UsdShade/primvar export; golden-test vs pxr | 3 | Med-high (pre-1.0) |
 | Images | **image 0.25, exr 1.74, half 2.7** | PNG/JPEG/TIFF + pure-Rust OpenEXR + f16/bf16 | 5 | Low |
 | GPU texture containers | **ktx2, ddsfile, ctt** (BCn/ASTC) | Compressed cache/pipeline textures | 3–4 | Med |
-| Color | **ocio-rs 0.2** (vendored OCIO 2.5) + **lcms2 6.2** | OCIO v2 configs (ACES 2.0) + GPU shader extraction; ICC embed | 3 | Med (single maintainer — golden tests + LUT fallback) |
+| Color | **ocio-rs 0.2** (stub-gated; vendored OCIO 2.5 manual-dispatch) + **png-crate iCCP** (bundled sRGB profile) | OCIO v2 configs (built-in ACES 2.0 CG/Studio) + GPU shader extraction; ICC embed landed WITHOUT lcms2 (png crate writes iCCP natively — survey: docs/research/ocio-aces-integration.md) | 3 | Med (single maintainer — golden tests + LUT fallback) |
 | Materials | **own .mtlx subset parser** (quick-xml) + **OpenPBR WGSL port** | Zero usable MaterialX bindings exist; spec + reference C++ (Apache-2.0) are the source of truth; OpenPBR über-shader implemented once in WGSL. Serialization claim is honest: standard-equivalent nodes map to MaterialX standard nodes; painter-specific nodes ship as declared custom nodedefs — no automatic full-fidelity interchange | 1 (built to 4) | **High — own it** |
 | Mesh topology | **in-house half-edge/DCEL** | Painter's topology needs (seam awareness, per-layer masks, UV islands) are bespoke; ecosystem crates are hobby-grade | — | Owned |
 | Subdivision | in-house Catmull-Clark CPU first; opensubdiv-rs only if hard-verified | Preview-grade only at first | 1–2 | Deferred |
