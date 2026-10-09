@@ -6,6 +6,7 @@
 //! Compute passes share the umber-gpu tile pool.
 
 pub mod ao;
+pub mod position;
 
 pub use ao::{AoBakeError, AoBakeParams, BakeTarget, PlaneDesc};
 

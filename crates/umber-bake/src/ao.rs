@@ -20,6 +20,8 @@ use umber_gpu::bake_shaders::AO_BAKE_SHADER;
 use umber_gpu::{PaintError, PaintTarget};
 use umber_mesh::MeshData;
 
+use crate::position::{bake_position_and_normal, PositionMapError};
+
 /// A plane of texels to raycast ambient occlusion against — the Wave-3
 /// first slice's stand-in for a UV-mapped position map (see the module
 /// docs).
@@ -132,6 +134,10 @@ pub enum AoBakeError {
     /// Reading the baked texture back to CPU memory failed.
     #[error("bake-target readback failed: {0}")]
     Readback(String),
+    /// [`bake_ao_mesh`]'s position-map pass (see [`crate::position`])
+    /// failed before AO raycasting ever started.
+    #[error("position map: {0}")]
+    PositionMap(#[from] PositionMapError),
 }
 
 /// The GPU AO-bake output surface.
@@ -444,6 +450,204 @@ pub fn run(
     Ok(r_channel)
 }
 
+/// Bakes ambient occlusion for `mesh` against *itself*: first rasterizes
+/// `mesh`'s own UV layout into a world-position + face-normal map (see
+/// [`crate::position::bake_position_and_normal`]), then raycasts a
+/// hemisphere from every covered texel against `mesh`'s own triangle list
+/// — the real self-occlusion bake [`run`]'s parameter-plane stand-in was
+/// always meant to lead to (see `LANDING_NOTES_AO.md`).
+///
+/// Unlike [`run`] (which returns only the R channel, since its plane has
+/// no notion of "uncovered"), this returns the full `width * height * 4`
+/// RGBA8 bytes: alpha `0` means the position pass found no UV triangle
+/// covering that texel (no raycast was attempted, not "zero occlusion"),
+/// alpha `255` with `rgb = (0, 0, 0)` means a texel that *is* covered and
+/// fully occluded. Collapsing to an R-only channel like [`run`] does would
+/// make those two states indistinguishable on readback — see
+/// `LANDING_NOTES_POSITION.md`'s reviewer checklist.
+///
+/// `params.plane` is ignored by this path (the position map supplies each
+/// texel's ray origin and tangent frame instead) — kept as a field anyway
+/// so both AO entry points share one uniform layout; pass any value.
+///
+/// # Errors
+///
+/// Returns [`AoBakeError::InvalidRayCount`] if `params.rays == 0`, or
+/// [`AoBakeError::PositionMap`] wrapping whatever
+/// [`crate::position::bake_position_and_normal`] rejected (empty mesh,
+/// over the triangle budget, zero-sized target, malformed indices, or a
+/// GPU readback failure).
+pub fn bake_ao_mesh(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    mesh: &MeshData,
+    width: u32,
+    height: u32,
+    params: &AoBakeParams,
+) -> Result<Vec<u8>, AoBakeError> {
+    if params.rays == 0 {
+        return Err(AoBakeError::InvalidRayCount);
+    }
+
+    let position_map = bake_position_and_normal(device, queue, mesh, width, height)?;
+
+    let triangles = build_triangles(mesh);
+    let triangle_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("umber_bake_ao_mesh_triangles"),
+        contents: bytemuck::cast_slice(&triangles),
+        usage: wgpu::BufferUsages::STORAGE,
+    });
+
+    let uniform = AoUniform {
+        plane: params.plane,
+        rays: params.rays,
+        max_distance: params.max_distance,
+        bias: params.bias,
+        tri_count: triangles.len() as u32,
+    };
+    let params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("umber_bake_ao_mesh_params"),
+        contents: bytemuck::cast_slice(&[uniform]),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+
+    let target = BakeTarget::new(device, width, height);
+
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("umber_bake_ao_mesh_shader"),
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(AO_BAKE_SHADER)),
+    });
+
+    // `cs_main_from_position`'s binding set, not `cs_main`'s: no `dims`
+    // uniform (the texel coordinate comes straight from `workgroup_id`,
+    // see that entry point's doc comment in `bake_shaders::AO_BAKE_SHADER`),
+    // plus the two read-only textures the position pass produced.
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("umber_bake_ao_mesh_bind_group_layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(size_of::<GpuTriangle>() as u64),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(size_of::<AoUniform>() as u64),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 5,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+        ],
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("umber_bake_ao_mesh_pipeline_layout"),
+        bind_group_layouts: &[Some(&bind_group_layout)],
+        immediate_size: 0,
+    });
+
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("umber_bake_ao_mesh_pipeline"),
+        layout: Some(&pipeline_layout),
+        module: &shader,
+        entry_point: Some("cs_main_from_position"),
+        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        cache: None,
+    });
+
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("umber_bake_ao_mesh_bind_group"),
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &triangle_buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(target.view()),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &params_buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(&position_map.position_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(&position_map.normal_view),
+            },
+        ],
+    });
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("umber_bake_ao_mesh_encoder"),
+    });
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("umber_bake_ao_mesh_pass"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        // One workgroup per texel, matching `cs_main`'s dispatch
+        // convention (`cs_main_from_position` reads `workgroup_id.xy`
+        // directly as the texel coordinate, no `dims` uniform involved).
+        pass.dispatch_workgroups(width, height, 1);
+    }
+    queue.submit(Some(encoder.finish()));
+
+    target.read_back_rgba8(device, queue)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,6 +868,148 @@ mod tests {
             let params = AoBakeParams::new(10.0, 0.01, plane);
             let err = run(&device, &queue, &MeshData::default(), &params, 8, 8).unwrap_err();
             assert!(matches!(err, AoBakeError::EmptyMesh));
+        }
+
+        /// Self-occlusion mesh for `bake_ao_mesh`'s GPU test: a flat quad
+        /// (the surface being baked, full `[0, 1]` UVs, scaled to `±30`
+        /// world units) plus a floating equilateral triangle (the
+        /// occluder, present purely for AO raycasting) with all three UVs
+        /// collapsed to the same point — a zero-UV-area triangle that
+        /// `POSITION_BAKE_SHADER`'s `abs(denom) >= DET_EPS` check skips
+        /// entirely, so it never claims a position-map texel despite
+        /// being part of the same `MeshData` (`bake_ao_mesh` takes one
+        /// mesh for both the UV target and the occlusion geometry — real
+        /// self-occlusion AO needs exactly this).
+        ///
+        /// Geometry mirrors `ao_bake_center_occluded_far_corner_clear`'s
+        /// hand-derived plane scenario, rotated onto this quad's `+Z`
+        /// face normal instead of a plane's arbitrary `u_axis`/`v_axis`
+        /// (`build_triangles` computes the quad's normal as `(0, 0, 1)`
+        /// for this vertex winding — see that test's doc comment for the
+        /// inradius/circumradius bound, which is rotation-invariant and
+        /// so holds unchanged here): equilateral, circumradius 18,
+        /// centered at `(0, 0, 2)` — 2 world units above the quad along
+        /// its normal, directly over the quad's own center.
+        fn quad_with_floating_occluder() -> MeshData {
+            MeshData {
+                positions: vec![
+                    [-30.0, -30.0, 0.0],
+                    [30.0, -30.0, 0.0],
+                    [30.0, 30.0, 0.0],
+                    [-30.0, 30.0, 0.0],
+                    [0.0, 18.0, 2.0],
+                    [-15.588_457, -9.0, 2.0],
+                    [15.588_457, -9.0, 2.0],
+                ],
+                normals: vec![[0.0, 0.0, 1.0]; 7],
+                uvs: vec![
+                    [0.0, 0.0],
+                    [1.0, 0.0],
+                    [1.0, 1.0],
+                    [0.0, 1.0],
+                    [0.0, 0.0],
+                    [0.0, 0.0],
+                    [0.0, 0.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3, 4, 5, 6],
+                material_names: vec![],
+            }
+        }
+
+        /// 33x33 so the exact center texel (16, 16) sits at UV (0.5, 0.5)
+        /// — see `position::tests::gpu`'s `SIZE` constant for why — which
+        /// here means it maps to the quad's own world center `(0, 0, 0)`,
+        /// directly beneath the occluder's centroid.
+        const MESH_AO_SIZE: u32 = 33;
+
+        #[test]
+        fn bake_ao_mesh_center_occluded_far_corner_clear() {
+            let Some((device, queue)) = try_request_device() else {
+                return;
+            };
+
+            let dummy_plane = PlaneDesc::new(
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0],
+            );
+            let params = AoBakeParams {
+                rays: 16,
+                ..AoBakeParams::new(15.0, 0.01, dummy_plane)
+            };
+
+            let mesh = quad_with_floating_occluder();
+            let bytes = bake_ao_mesh(&device, &queue, &mesh, MESH_AO_SIZE, MESH_AO_SIZE, &params)
+                .expect("bake should succeed");
+            assert_eq!(bytes.len(), (MESH_AO_SIZE * MESH_AO_SIZE * 4) as usize);
+
+            let idx = |x: u32, y: u32| ((y * MESH_AO_SIZE + x) * 4) as usize;
+
+            let center = idx(16, 16);
+            assert_eq!(bytes[center + 3], 255, "center texel must be covered");
+            assert!(
+                bytes[center] < 64,
+                "center texel (directly under the occluder) should be heavily occluded: {}",
+                bytes[center]
+            );
+
+            let far_corner = idx(0, 0);
+            assert_eq!(
+                bytes[far_corner + 3],
+                255,
+                "far-corner texel must be covered"
+            );
+            assert!(
+                bytes[far_corner] >= 200,
+                "far-corner texel (outside the occluder's reach) should be unoccluded: {}",
+                bytes[far_corner]
+            );
+        }
+
+        #[test]
+        fn bake_ao_mesh_rejects_zero_rays_without_touching_the_gpu_pipeline() {
+            let Some((device, queue)) = try_request_device() else {
+                return;
+            };
+            let plane = PlaneDesc::new(
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0],
+            );
+            let mut params = AoBakeParams::new(10.0, 0.01, plane);
+            params.rays = 0;
+            let err = bake_ao_mesh(
+                &device,
+                &queue,
+                &quad_with_floating_occluder(),
+                8,
+                8,
+                &params,
+            )
+            .unwrap_err();
+            assert!(matches!(err, AoBakeError::InvalidRayCount));
+        }
+
+        #[test]
+        fn bake_ao_mesh_propagates_position_map_errors() {
+            let Some((device, queue)) = try_request_device() else {
+                return;
+            };
+            let plane = PlaneDesc::new(
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 1.0],
+            );
+            let params = AoBakeParams::new(10.0, 0.01, plane);
+            let err =
+                bake_ao_mesh(&device, &queue, &MeshData::default(), 8, 8, &params).unwrap_err();
+            assert!(matches!(
+                err,
+                AoBakeError::PositionMap(crate::position::PositionMapError::EmptyMesh)
+            ));
         }
     }
 }

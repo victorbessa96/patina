@@ -209,4 +209,306 @@ fn cs_main(
         textureStore(ao_tex, vec2<i32>(workgroup_id.xy), vec4<f32>(ao, ao, ao, 1.0));
     }
 }
+
+// --- Mesh-fed variant: reads the position-map pass's output instead of a
+// parameter plane. See this file's module doc comment ("Mesh-fed AO entry
+// point") for why this lives as a second entry point in the same module
+// rather than a separate shader constant: it reuses `triangles`, `ao_tex`,
+// `params`, `hit_count`, `hemisphere_sample`, and `hits_triangle` verbatim.
+
+@group(0) @binding(4) var position_tex: texture_2d<f32>;
+@group(0) @binding(5) var normal_tex: texture_2d<f32>;
+
+struct Basis {
+    b1: vec3<f32>,
+    b2: vec3<f32>,
+};
+
+/// Branchless tangent-frame construction from a unit normal (Duff et al.,
+/// "Building an Orthonormal Basis, Revisited", JCGT 2017). `cs_main`'s
+/// plane hands the shader `u_axis`/`v_axis` directly; `cs_main_from_position`
+/// only has a per-texel normal (the position pass's second output) and
+/// needs *some* consistent tangent frame to steer `hemisphere_sample`'s
+/// local directions into world space. Any orthonormal frame works — AO is
+/// isotropic in `phi`, so the choice doesn't bias the result — this one was
+/// picked for being branchless and numerically stable at the south-pole
+/// case other common formulas (e.g. a naive `cross(n, vec3(0,0,1))`) fail.
+fn orthonormal_basis(n: vec3<f32>) -> Basis {
+    let sign_z = select(-1.0, 1.0, n.z >= 0.0);
+    let a = -1.0 / (sign_z + n.z);
+    let b = n.x * n.y * a;
+    return Basis(
+        vec3<f32>(1.0 + sign_z * n.x * n.x * a, sign_z * b, -sign_z * n.x),
+        vec3<f32>(b, sign_z + n.y * n.y * a, -n.y),
+    );
+}
+
+/// Mesh-fed ambient occlusion: identical hemisphere-raycast core to
+/// `cs_main`, but the per-texel ray origin and tangent frame come from
+/// `position_tex`/`normal_tex` (the two outputs of `POSITION_BAKE_SHADER`'s
+/// `cs_main`, see `bake_shaders::POSITION_BAKE_SHADER`) rather than a
+/// closed-form plane. One workgroup per texel, matching `cs_main`'s
+/// dispatch convention (`dispatch_workgroups(width, height, 1)`), so
+/// `workgroup_id.xy` is directly the texel coordinate into both input
+/// textures and `ao_tex`.
+///
+/// `position_tex`'s alpha channel is the position pass's coverage flag (see
+/// that shader's doc comment): `0.0` means no UV triangle covered this
+/// texel, so there is no surface to raycast from. Every invocation in a
+/// workgroup loads the same texel's `covered` flag (it's a per-workgroup,
+/// not per-invocation, value here, unlike `POSITION_BAKE_SHADER`'s 8x8-tile
+/// layout where each invocation owns a *different* texel) — so branching on
+/// it is workgroup-uniform and safe around the `workgroupBarrier()`s below.
+/// Uncovered texels skip the raycast entirely and write `(0, 0, 0, 0)`,
+/// distinguishable on readback from a fully-occluded-but-covered texel
+/// (`(0, 0, 0, 1)`) by alpha alone — which is why `ao::bake_ao_mesh` returns
+/// full RGBA8 instead of `ao::run`'s R-channel-only bytes.
+@compute @workgroup_size(WORKGROUP_SIZE)
+fn cs_main_from_position(
+    @builtin(workgroup_id) workgroup_id: vec3<u32>,
+    @builtin(local_invocation_index) local_index: u32,
+) {
+    let coord = vec2<i32>(workgroup_id.xy);
+    let sample = textureLoad(position_tex, coord, 0);
+    let covered = sample.w > 0.5;
+
+    if (local_index == 0u) {
+        atomicStore(&hit_count, 0u);
+    }
+    workgroupBarrier();
+
+    if (covered) {
+        let surface_pos = sample.xyz;
+        let normal = normalize(textureLoad(normal_tex, coord, 0).xyz);
+        let basis = orthonormal_basis(normal);
+        let ray_origin = surface_pos + params.bias * normal;
+
+        let n = params.rays;
+        for (var i: u32 = local_index; i < n; i = i + WORKGROUP_SIZE) {
+            let local_dir = hemisphere_sample(i, n);
+            let dir = normalize(
+                local_dir.x * basis.b1 + local_dir.y * basis.b2 + local_dir.z * normal
+            );
+
+            var hit = false;
+            for (var t: u32 = 0u; t < params.tri_count; t = t + 1u) {
+                let tri = triangles[t];
+                if (hits_triangle(ray_origin, dir, tri.v0.xyz, tri.v1.xyz, tri.v2.xyz, params.max_distance)) {
+                    hit = true;
+                    break;
+                }
+            }
+            if (hit) {
+                atomicAdd(&hit_count, 1u);
+            }
+        }
+    }
+    workgroupBarrier();
+
+    if (local_index == 0u) {
+        if (covered) {
+            let blocked = f32(atomicLoad(&hit_count)) / f32(max(params.rays, 1u));
+            let ao = clamp(1.0 - blocked, 0.0, 1.0);
+            textureStore(ao_tex, coord, vec4<f32>(ao, ao, ao, 1.0));
+        } else {
+            textureStore(ao_tex, coord, vec4<f32>(0.0, 0.0, 0.0, 0.0));
+        }
+    }
+}
+"#;
+
+/// UV→world-position rasterization: one compute pass that turns a mesh's
+/// own UV layout into a world-space position map, the input the AO pass
+/// (and every other mesh-map baker) ultimately needs instead of a
+/// stand-in parameter plane. See `umber_bake::position`'s module doc for
+/// the driver side (`PositionMapParams`, `bake_position_map`, the
+/// `MAX_TRIS_PER_BAKE` mesh-size ceiling).
+///
+/// # Rasterization model
+///
+/// One workgroup per `8x8` texel tile (`@workgroup_size(8, 8, 1)`,
+/// `dispatch_workgroups(ceil(width/8), ceil(height/8), 1)`); each
+/// invocation owns exactly one texel (`global_invocation_id.xy`). For every
+/// triangle, each invocation independently tests whether its own texel's
+/// UV falls inside that triangle's UV footprint (a 2D analog of
+/// `AO_BAKE_SHADER::hits_triangle`'s Möller–Trumbore inversion: the same
+/// edge-vector/cross-product/`1/det` structure, collapsed from a 3D
+/// ray-plane intersection to a 2D point-in-triangle barycentric solve —
+/// see `cross2`/`cs_main`'s inner loop). A texel's UV is its texel-center
+/// position remapped through `(1 - v)` on the v axis to match
+/// `umber_app::paint_state`'s `texel = [u * texels_per_uv, (1 - v) *
+/// texels_per_uv]` convention — without this flip, a mesh baked here and
+/// painted there would disagree about which texture row is "up".
+///
+/// # No depth test — last-writer-wins on overlapping UV islands
+///
+/// This pass has no notion of "which UV island is on top": if two
+/// triangles' UV footprints overlap the same texel (a seam/charting defect,
+/// or deliberately overlapping islands), whichever triangle has the higher
+/// index in the mesh's triangle list wins — not the nearest in any
+/// meaningful sense, just last-tested. Fine for well-charted meshes (no UV
+/// overlap by construction); produces silently-wrong results for
+/// overlapping ones. A real fix needs either per-island depth/priority
+/// metadata or non-overlapping UV charts guaranteed upstream — out of scope
+/// for this slice (Wave-3+ seam/overlap work per the task brief).
+///
+/// # Shared-memory triangle batching — why not one array of `MAX_TRIS_PER_BAKE`
+///
+/// The task sketch asked for "the full triangle list, loaded once into
+/// workgroup-shared memory, sized by `MAX_TRIS_PER_BAKE = 4096`." Checked
+/// against this repo's actual GPU (see `umber-bake`'s landing notes for the
+/// measured numbers): a plain `wgpu::DeviceDescriptor::default()` device —
+/// the same one every other GPU test in this crate requests, and the only
+/// kind of device umber-gpu's architecture rule lets a caller hand in
+/// (`eframe`'s `wgpu_render_state`, not something this crate can raise
+/// limits on after the fact) — reports `max_compute_workgroup_storage_size
+/// = 16384` bytes. Even a minimal 32-byte-per-triangle UV-only record
+/// (`ChunkEntry` below) at `4096` entries is `131072` bytes, 8x over
+/// budget; a full per-triangle record with positions would be worse. So
+/// this shader stages the triangle list through shared memory in
+/// `TRI_CHUNK`-sized batches instead of one static array: `TRI_CHUNK = 256`
+/// entries of `ChunkEntry` (`32` bytes each) is `8192` bytes, half the
+/// measured budget, with headroom to spare. `MAX_TRIS_PER_BAKE` survives as
+/// the Rust-side mesh-size ceiling (`position::validate` rejects anything
+/// larger before it reaches the GPU at all) — it just isn't a shared-memory
+/// array size anymore. The chunking loop (load a batch cooperatively →
+/// barrier → every invocation tests its own texel against that batch →
+/// barrier → next batch) still delivers the brief's actual goal (each
+/// triangle's UV data is read from the global storage buffer once per
+/// *workgroup*, not once per *invocation* — a 64x reduction in global
+/// memory traffic for the containment test), just chunked to fit real
+/// hardware instead of assuming an unbounded shared-memory budget.
+///
+/// World positions are deliberately kept *out* of the shared-memory batch
+/// (`ChunkEntry` carries UVs only): a texel only needs a triangle's full
+/// vertex positions once, for the single triangle that ends up winning it
+/// (last-writer-wins, see above) — re-fetching that from the read-only
+/// global `tris` buffer at the very end (one extra read per *covered*
+/// texel, not per triangle-candidate) is cheaper than paying shared-memory
+/// budget for data most candidates never need.
+pub const POSITION_BAKE_SHADER: &str = r#"
+struct PosTri {
+    v0: vec4<f32>,    // xyz = world position of vertex 0, w = uv0.x
+    v1: vec4<f32>,    // xyz = world position of vertex 1, w = uv1.x
+    v2: vec4<f32>,    // xyz = world position of vertex 2, w = uv2.x
+    uv_y: vec4<f32>,  // x = uv0.y, y = uv1.y, z = uv2.y, w unused
+    normal: vec4<f32>, // xyz = face normal (consumed by cs_main_from_position), w unused
+};
+
+struct ChunkEntry {
+    uv01: vec4<f32>, // x=uv0.x, y=uv0.y, z=uv1.x, w=uv1.y
+    uv2: vec4<f32>,   // x=uv2.x, y=uv2.y, z/w unused
+};
+
+struct PositionParams {
+    dims: vec2<u32>,
+    tri_count: u32,
+    _pad: u32,
+};
+
+@group(0) @binding(0) var<storage, read> tris: array<PosTri>;
+@group(0) @binding(1) var pos_tex: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(2) var normal_tex: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(3) var<uniform> params: PositionParams;
+
+const TILE: u32 = 8u;
+const TILE_AREA: u32 = 64u;
+const TRI_CHUNK: u32 = 256u;
+const DET_EPS: f32 = 1e-10;
+const BARY_EPS: f32 = 1e-6;
+
+var<workgroup> chunk: array<ChunkEntry, TRI_CHUNK>;
+
+/// 2D cross product (the scalar "perp-dot"): `a.x*b.y - a.y*b.x`.
+fn cross2(a: vec2<f32>, b: vec2<f32>) -> f32 {
+    return a.x * b.y - a.y * b.x;
+}
+
+@compute @workgroup_size(TILE, TILE, 1)
+fn cs_main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(local_invocation_index) local_index: u32,
+) {
+    let in_bounds = gid.x < params.dims.x && gid.y < params.dims.y;
+    // Texel-center UV, v-flipped to match umber_app::paint_state's
+    // `(1 - v) * texels_per_uv` convention (see this shader's doc comment).
+    // Computed unconditionally (not gated on `in_bounds`) because every
+    // invocation in the tile must stay in lock-step through the
+    // `workgroupBarrier()`s below regardless of whether its own texel is
+    // inside the target — barriers require uniform control flow across the
+    // whole workgroup, so only the final `textureStore` is guarded.
+    let dims_f = vec2<f32>(params.dims);
+    let texel_uv = vec2<f32>(
+        (f32(gid.x) + 0.5) / max(dims_f.x, 1.0),
+        1.0 - (f32(gid.y) + 0.5) / max(dims_f.y, 1.0),
+    );
+
+    var best_tri: i32 = -1;
+    var best_w: f32 = 0.0;
+    var best_u: f32 = 0.0;
+    var best_v: f32 = 0.0;
+
+    for (var base: u32 = 0u; base < params.tri_count; base = base + TRI_CHUNK) {
+        let count = min(params.tri_count - base, TRI_CHUNK);
+
+        // Cooperative load: the TILE_AREA invocations in this workgroup
+        // split up to `count` triangles between them, so each triangle's
+        // UV data is read from `tris` once per workgroup, not once per
+        // invocation (see this shader's "shared-memory triangle batching"
+        // doc comment).
+        for (var i: u32 = local_index; i < count; i = i + TILE_AREA) {
+            let t = tris[base + i];
+            chunk[i] = ChunkEntry(
+                vec4<f32>(t.v0.w, t.uv_y.x, t.v1.w, t.uv_y.y),
+                vec4<f32>(t.v2.w, t.uv_y.z, 0.0, 0.0),
+            );
+        }
+        workgroupBarrier();
+
+        for (var k: u32 = 0u; k < count; k = k + 1u) {
+            let e = chunk[k];
+            let uv0 = e.uv01.xy;
+            let uv1 = e.uv01.zw;
+            let uv2 = e.uv2.xy;
+            let e1 = uv1 - uv0;
+            let e2 = uv2 - uv0;
+            let denom = cross2(e1, e2);
+            // Degenerate (zero-UV-area) triangle: never claims a texel.
+            // `ao::bake_ao_mesh`'s GPU test relies on this to keep an
+            // occluder triangle (added to the mesh purely for AO raycasting,
+            // with all-identical UVs) out of the position map entirely.
+            if (abs(denom) >= DET_EPS) {
+                let inv_denom = 1.0 / denom;
+                let s = texel_uv - uv0;
+                let bu = cross2(s, e2) * inv_denom;
+                let bv = cross2(e1, s) * inv_denom;
+                let bw = 1.0 - bu - bv;
+                // Inclusive bounds (not strict >= 0): texels exactly on a
+                // shared edge between two adjoining triangles (e.g. the
+                // unit quad's diagonal) must be claimed by at least one of
+                // them, not fall through a seam gap.
+                if (bu >= -BARY_EPS && bv >= -BARY_EPS && bw >= -BARY_EPS) {
+                    best_tri = i32(base + k);
+                    best_w = bw;
+                    best_u = bu;
+                    best_v = bv;
+                }
+            }
+        }
+        workgroupBarrier();
+    }
+
+    if (in_bounds) {
+        let coord = vec2<i32>(i32(gid.x), i32(gid.y));
+        if (best_tri >= 0) {
+            let tri = tris[u32(best_tri)];
+            let pos = tri.v0.xyz * best_w + tri.v1.xyz * best_u + tri.v2.xyz * best_v;
+            textureStore(pos_tex, coord, vec4<f32>(pos, 1.0));
+            textureStore(normal_tex, coord, vec4<f32>(normalize(tri.normal.xyz), 1.0));
+        } else {
+            textureStore(pos_tex, coord, vec4<f32>(0.0, 0.0, 0.0, 0.0));
+            textureStore(normal_tex, coord, vec4<f32>(0.0, 0.0, 0.0, 0.0));
+        }
+    }
+}
 "#;
