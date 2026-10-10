@@ -101,14 +101,34 @@ struct AoParams {
     max_distance: f32,
     bias: f32,
     tri_count: u32,
+    // Bent-normal toggle (wave-4 item 5 slice 2): 0 = AO only, 1 = the
+    // mesh-fed entry also accumulates unoccluded ray directions into
+    // `bent_tex` (see `cs_main_from_position`'s doc comment for the frame
+    // and encoding contract). Additive at the END so the pre-existing
+    // prefix layout stays stable; the three trailing pads round the struct
+    // to 96 bytes (WGSL uniform structs are 16-byte aligned), matching
+    // `umber_bake::ao::AoUniform` — see that type's doc comment. `cs_main`
+    // (the parameter-plane path) ignores these words entirely.
+    bent_normals: u32,
+    _pad4: u32,
+    _pad5: u32,
+    _pad6: u32,
 };
 
 @group(0) @binding(0) var<storage, read> triangles: array<Tri>;
 @group(0) @binding(1) var ao_tex: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(2) var<uniform> params: AoParams;
 @group(0) @binding(3) var<uniform> dims: vec2<u32>;
+@group(0) @binding(6) var bent_tex: texture_storage_2d<rgba8unorm, write>;
 
 var<workgroup> hit_count: atomic<u32>;
+// Bent-normal second accumulator (one partial sum per invocation —
+// `atomic<u32>` works for AO's hit *count* but a direction *sum* is a
+// `vec3<f32>` with no atomic add in core WGSL, so each invocation keeps its
+// own partial sum here and invocation 0 reduces them serially). 64 entries
+// of 16-byte-strided `vec3` is 1 KiB, well under the measured 16 KiB
+// workgroup-storage budget (see POSITION_BAKE_SHADER's doc comment).
+var<workgroup> bent_parts: array<vec3<f32>, WORKGROUP_SIZE>;
 
 const WORKGROUP_SIZE: u32 = 64u;
 const PI: f32 = 3.14159265358979;
@@ -243,11 +263,11 @@ fn orthonormal_basis(n: vec3<f32>) -> Basis {
     );
 }
 
-/// Mesh-fed ambient occlusion: identical hemisphere-raycast core to
-/// `cs_main`, but the per-texel ray origin and tangent frame come from
-/// `position_tex`/`normal_tex` (the two outputs of `POSITION_BAKE_SHADER`'s
-/// `cs_main`, see `bake_shaders::POSITION_BAKE_SHADER`) rather than a
-/// closed-form plane. One workgroup per texel, matching `cs_main`'s
+/// Mesh-fed ambient occlusion (+ optional bent normals): identical
+/// hemisphere-raycast core to `cs_main`, but the per-texel ray origin and
+/// tangent frame come from `position_tex`/`normal_tex` (the two outputs of
+/// `POSITION_BAKE_SHADER`'s `cs_main`, see `bake_shaders::POSITION_BAKE_SHADER`)
+/// rather than a closed-form plane. One workgroup per texel, matching `cs_main`'s
 /// dispatch convention (`dispatch_workgroups(width, height, 1)`), so
 /// `workgroup_id.xy` is directly the texel coordinate into both input
 /// textures and `ao_tex`.
@@ -263,6 +283,29 @@ fn orthonormal_basis(n: vec3<f32>) -> Basis {
 /// distinguishable on readback from a fully-occluded-but-covered texel
 /// (`(0, 0, 0, 1)`) by alpha alone — which is why `ao::bake_ao_mesh` returns
 /// full RGBA8 instead of `ao::run`'s R-channel-only bytes.
+///
+/// # Bent normals (`params.bent_normals != 0`, wave-4 item 5 slice 2)
+///
+/// When enabled, the visibility loop doubles as a bent-normal accumulator
+/// (Substance's shared-sample approach: the bent map reuses AO's rays, no
+/// second dispatch): every ray that produces NO hit adds its world-space
+/// direction to the invoking invocation's `bent_parts` slot, and invocation
+/// 0 reduces the slots into the texel's bent vector.
+///
+/// Frame: the accumulated directions are the SAME world-space vectors the
+/// hit test consumes (`local_dir` steered by the Duff-et-al.
+/// `orthonormal_basis` frame — `dir = lx*b1 + ly*b2 + lz*normal`), so the
+/// sum lives in world space, not tangent space. Output encoding follows the
+/// other normal bakers' `* 0.5 + 0.5` convention (see
+/// `umber_bake::normal_map`'s `tangent_normal * 0.5 + 0.5`, here applied to
+/// the world-space bent vector): `rgb = bent * 0.5 + 0.5`,
+/// `a = |sum| / ray_count` as confidence. A zero sum (fully occluded)
+/// writes the geometric normal (`normal_tex`) encoded the same way with
+/// `a = 0`; an uncovered texel writes `(0, 0, 0, 0)`, matching AO's
+/// background convention. When the toggle is 0 the bent stores are skipped
+/// and `ao_tex` output is bit-for-bit what the pre-bent shader wrote (the
+/// AO path is untouched — integer hit counting, no shared state with the
+/// accumulator).
 @compute @workgroup_size(WORKGROUP_SIZE)
 fn cs_main_from_position(
     @builtin(workgroup_id) workgroup_id: vec3<u32>,
@@ -284,6 +327,10 @@ fn cs_main_from_position(
         let ray_origin = surface_pos + params.bias * normal;
 
         let n = params.rays;
+        // Per-invocation bent partial sum (world-space unoccluded
+        // directions; reduced by invocation 0 below). Kept at zero when the
+        // toggle is off so the gated add never executes.
+        var bent_part = vec3<f32>(0.0, 0.0, 0.0);
         for (var i: u32 = local_index; i < n; i = i + WORKGROUP_SIZE) {
             let local_dir = hemisphere_sample(i, n);
             let dir = normalize(
@@ -300,8 +347,13 @@ fn cs_main_from_position(
             }
             if (hit) {
                 atomicAdd(&hit_count, 1u);
+            } else if (params.bent_normals != 0u) {
+                bent_part = bent_part + dir;
             }
         }
+        bent_parts[local_index] = bent_part;
+    } else {
+        bent_parts[local_index] = vec3<f32>(0.0, 0.0, 0.0);
     }
     workgroupBarrier();
 
@@ -310,8 +362,35 @@ fn cs_main_from_position(
             let blocked = f32(atomicLoad(&hit_count)) / f32(max(params.rays, 1u));
             let ao = clamp(1.0 - blocked, 0.0, 1.0);
             textureStore(ao_tex, coord, vec4<f32>(ao, ao, ao, 1.0));
+            if (params.bent_normals != 0u) {
+                // Serial reduction over the invocation slots (fixed order,
+                // so the bent sum is deterministic texel-to-texel like the
+                // AO hit count; for `rays <= WORKGROUP_SIZE` each slot holds
+                // exactly one ray's direction, matching a serial 0..n sum).
+                var bent_sum = vec3<f32>(0.0, 0.0, 0.0);
+                for (var k: u32 = 0u; k < WORKGROUP_SIZE; k = k + 1u) {
+                    bent_sum = bent_sum + bent_parts[k];
+                }
+                let sum_len = length(bent_sum);
+                if (sum_len > 0.0) {
+                    let bent = bent_sum / sum_len;
+                    let confidence = clamp(sum_len / f32(max(params.rays, 1u)), 0.0, 1.0);
+                    textureStore(bent_tex, coord, vec4<f32>(bent * 0.5 + 0.5, confidence));
+                } else {
+                    // Fully occluded: no unoccluded direction exists, so
+                    // fall back to the geometric normal with zero
+                    // confidence (see this entry point's doc comment).
+                    // (`normal` from the raycast block above is out of
+                    // scope here — reload the same texel.)
+                    let geom = normalize(textureLoad(normal_tex, coord, 0).xyz);
+                    textureStore(bent_tex, coord, vec4<f32>(geom * 0.5 + 0.5, 0.0));
+                }
+            }
         } else {
             textureStore(ao_tex, coord, vec4<f32>(0.0, 0.0, 0.0, 0.0));
+            if (params.bent_normals != 0u) {
+                textureStore(bent_tex, coord, vec4<f32>(0.0, 0.0, 0.0, 0.0));
+            }
         }
     }
 }

@@ -13,7 +13,7 @@ pub mod normal_map;
 pub mod position;
 pub mod thickness;
 
-pub use ao::{AoBakeError, AoBakeParams, BakeTarget, PlaneDesc};
+pub use ao::{AoBakeError, AoBakeParams, AoWithBent, BakeTarget, PlaneDesc};
 pub use curvature::{CurvatureBakeError, CurvatureParams};
 pub use dilation::{DilateError, DilateParams};
 pub use id::{IdBakeError, IdBakeParams, IdFlavor};
