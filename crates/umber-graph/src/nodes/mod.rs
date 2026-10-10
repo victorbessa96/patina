@@ -1,13 +1,31 @@
 //! Wave-5 slice 2a generator nodes: noise + gradient + pattern.
+//! Wave-5 slice 2b filter + color-ops nodes: blur/sharpen/levels/curves/
+//! invert ([`filter`]) and mix/color_correct/hsv_adjust ([`color`]).
 //!
 //! Seven node_defs: `noise_perlin`, `noise_value`, `noise_worley`
 //! ([`noise`]), `gradient` ([`gradient`]), `checkerboard`, `dots`,
-//! `brick_pattern` ([`pattern`]). Every image-producing node renders at
-//! [`EvalContext::resolution`](crate::EvalContext::resolution).
+//! `brick_pattern` ([`pattern`]). Eight more: `blur`, `sharpen`,
+//! `levels`, `curves`, `invert` ([`filter`]), `mix`, `color_correct`,
+//! `hsv_adjust` ([`color`]). Every image-producing node renders at
+//! [`EvalContext::resolution`](crate::EvalContext::resolution); every
+//! image-CONSUMING node preserves its input's size.
+//!
+//! Slice 2b curve path: `curves` carries its 4-point curve as four
+//! `Vec2` params (`curve_p0..curve_p3`) through an internal struct with
+//! semantics identical to `umber_brush::ControlCurve` — umber-graph
+//! stays dependency-minimal (only `thiserror`), so the conversion to
+//! the real `ControlCurve` belongs at the app-bridge layer.
 
+pub mod color;
+pub mod filter;
 pub mod gradient;
 pub mod noise;
 pub mod pattern;
+
+pub use color::{register_color_nodes, ColorCorrectNode, HsvAdjustNode, MixNode};
+pub use filter::{
+    register_filter_nodes, BlurNode, CurvesNode, InvertNode, LevelsNode, SharpenNode,
+};
 
 pub use gradient::{register_gradient_nodes, GradientNode};
 pub use noise::{build_perm, register_noise_nodes, PerlinNode, ValueNode, WorleyNode};
@@ -22,6 +40,14 @@ pub fn register_generator_nodes(registry: &mut crate::NodeRegistry) {
     noise::register_noise_nodes(registry);
     gradient::register_gradient_nodes(registry);
     pattern::register_pattern_nodes(registry);
+}
+
+/// Registers all eight slice-2b filter + color-ops node_defs on
+/// `registry` (alongside [`register_generator_nodes`] — the two sets
+/// compose; the engine end-to-end test in [`color`] proves it).
+pub fn register_filter_color_nodes(registry: &mut crate::NodeRegistry) {
+    filter::register_filter_nodes(registry);
+    color::register_color_nodes(registry);
 }
 
 #[cfg(test)]
