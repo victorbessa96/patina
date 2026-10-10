@@ -565,7 +565,7 @@ impl eframe::App for UmberApp {
 /// swap pickers later).
 fn rfd_pick_mesh() -> Option<PathBuf> {
     rfd::FileDialog::new()
-        .add_filter("Meshes", &["obj", "gltf", "glb", "fbx"])
+        .add_filter("Meshes", &["obj", "gltf", "glb", "fbx", "usda", "usd"])
         .pick_file()
 }
 

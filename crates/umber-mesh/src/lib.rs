@@ -1,4 +1,4 @@
-//! umber-mesh — mesh container + import (glTF, OBJ, FBX).
+//! umber-mesh — mesh container + import (glTF, OBJ, FBX, USD ASCII).
 //!
 //! Wave 1 scope: the `MeshData` container + format detection + OBJ import
 //! (tobj). glTF and FBX loaders are the Wave-1 claw work; the half-edge
@@ -16,6 +16,7 @@ pub mod raycast;
 pub mod seam;
 pub mod seam_mirror;
 pub mod udim;
+pub mod usd;
 
 pub use fbx::load_fbx;
 pub use gltf::load_gltf;
@@ -26,6 +27,7 @@ pub use mesh_maps::{
 pub use overlay::{wire_vertices_from_indices, WireVertex};
 pub use raycast::{ray_intersect, uv_at, RayHit};
 pub use udim::{present_tiles, tile_of_triangle, tile_of_uv, triangles_for_tile, FIRST_TILE};
+pub use usd::load_usda;
 
 /// Interleaved mesh data as imported, before any GPU upload.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -79,6 +81,11 @@ pub enum ImportError {
     Gltf(String),
     #[error("fbx: {0}")]
     Fbx(String),
+    #[error("usd: {0}")]
+    Usd(String),
+    /// Binary crate files (`.usdc`, or a `.usd` holding crate bytes).
+    #[error("usd: usdc (binary) arrives when the pure-Rust reader stabilizes")]
+    UsdBinary,
 }
 
 /// Detect the import format from a file extension.
@@ -92,6 +99,8 @@ pub fn detect_format(path: &std::path::Path) -> Result<Format, ImportError> {
         Some("obj") => Ok(Format::Obj),
         Some("gltf" | "glb") => Ok(Format::Gltf),
         Some("fbx") => Ok(Format::Fbx),
+        Some("usda" | "usd") => Ok(Format::Usd),
+        Some("usdc") => Err(ImportError::UsdBinary),
         Some(other) => Err(ImportError::Unsupported(other.to_string())),
         None => Err(ImportError::Unsupported("(no extension)".into())),
     }
@@ -103,17 +112,21 @@ pub enum Format {
     Obj,
     Gltf,
     Fbx,
+    /// `.usda`, or `.usd` (sniffed: binary crate content errors).
+    Usd,
 }
 
 /// Load a mesh from disk, dispatching on file extension.
 ///
-/// Supports `.obj` ([`load_obj`]), `.gltf`/`.glb` ([`load_gltf`]) and `.fbx`
-/// ([`load_fbx`]). Returns [`ImportError::Unsupported`] for anything else.
+/// Supports `.obj` ([`load_obj`]), `.gltf`/`.glb` ([`load_gltf`]), `.fbx`
+/// ([`load_fbx`]) and `.usda`/`.usd` ([`load_usda`]). `.usdc` returns
+/// [`ImportError::UsdBinary`]; anything else [`ImportError::Unsupported`].
 pub fn load(path: &std::path::Path) -> Result<MeshData, ImportError> {
     match detect_format(path)? {
         Format::Obj => load_obj(path),
         Format::Gltf => load_gltf(path),
         Format::Fbx => load_fbx(path),
+        Format::Usd => load_usda(path),
     }
 }
 
@@ -187,6 +200,18 @@ mod tests {
             detect_format(std::path::Path::new("a.fbx")).unwrap(),
             Format::Fbx
         );
+        assert_eq!(
+            detect_format(std::path::Path::new("a.usda")).unwrap(),
+            Format::Usd
+        );
+        assert_eq!(
+            detect_format(std::path::Path::new("a.USD")).unwrap(),
+            Format::Usd
+        );
+        assert!(matches!(
+            detect_format(std::path::Path::new("a.usdc")),
+            Err(ImportError::UsdBinary)
+        ));
         assert!(detect_format(std::path::Path::new("a.stl")).is_err());
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "umber-mesh"
-description = "Umber mesh container, half-edge topology, and glTF/OBJ/FBX import"
+description = "Umber mesh container, half-edge topology, and glTF/OBJ/FBX/USDA import"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
