@@ -19,6 +19,7 @@ use wgpu::util::DeviceExt as _;
 use umber_gpu::bake_shaders::AO_BAKE_SHADER;
 use umber_gpu::{PaintError, PaintTarget};
 use umber_mesh::MeshData;
+use umber_mesh::{triangles_for_tile, FIRST_TILE};
 
 use crate::position::{bake_position_and_normal, PositionMapError};
 
@@ -573,9 +574,116 @@ pub fn bake_ao_and_bent_mesh(
     bake_ao_mesh_inner(device, queue, mesh, width, height, params)
 }
 
+/// Integer UV offset of a UDIM tile: the same tens/ones split as the
+/// foundation (`tile = 1001 + u + 10 * v`, so `u = (tile - 1001) % 10`,
+/// `v = (tile - 1001) / 10`). Tile 1003 -> (2, 0); tile 1011 -> (0, 1).
+/// Out-of-range tiles clamp to the grid (below 1001 saturates to (0, 0),
+/// above 1100 pins to (9, 9)) so this never underflows or leaves the
+/// 10x10 grid — the same v1 clamp policy as `tile_of_uv`.
+fn tile_uv_offset(tile: u16) -> (f32, f32) {
+    let t = tile.saturating_sub(FIRST_TILE).min(99);
+    (f32::from(t % 10), f32::from(t / 10))
+}
+
+/// The per-tile bake window for UDIM tile `tile` (Wave-5 slice 3,
+/// `docs/specs/udim-design.md` slice 3): the same [`PlaneDesc`]
+/// mechanism as the existing 0..1 default, with the origin shifted to
+/// the tile's integer offset (`u_offset`, `v_offset`, 0), axes unchanged,
+/// extent 1x1. A tile `(u, v)` covers `[u, u + 1] x [v, v + 1]`; tile
+/// 1001 is the 0..1 default unchanged.
+///
+/// NOTE on `origin` semantics: [`PlaneDesc`] documents `origin` as a
+/// plane center for [`run`]'s world-space path. Here `origin` carries
+/// the tile window's integer address (its min corner), not a
+/// center — the mesh-fed path ([`bake_ao_mesh`]/[`bake_ao_tile`])
+/// ignores `params.plane` entirely (the position map supplies each
+/// texel's ray origin instead), so the *effective* window shift is the
+/// UV rebase [`filter_mesh_for_tile`] performs. The [`PlaneDesc`] is
+/// still threaded through (see [`bake_ao_tile`]) so `run()`-style
+/// consumers and the shared uniform layout keep one window derivation.
+pub fn bake_tile_window(tile: u16) -> PlaneDesc {
+    let (u_offset, v_offset) = tile_uv_offset(tile);
+    PlaneDesc::new(
+        [u_offset, v_offset, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [1.0, 1.0],
+    )
+}
+
+/// Builds the per-tile filtered mesh for UDIM tile `tile`: a NEW
+/// [`MeshData`] holding only that tile's triangles (per
+/// [`triangles_for_tile`]), with every UV rebased by `-tile_uv_offset`
+/// so the tile's `[u0, u0 + 1] x [v0, v0 + 1]` window lands on the
+/// `[0, 1]` square the unchanged bake core rasterizes.
+///
+/// Index-subset, not re-indexed: `positions`/`normals` are cloned whole
+/// and `indices` keeps the tile's triangles' original vertex indices —
+/// the bake core (`position::build_pos_triangles`, `build_triangles`)
+/// resolves every attribute through `indices`, so compacting the vertex
+/// arrays would only add remap risk for zero GPU benefit at this budget.
+/// Unused vertices ride along untouched; `material_names` is cloned
+/// through. An empty tile yields a mesh with no indices, which the bake
+/// core rejects as empty — never a silent blank map.
+pub fn filter_mesh_for_tile(mesh: &MeshData, tile: u16) -> MeshData {
+    let (u_offset, v_offset) = tile_uv_offset(tile);
+    let mut indices = Vec::new();
+    for tri in triangles_for_tile(mesh, tile) {
+        let base = tri as usize * 3;
+        if let Some(slot) = mesh.indices.get(base..base + 3) {
+            indices.extend_from_slice(slot);
+        }
+    }
+    let uvs = mesh
+        .uvs
+        .iter()
+        .map(|uv| [uv[0] - u_offset, uv[1] - v_offset])
+        .collect();
+    MeshData {
+        positions: mesh.positions.clone(),
+        normals: mesh.normals.clone(),
+        uvs,
+        indices,
+        material_names: mesh.material_names.clone(),
+    }
+}
+
+/// Bakes ambient occlusion for a single UDIM tile: filters `mesh` to the
+/// tile's triangles and rebases their UVs ([`filter_mesh_for_tile`]),
+/// derives the tile window ([`bake_tile_window`]), then reuses the
+/// existing [`bake_ao_mesh`] core unchanged — no changes to the
+/// non-tile entry points (the regression contract: tile 1001 on an
+/// all-`[0, 1]` mesh is byte-identical to [`bake_ao_mesh`], pinned by
+/// test).
+///
+/// PATTERN NOTE (proven here, mechanical elsewhere): every other baker
+/// (normal, curvature, thickness, ID, position) gets its tile entry the
+/// same way — `filter_mesh_for_tile` + its window param + the unchanged
+/// core call. Only AO is wired in this slice; the rest are follow-ups.
+///
+/// # Errors
+///
+/// Same as [`bake_ao_mesh`] (notably empty-mesh when the tile owns no
+/// triangles).
+pub fn bake_ao_tile(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    mesh: &MeshData,
+    width: u32,
+    height: u32,
+    params: &AoBakeParams,
+    tile: u16,
+) -> Result<Vec<u8>, AoBakeError> {
+    let mut tile_params = *params;
+    // Carried for `run()`-style consumers and the shared uniform; the
+    // mesh path itself ignores `plane` (see `bake_tile_window`'s NOTE).
+    tile_params.plane = bake_tile_window(tile);
+    let filtered = filter_mesh_for_tile(mesh, tile);
+    bake_ao_mesh(device, queue, &filtered, width, height, &tile_params)
+}
+
 /// The shared single dispatch behind [`bake_ao_mesh`] and
-/// [`bake_ao_and_bent_mesh`]: builds one pipeline over
-/// `AO_BAKE_SHADER::cs_main_from_position` with BOTH output textures bound
+/// [`bake_ao_and_bent_mesh`]: builds one pipeline over/// `AO_BAKE_SHADER::cs_main_from_position` with BOTH output textures bound
 /// (the AO target plus the bent target at binding 6), dispatches once, and
 /// reads both back. The shader gates every bent store on the uniform's bent
 /// word (mapped from `params.bent_normals` by [`uniform_for`]), so a
@@ -1114,6 +1222,57 @@ mod tests {
     fn validate_accepts_well_formed_inputs() {
         let params = AoBakeParams::new(10.0, 0.01, test_plane());
         assert!(validate(&unit_mesh(), &params, 32, 32).is_ok());
+    }
+
+    #[test]
+    fn bake_tile_window_derives_origins_from_tens_ones_split() {
+        // The foundation formula inverts: u = (tile - 1001) % 10,
+        // v = (tile - 1001) / 10 — v adds TENS (1011, not 1002).
+        for (tile, u, v) in [
+            (1001, 0.0, 0.0),
+            (1003, 2.0, 0.0),
+            (1011, 0.0, 1.0),
+            (1100, 9.0, 9.0),
+        ] {
+            let window = bake_tile_window(tile);
+            assert_eq!(
+                window.origin,
+                [u, v, 0.0],
+                "tile {tile} must sit at integer offset ({u}, {v})"
+            );
+            assert_eq!(window.u_axis, [1.0, 0.0, 0.0]);
+            assert_eq!(window.v_axis, [0.0, 1.0, 0.0]);
+            assert_eq!(window.extent, [1.0, 1.0]);
+        }
+    }
+
+    #[test]
+    fn filter_mesh_for_tile_subsets_indices_and_rebases_uvs() {
+        // Two triangles in adjacent tiles: tri 0's first UV (0.5, 0.5)
+        // -> 1001, tri 1's first UV (1.5, 0.5) -> 1002.
+        let mesh = MeshData {
+            positions: vec![[0.0; 3]; 4],
+            normals: vec![[0.0, 0.0, 1.0]; 4],
+            uvs: vec![[0.5, 0.5], [0.7, 0.5], [0.5, 0.7], [1.5, 0.5]],
+            indices: vec![0, 1, 2, 3, 1, 2],
+            material_names: vec!["m".into()],
+        };
+        // Tile 1001: tri 0 only, UVs rebased by -(0, 0) = identity.
+        let t1001 = filter_mesh_for_tile(&mesh, 1001);
+        assert_eq!(t1001.indices, vec![0, 1, 2]);
+        assert_eq!(t1001.uvs, mesh.uvs);
+        assert_eq!(t1001.positions, mesh.positions);
+        // Tile 1002: tri 1 only, UVs rebased by -(1, 0) into [0, 1].
+        let t1002 = filter_mesh_for_tile(&mesh, 1002);
+        assert_eq!(t1002.indices, vec![3, 1, 2]);
+        assert_eq!(
+            t1002.uvs,
+            vec![[-0.5, 0.5], [-0.3, 0.5], [-0.5, 0.7], [0.5, 0.5]]
+        );
+        // Empty tile: no indices — the bake core rejects this as empty.
+        let t1003 = filter_mesh_for_tile(&mesh, 1003);
+        assert!(t1003.indices.is_empty());
+        assert_eq!(t1003.triangle_count(), 0);
     }
 
     #[cfg(feature = "gpu")]
@@ -1741,6 +1900,118 @@ mod tests {
             assert_eq!(
                 dual_first.ao, dual_second.ao,
                 "dual AO half must be deterministic"
+            );
+        }
+
+        /// Two triangles in adjacent tiles, DIFFERENT footprints so the
+        /// maps are distinguishable: tri 0 (tile 1001) covers the
+        /// `u + v <= 1` half of its window, tri 1 (tile 1002, first UV
+        /// `(1, 0)`) rebases to the `v <= u` half of its window. Both
+        /// are flat at `z = 0` facing `+z`, so every covered texel is
+        /// fully unoccluded (`rgb = 255`) and coverage reads purely off
+        /// the alpha channel.
+        fn two_tile_two_triangles() -> MeshData {
+            MeshData {
+                positions: vec![
+                    [-1.0, -1.0, 0.0],
+                    [1.0, -1.0, 0.0],
+                    [-1.0, 1.0, 0.0],
+                    [-1.0, -1.0, 0.0],
+                    [1.0, -1.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                ],
+                normals: vec![[0.0, 0.0, 1.0]; 6],
+                uvs: vec![
+                    [0.0, 0.0],
+                    [1.0, 0.0],
+                    [0.0, 1.0],
+                    [1.0, 0.0],
+                    [2.0, 0.0],
+                    [2.0, 1.0],
+                ],
+                indices: vec![0, 1, 2, 3, 4, 5],
+                material_names: vec![],
+            }
+        }
+
+        /// PER-TILE COVERAGE EXACTNESS: each tile's bake sees ONLY its
+        /// own geometry. Derived probe texels at 8x8 (texel-center UVs
+        /// `u = (x + 0.5) / 8`, `v = 1 - (y + 0.5) / 8`):
+        /// - probe A `(1, 2)` -> `(0.1875, 0.6875)`: `u+v = 0.875 <= 1`
+        ///   (inside tri 0, margin 0.125) but `u < v` (outside tri 1's
+        ///   rebased `v <= u` shape, margin 0.5);
+        /// - probe B `(6, 5)` -> `(0.8125, 0.3125)`: `u+v = 1.125 > 1`
+        ///   (outside tri 0, margin 0.125) but `v <= u <= 1` (inside tri
+        ///   1's rebased shape, margins >= 0.1875).
+        #[test]
+        fn per_tile_bake_covers_only_its_own_geometry() {
+            let Some((device, queue)) = try_request_device() else {
+                return;
+            };
+            const SIZE: u32 = 8;
+            let params = AoBakeParams::new(10.0, 0.01, dummy_plane());
+            let mesh = two_tile_two_triangles();
+            // Sanity on the fixture's tile assignment (first-vertex rule).
+            assert_eq!(umber_mesh::tile_of_triangle(&mesh), vec![1001, 1002]);
+
+            let map1001 = bake_ao_tile(&device, &queue, &mesh, SIZE, SIZE, &params, 1001)
+                .expect("tile 1001 bake should succeed");
+            let map1002 = bake_ao_tile(&device, &queue, &mesh, SIZE, SIZE, &params, 1002)
+                .expect("tile 1002 bake should succeed");
+
+            // Probe A: covered by tri 0 only.
+            let a1001 = texel_rgba8(&map1001, SIZE, 1, 2);
+            assert_eq!(
+                a1001,
+                [255, 255, 255, 255],
+                "probe A must be covered+clear in 1001"
+            );
+            let a1002 = texel_rgba8(&map1002, SIZE, 1, 2);
+            assert_eq!(a1002[3], 0, "probe A must be BACKGROUND in 1002: {a1002:?}");
+            // Probe B: covered by tri 1 only.
+            let b1002 = texel_rgba8(&map1002, SIZE, 6, 5);
+            assert_eq!(
+                b1002,
+                [255, 255, 255, 255],
+                "probe B must be covered+clear in 1002"
+            );
+            let b1001 = texel_rgba8(&map1001, SIZE, 6, 5);
+            assert_eq!(b1001[3], 0, "probe B must be BACKGROUND in 1001: {b1001:?}");
+
+            // Both maps are non-degenerate (each owns covered AND
+            // uncovered texels) and distinct — the filter actually
+            // separates them.
+            for (map, tile) in [(&map1001, 1001), (&map1002, 1002)] {
+                let covered = map.chunks_exact(4).filter(|px| px[3] == 255).count();
+                let blank = map.chunks_exact(4).filter(|px| px[3] == 0).count();
+                assert!(
+                    covered > 0 && blank > 0,
+                    "tile {tile}: {covered} covered, {blank} blank"
+                );
+            }
+            assert_ne!(map1001, map1002, "the two tiles must bake different maps");
+        }
+
+        /// SINGLE-TILE REGRESSION (the degenerate case IS the old
+        /// behavior): on an all-`[0, 1]` mesh, `bake_ao_tile(1001)` is
+        /// byte-identical to the existing `bake_ao_mesh` — the filter
+        /// keeps every triangle and the UV rebase is the identity, so
+        /// the unchanged core sees bit-identical input.
+        #[test]
+        fn single_tile_bake_matches_plain_entry_byte_identical() {
+            let Some((device, queue)) = try_request_device() else {
+                return;
+            };
+            const SIZE: u32 = 8;
+            let params = AoBakeParams::new(10.0, 0.01, dummy_plane());
+            let mesh = unoccluded_quad();
+            let plain = bake_ao_mesh(&device, &queue, &mesh, SIZE, SIZE, &params)
+                .expect("plain bake should succeed");
+            let tiled = bake_ao_tile(&device, &queue, &mesh, SIZE, SIZE, &params, 1001)
+                .expect("tile bake should succeed");
+            assert_eq!(
+                tiled, plain,
+                "tile-1001 bake must equal the plain entry byte-for-byte"
             );
         }
     }

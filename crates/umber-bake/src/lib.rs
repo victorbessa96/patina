@@ -14,7 +14,10 @@ pub mod position;
 pub mod thickness;
 pub mod transfer;
 
-pub use ao::{AoBakeError, AoBakeParams, AoWithBent, BakeTarget, PlaneDesc};
+pub use ao::{
+    bake_ao_tile, bake_tile_window, filter_mesh_for_tile, AoBakeError, AoBakeParams, AoWithBent,
+    BakeTarget, PlaneDesc,
+};
 pub use curvature::{CurvatureBakeError, CurvatureParams};
 pub use dilation::{DilateError, DilateParams};
 pub use id::{IdBakeError, IdBakeParams, IdFlavor};

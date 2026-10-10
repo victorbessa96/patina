@@ -74,6 +74,20 @@ pub fn tile_of_triangle(mesh: &MeshData) -> Vec<u16> {
     tiles
 }
 
+/// The triangle indices assigned to `tile`: the positions `k` in
+/// [`tile_of_triangle`]'s output whose tile equals `tile`, in ascending
+/// order. An empty vec means the tile has no geometry — the per-tile
+/// bakers treat that as "nothing to rasterize" (their filtered mesh is
+/// empty and the bake is rejected as [`EmptyMesh`]-equivalent, never
+/// silently blank).
+pub fn triangles_for_tile(mesh: &MeshData, tile: u16) -> Vec<u32> {
+    tile_of_triangle(mesh)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(k, t)| (t == tile).then_some(k as u32))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,5 +158,21 @@ mod tests {
             material_names: vec!["m".into()],
         };
         assert_eq!(tile_of_triangle(&mesh), vec![1001]);
+    }
+
+    #[test]
+    fn triangles_for_tile_selects_each_tile_exactly() {
+        // Same two-triangle two-tile shape as `two_triangles_span_two_tiles`.
+        let mesh = MeshData {
+            positions: vec![[0.0; 3]; 4],
+            normals: vec![[0.0; 3]; 4],
+            uvs: vec![[0.5, 0.5], [0.7, 0.5], [0.5, 0.7], [1.5, 0.5]],
+            indices: vec![0, 1, 2, 3, 1, 2],
+            material_names: vec!["m".into()],
+        };
+        assert_eq!(triangles_for_tile(&mesh, 1001), vec![0]);
+        assert_eq!(triangles_for_tile(&mesh, 1002), vec![1]);
+        // No triangle lives in 1003: empty vec = no geometry (documented).
+        assert_eq!(triangles_for_tile(&mesh, 1003), Vec::<u32>::new());
     }
 }
