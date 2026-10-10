@@ -90,9 +90,14 @@ pub struct PositionMapParams {
 /// packed into a fourth `vec4`, and the triangle's face normal in a
 /// fifth — every field already 16 bytes, so (like `ao::GpuTriangle`) no
 /// extra padding fields are needed to match WGSL's `vec4<f32>` alignment.
+///
+/// `pub(crate)` (not private) because [`crate::id`]'s shader re-binds the
+/// same buffer to re-derive the winning triangle index — see
+/// `umber_gpu::bake_shaders::ID_BAKE_SHADER`'s doc comment for why the
+/// position pass has no triangle-index channel of its own.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuPosTri {
+pub(crate) struct GpuPosTri {
     v0: [f32; 4],
     v1: [f32; 4],
     v2: [f32; 4],
@@ -142,6 +147,9 @@ fn validate(mesh: &MeshData, width: u32, height: u32) -> Result<(), PositionMapE
 
 /// Builds the GPU triangle list from `mesh`'s positions/UVs/indices.
 ///
+/// `pub(crate)` (not private) because [`crate::id`] reuses the identical
+/// buffer for its triangle-index re-derivation pass.
+///
 /// The face normal is recomputed from the triangle's own vertex positions
 /// (not read from `mesh.normals`, which the OBJ loader can leave short —
 /// see `umber_mesh::load_obj`'s doc comment) — the same choice
@@ -153,7 +161,7 @@ fn validate(mesh: &MeshData, width: u32, height: u32) -> Result<(), PositionMapE
 /// index runs past `mesh.positions` or `mesh.uvs` (a corrupt or
 /// hand-built mesh), rather than the slice-index panic a direct `[i]`
 /// lookup would produce.
-fn build_pos_triangles(mesh: &MeshData) -> Result<Vec<GpuPosTri>, PositionMapError> {
+pub(crate) fn build_pos_triangles(mesh: &MeshData) -> Result<Vec<GpuPosTri>, PositionMapError> {
     mesh.indices
         .chunks_exact(3)
         .enumerate()

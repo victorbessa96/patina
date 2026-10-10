@@ -1178,3 +1178,176 @@ fn cs_main(@builtin(workgroup_id) workgroup_id: vec3<u32>) {
     textureStore(out_tex, coord, vec4<f32>(rgb, 1.0));
 }
 "#;
+
+/// Deterministic per-texel region-ID coloring (ID bake, wave-4 item 5 slice 1):
+/// one workgroup per output texel, hashing the winning triangle's index with
+/// FNV-1a and encoding the hash as the texel color.
+///
+/// # Why the triangle index is re-derived here instead of read from the position map
+///
+/// `POSITION_BAKE_SHADER` writes per-texel world position (xyz) + coverage (w)
+/// and face normal — there is deliberately no triangle-index channel (adding
+/// one would cost a third `Rgba32Float` target for data only this pass needs).
+/// This shader therefore re-binds the mesh's triangle buffer (the same `PosTri`
+/// layout the position pass consumes, carrying each triangle's UV footprint)
+/// and re-runs the *identical* point-in-triangle containment test
+/// (`cross2`/`1/det` barycentric solve, same `ID_DET_EPS`/`ID_BARY_EPS`
+/// epsilons, same edge-inclusive bounds, same last-writer-wins on overlap) to
+/// recover the winning triangle index deterministically. The position map is
+/// still the coverage authority: its alpha (`<= 0.5` means uncovered — the
+/// same convention `CURVATURE_BAKE_SHADER` documents) gates the hash path, so
+/// this pass never disagrees with the position pass about *whether* a texel is
+/// covered, only re-derives *which* triangle covers it.
+///
+/// A per-texel position hash was considered (hash the covered texel's world-pos
+/// bits) and rejected: it yields a different color per texel — gradient noise,
+/// useless for region masking — where the design-doc contract
+/// (`docs/specs/id-bake-bent-normals-design.md`) wants region-constant colors
+/// whose value IS the FNV-1a hash of the region identity. The material flavor
+/// rides the high-to-low pass (item 4), which binds the source mesh's parts;
+/// see `umber_bake::id`'s module doc for the honest v1 flavor gate.
+///
+/// # Encoding
+///
+/// `hash = fnv1a_32(triangle_index as 4 little-endian bytes)`,
+/// `rgb = [h & 0xFF, (h >> 8) & 0xFF, (h >> 16) & 0xFF] / 255`, `a = 1.0`.
+/// Each hash byte is an exact integer multiple of `1/255`, so the
+/// `Rgba8Unorm` store round-trips it byte-exactly (the float closest to
+/// `b/255` scales back to within `1e-6` of `b`). Uncovered texels write
+/// `(0, 0, 0, 0)`, distinguishable from any covered texel (whose alpha is
+/// always `1.0`, even if its hash bytes happen to be `(0, 0, 0)`) by alpha
+/// alone — the same alpha convention
+/// `AO_BAKE_SHADER::cs_main_from_position` uses.
+///
+/// # Layout contracts
+///
+/// - `PosTri` must match `umber_bake::position`'s private `GpuPosTri`
+///   byte-for-byte (three world-space positions with UV x in each `w`, the
+///   three UV y components packed in `uv_y`, the face normal — 80 bytes).
+///   Only the UV fields are consumed here (world positions/normal ignored).
+/// - `IdParams` must match `umber_bake::id`'s private `IdUniform`
+///   byte-for-byte (`dims`, `tri_count`, one `u32` pad — 16 bytes, already a
+///   multiple of WGSL's 16-byte uniform-struct alignment).
+/// - `position_tex` is the position pass's `Rgba32Float` output, bound
+///   read-only and sampled with `textureLoad` (no sampler, no filtering).
+/// - `out_tex` is a write-only `Rgba8Unorm` storage texture (core WebGPU,
+///   no device feature — the same reason [`AO_BAKE_SHADER`] uses `write`,
+///   not `read_write`).
+///
+/// # Dispatch + edge behavior
+///
+/// One workgroup (`@workgroup_size(1)`) per texel, dispatched as
+/// `dispatch_workgroups(width, height, 1)`, so `workgroup_id.xy` is directly
+/// the texel coordinate — the same shape as `CURVATURE_BAKE_SHADER` (serial
+/// per-texel triangle loop, no shared-memory chunking: the containment test
+/// is arithmetic-cheap and this pass runs once per bake, not per ray).
+/// Degenerate (zero-UV-area) triangles never claim a texel, matching the
+/// position pass. If a covered texel's re-test finds no triangle (unreachable
+/// when both passes share identical containment arithmetic — a logic bug, not
+/// a data case), the texel writes background `(0, 0, 0, 0)` rather than a
+/// plausible-but-wrong color, so the failure is visible on review.
+pub const ID_BAKE_SHADER: &str = r#"
+struct PosTri {
+    v0: vec4<f32>,    // xyz = world position of vertex 0 (ignored here), w = uv0.x
+    v1: vec4<f32>,    // xyz = world position of vertex 1 (ignored here), w = uv1.x
+    v2: vec4<f32>,    // xyz = world position of vertex 2 (ignored here), w = uv2.x
+    uv_y: vec4<f32>,  // x = uv0.y, y = uv1.y, z = uv2.y, w unused
+    normal: vec4<f32>, // face normal (ignored here), w unused
+};
+
+struct IdParams {
+    dims: vec2<u32>,
+    tri_count: u32,
+    _pad: u32,
+};
+
+@group(0) @binding(0) var<storage, read> tris: array<PosTri>;
+@group(0) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var<uniform> params: IdParams;
+@group(0) @binding(3) var position_tex: texture_2d<f32>;
+
+const ID_DET_EPS: f32 = 1e-10;
+const ID_BARY_EPS: f32 = 1e-6;
+const FNV_OFFSET_BASIS: u32 = 2166136261u;
+const FNV_PRIME: u32 = 16777619u;
+
+/// 2D cross product (the scalar "perp-dot"): `a.x*b.y - a.y*b.x`.
+/// Verbatim the same helper as `POSITION_BAKE_SHADER::cross2`.
+fn cross2(a: vec2<f32>, b: vec2<f32>) -> f32 {
+    return a.x * b.y - a.y * b.x;
+}
+
+/// One FNV-1a step over a single byte: `(h ^ b) * prime` with wrapping
+/// `u32` arithmetic (WGSL unsigned overflow wraps, matching Rust's
+/// `wrapping_mul` in the `umber_bake::id` test mirror).
+fn fnv1a_step(h: u32, b: u32) -> u32 {
+    return (h ^ b) * FNV_PRIME;
+}
+
+/// FNV-1a over the triangle index's 4 little-endian bytes.
+fn hash_triangle(tri: u32) -> u32 {
+    var h = FNV_OFFSET_BASIS;
+    h = fnv1a_step(h, tri & 0xFFu);
+    h = fnv1a_step(h, (tri >> 8u) & 0xFFu);
+    h = fnv1a_step(h, (tri >> 16u) & 0xFFu);
+    h = fnv1a_step(h, (tri >> 24u) & 0xFFu);
+    return h;
+}
+
+@compute @workgroup_size(1)
+fn cs_main(@builtin(workgroup_id) workgroup_id: vec3<u32>) {
+    let coord = vec2<i32>(workgroup_id.xy);
+    if (textureLoad(position_tex, coord, 0).w <= 0.5) {
+        textureStore(out_tex, coord, vec4<f32>(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    // Texel-center UV, v-flipped to match umber_app::paint_state's
+    // `(1 - v) * texels_per_uv` convention — verbatim the same formula as
+    // POSITION_BAKE_SHADER so both passes agree texel-for-texel.
+    let dims_f = vec2<f32>(params.dims);
+    let texel_uv = vec2<f32>(
+        (f32(workgroup_id.x) + 0.5) / max(dims_f.x, 1.0),
+        1.0 - (f32(workgroup_id.y) + 0.5) / max(dims_f.y, 1.0),
+    );
+
+    // Serial containment loop with last-writer-wins: triangle order, edge-
+    // inclusive bounds, and degenerate-triangle rejection all mirror
+    // POSITION_BAKE_SHADER's chunked loop exactly, so the recovered index is
+    // the same triangle the position pass's `best_tri` held.
+    var best_tri = 0u;
+    var found = false;
+    for (var t: u32 = 0u; t < params.tri_count; t = t + 1u) {
+        let tri = tris[t];
+        let uv0 = vec2<f32>(tri.v0.w, tri.uv_y.x);
+        let uv1 = vec2<f32>(tri.v1.w, tri.uv_y.y);
+        let uv2 = vec2<f32>(tri.v2.w, tri.uv_y.z);
+        let e1 = uv1 - uv0;
+        let e2 = uv2 - uv0;
+        let denom = cross2(e1, e2);
+        if (abs(denom) >= ID_DET_EPS) {
+            let inv_denom = 1.0 / denom;
+            let s = texel_uv - uv0;
+            let bu = cross2(s, e2) * inv_denom;
+            let bv = cross2(e1, s) * inv_denom;
+            let bw = 1.0 - bu - bv;
+            if (bu >= -ID_BARY_EPS && bv >= -ID_BARY_EPS && bw >= -ID_BARY_EPS) {
+                best_tri = t;
+                found = true;
+            }
+        }
+    }
+    if (!found) {
+        textureStore(out_tex, coord, vec4<f32>(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    let h = hash_triangle(best_tri);
+    let rgb = vec3<f32>(
+        f32(h & 0xFFu),
+        f32((h >> 8u) & 0xFFu),
+        f32((h >> 16u) & 0xFFu),
+    ) / 255.0;
+    textureStore(out_tex, coord, vec4<f32>(rgb, 1.0));
+}
+"#;
