@@ -1,0 +1,17 @@
+[package]
+name = "umber-wasm"
+description = "Umber WASM plugin runtime: guest node impls dispatched through the node-graph engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+umber-graph = { workspace = true }
+wasmtime = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The guest SDK compiled for the HOST: its wire mirror is cross-checked
+# against wire.rs (host encode -> SDK decode and back).
+umber-plugin-sdk = { workspace = true }

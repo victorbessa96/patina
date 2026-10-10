@@ -69,6 +69,23 @@ pub enum EvalError {
     /// Filesystem failures (the `image_asset` load).
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    /// A WASM plugin node exhausted its fuel budget (a hung or
+    /// runaway guest — the store is discarded, the graph survives).
+    /// Wave-6 plugins slice; constructed by `umber-wasm`.
+    #[error("node {node}: plugin ran out of fuel")]
+    FuelExhausted {
+        /// The plugin node's id (stamped by the dispatcher).
+        node: u64,
+    },
+    /// A WASM plugin node failed for any other reason: a guest error
+    /// code, a trap (guest panic), or a malformed out region.
+    #[error("node {node}: plugin failed: {reason}")]
+    Plugin {
+        /// The plugin node's id (stamped by the dispatcher).
+        node: u64,
+        /// What went wrong, human-readable.
+        reason: String,
+    },
 }
 
 impl EvalError {
@@ -92,6 +109,8 @@ impl EvalError {
                 got,
             },
             Self::BadParam { param, .. } => Self::BadParam { node: id, param },
+            Self::FuelExhausted { .. } => Self::FuelExhausted { node: id },
+            Self::Plugin { reason, .. } => Self::Plugin { node: id, reason },
             other => other,
         }
     }

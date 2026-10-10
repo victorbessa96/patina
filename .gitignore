@@ -5,6 +5,8 @@ __pycache__/
 
 # Rust
 /target/
+# The example-plugins workspace (wasm32 cdylibs) builds here.
+/examples/target/
 **/*.rs.bk
 # App workspace: Cargo.lock IS committed (apps need reproducible builds).
 

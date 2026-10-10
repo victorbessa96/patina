@@ -1,0 +1,28 @@
+# The example WASM node plugins — a SEPARATE workspace (the root
+# workspace excludes `examples/`): these are no_std wasm32 cdylibs and
+# don't build for the host. Build them with
+# crates/umber-wasm/tests/fixtures/build.sh, which also copies the .wasm
+# into umber-wasm's test fixtures.
+[workspace]
+resolver = "2"
+members = ["plugin-blur5", "plugin-vignette", "plugin-infinite"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace.dependencies]
+umber-plugin-sdk = { path = "../crates/umber-plugin-sdk" }
+
+# no_std + no unwinding: a panic is the SDK's `unreachable` trap.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = "debuginfo"

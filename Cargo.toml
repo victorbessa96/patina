@@ -12,7 +12,13 @@ members = [
     "crates/stylus",
     "crates/umber-cli",
     "crates/umber-app",
+    "crates/umber-wasm",
+    "crates/umber-plugin-sdk",
 ]
+# The example plugins are wasm32 cdylibs with their own workspace
+# (examples/Cargo.toml): a no_std panic-handler crate cannot build for
+# the host under `cargo test --workspace`.
+exclude = ["examples"]
 
 [workspace.package]
 version = "0.1.0"
@@ -70,6 +76,14 @@ umber-graph = { path = "crates/umber-graph" }
 umber-export = { path = "crates/umber-export" }
 umber-color = { path = "crates/umber-color" }
 stylus = { path = "crates/stylus" }
+umber-wasm = { path = "crates/umber-wasm" }
+umber-plugin-sdk = { path = "crates/umber-plugin-sdk" }
+
+# WASM plugin runtime (docs/specs/wasm-plugins-design.md; API facts
+# verified against docs/claw-artifacts/wasmtime/). Default features
+# kept: `wat` (text fixtures in tests) and `gc` (reference types, which
+# rustc's wasm32 output enables by default) are both needed.
+wasmtime = "=50.0.0-rc.1"
 
 [profile.release]
 lto = "thin"

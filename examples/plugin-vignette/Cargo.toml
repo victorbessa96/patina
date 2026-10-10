@@ -1,0 +1,13 @@
+[package]
+name = "plugin-vignette"
+description = "Umber example plugin: radial darkening driven by a `strength` param"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+umber-plugin-sdk = { workspace = true }
