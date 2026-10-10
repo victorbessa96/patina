@@ -59,10 +59,13 @@ use umber_mesh::FIRST_TILE;
 use crate::i18n::{tr, tr_args};
 use crate::tile_selection::{MeshTilesCache, TileSelection};
 
-/// Bake resolutions offered by the panel (square targets).
-pub const SUPPORTED_RESOLUTIONS: &[u32] = &[128, 256, 512, 1024, 2048];
+/// Bake resolutions offered by the panel (square targets): the shared
+/// 512..8K presets ([`crate::size_presets::SIZE_PRESETS`]). The pre-8K list
+/// was 128..2048; the sub-512 preview sizes left with the switch to the
+/// shared list (the CLI's `--size` still takes any size).
+pub const SUPPORTED_RESOLUTIONS: &[u32] = &crate::size_presets::SIZE_PRESETS;
 /// The default bake resolution (square texels).
-pub const DEFAULT_RESOLUTION: u32 = 512;
+pub const DEFAULT_RESOLUTION: u32 = crate::size_presets::DEFAULT_SIZE;
 /// The default hemisphere ray count for the raycast bakers (AO, thickness).
 pub const DEFAULT_RAYS: u32 = 16;
 /// Minimum hemisphere rays the slider allows.
@@ -525,17 +528,7 @@ impl BakesPanel {
             ui.label("No GPU device — baking needs the wgpu device.");
         }
 
-        egui::ComboBox::from_label("Resolution")
-            .selected_text(format!("{} × {}", self.resolution, self.resolution))
-            .show_ui(ui, |ui| {
-                for candidate in SUPPORTED_RESOLUTIONS {
-                    ui.selectable_value(
-                        &mut self.resolution,
-                        *candidate,
-                        format!("{candidate} × {candidate}"),
-                    );
-                }
-            });
+        crate::size_presets::size_combo(ui, "Resolution", &mut self.resolution);
 
         ui.checkbox(&mut self.bake_ao, BakeSelection::Ao.label());
         ui.checkbox(&mut self.bake_curvature, BakeSelection::Curvature.label());
@@ -859,13 +852,15 @@ mod tests {
 
     #[test]
     fn supported_resolutions_accepted_others_rejected() {
-        for accepted in [128, 256, 512, 1024, 2048] {
+        // The shared 512..8K presets — 4096 and 8192 were rejected before
+        // the 8K slice (the list stopped at 2048).
+        for accepted in [512, 1024, 2048, 4096, 8192] {
             assert!(BakesPanel::is_supported_resolution(accepted));
             let mut p = panel();
             assert!(p.set_resolution(accepted));
             assert_eq!(p.resolution(), accepted);
         }
-        for rejected in [0, 100, 300, 513, 4096, u32::MAX] {
+        for rejected in [0, 100, 128, 256, 300, 513, 8193, u32::MAX] {
             assert!(!BakesPanel::is_supported_resolution(rejected));
             let mut p = panel();
             assert!(!p.set_resolution(rejected));
@@ -1295,7 +1290,8 @@ mod tests {
         };
         let dir = std::env::temp_dir().join(format!("umber-bake-job-{}", std::process::id()));
         let mut p = BakesPanel::new(dir.clone());
-        p.set_resolution(128);
+        // The smallest preset (sub-512 sizes left the list with 8K).
+        assert!(p.set_resolution(512));
         p.set_rays(MIN_RAYS);
         for selection in [
             BakeSelection::Curvature,

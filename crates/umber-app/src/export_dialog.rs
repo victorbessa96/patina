@@ -176,7 +176,9 @@ pub struct ExportContext<'a> {
 /// What the badge shows before an export: the shared pick-fn priority
 /// over liveness probes (paint session present? graph output at the
 /// export size?), so the badge and the driver can never disagree. Pure
-/// logic — directly testable without a GPU.
+/// logic — directly testable without a GPU. `painted_live` must already
+/// be size-gated ([`painted_at_size`]): the driver's painted bridge
+/// declines a target of another size, so the badge does too.
 pub fn prospective_base_source(
     painted_live: bool,
     graph: Option<&GraphPanel>,
@@ -191,6 +193,15 @@ pub fn prospective_base_source(
         })
     });
     bake_sources::pick_base_color_source(painted_live, probe)
+}
+
+/// Whether a paint session can feed Base Color at the export `size`: a
+/// live session whose targets are exactly `size`×`size` (the driver's
+/// painted bridge declines any other size —
+/// [`bake_sources::painted_base_color_tile`]). `None` = no session.
+/// Pure logic.
+pub fn painted_at_size(paint_target_size: Option<(u32, u32)>, size: u32) -> bool {
+    paint_target_size == Some((size, size))
 }
 
 /// Which UDIM tiles an export writes, and which it skips: the paint
@@ -295,6 +306,9 @@ struct ExportOutcome {
 /// dependency.
 pub struct ExportDialog {
     preset: PresetChoice,
+    /// Square export size in texels (one of
+    /// [`crate::size_presets::SIZE_PRESETS`]).
+    size: u32,
     output_dir: PathBuf,
     status: String,
     last_written: Vec<PathBuf>,
@@ -311,6 +325,7 @@ impl ExportDialog {
     pub fn new(output_dir: PathBuf) -> Self {
         Self {
             preset: PresetChoice::GltfMetalRough,
+            size: crate::size_presets::DEFAULT_SIZE,
             output_dir,
             status: String::from("No export yet."),
             last_written: Vec::new(),
@@ -335,6 +350,22 @@ impl ExportDialog {
     /// Changes the selected preset.
     pub fn set_preset(&mut self, preset: PresetChoice) {
         self.preset = preset;
+    }
+
+    /// The square export size in texels.
+    pub fn size(&self) -> u32 {
+        self.size
+    }
+
+    /// Sets the export size; returns `false` (keeping the old value) for
+    /// anything outside [`crate::size_presets::SIZE_PRESETS`].
+    pub fn set_size(&mut self, size: u32) -> bool {
+        if crate::size_presets::is_preset(size) {
+            self.size = size;
+            true
+        } else {
+            false
+        }
     }
 
     /// The output directory exported files are written to.
@@ -389,6 +420,7 @@ impl ExportDialog {
                     ui.selectable_value(&mut self.preset, candidate, candidate.label());
                 }
             });
+        crate::size_presets::size_combo(ui, "Size", &mut self.size);
 
         ui.horizontal(|ui| {
             ui.label(format!("Out: {}", self.output_dir.display()));
@@ -426,11 +458,9 @@ impl ExportDialog {
             .and_then(|_| tile_badge(self.tiles.tiles().len()))
             .map(|tiles| format!(" [{tiles}]"))
             .unwrap_or_default();
-        match prospective_base_source(
-            ctx.paint.is_some(),
-            ctx.graph,
-            bakes_panel::DEFAULT_RESOLUTION,
-        ) {
+        let paint_size = ctx.paint.map(PaintState::target_size);
+        match prospective_base_source(painted_at_size(paint_size, self.size), ctx.graph, self.size)
+        {
             BaseColorSource::Painted => {
                 ui.label(format!(
                     "Base Color source: painted{tiles_note} — what you painted is what exports."
@@ -441,11 +471,20 @@ impl ExportDialog {
                     "Base Color source: graph node {node}{tiles_note} — the panel's evaluated output."
                 ));
             }
-            BaseColorSource::FlatPlaceholder => {
-                ui.label(
-                    "Base Color source: flat placeholder — no paint session or graph output live.",
-                );
-            }
+            BaseColorSource::FlatPlaceholder => match paint_size {
+                Some((w, h)) => {
+                    ui.label(format!(
+                        "Base Color source: flat placeholder — the paint target is {w} × {h}, \
+                         not the {size} × {size} export size.",
+                        size = self.size
+                    ));
+                }
+                None => {
+                    ui.label(
+                        "Base Color source: flat placeholder — no paint session or graph output live.",
+                    );
+                }
+            },
         }
 
         let enabled = self.can_export(mesh_loaded, gpu_ready) && !self.tiles.nothing_selected();
@@ -530,7 +569,7 @@ impl ExportDialog {
         let graph = ctx.graph;
         let fallback = PathBuf::from(bakes_panel::FALLBACK_TEXTURE_SET);
         let texture_set = umber_mesh::texture_set_name(mesh_path.unwrap_or(&fallback), mesh);
-        let size = bakes_panel::DEFAULT_RESOLUTION;
+        let size = self.size;
 
         // UDIM (slice 5): one map set per present paint tile. No session,
         // or a single-tile one, is the pre-UDIM `[1001]` path unchanged.
@@ -575,7 +614,7 @@ impl ExportDialog {
                 };
                 baked.context("building export map set")
             },
-            |tile| bake_sources::painted_base_color_tile(paint, tile, device, queue),
+            |tile| bake_sources::painted_base_color_tile(paint, tile, size, device, queue),
             graphed,
         )?;
         let bake_ms = bake_started.elapsed().as_millis();

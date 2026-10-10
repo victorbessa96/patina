@@ -84,16 +84,23 @@ pub fn painted_base_color(
 
 /// The per-tile painted source (UDIM slice 5): `tile`'s paint target
 /// read back as RGBA8, via [`PaintState::tile_target`]. `None` when there
-/// is no session, nothing ever routed to `tile`, or the readback fails
-/// (logged) — the caller then falls back to the flat placeholder.
-/// Same-thread reasoning as [`painted_base_color`].
+/// is no session, nothing ever routed to `tile`, the target isn't
+/// `size`×`size` (no readback is paid for bytes the size gate would
+/// reject — up to 256 MiB at 8K), or the readback fails (logged) — the
+/// caller then falls back to the flat placeholder. Same-thread reasoning
+/// as [`painted_base_color`].
 pub fn painted_base_color_tile(
     paint: Option<&PaintState>,
     tile: u16,
+    size: u32,
     device: &umber_gpu::WgpuDevice,
     queue: &umber_gpu::WgpuQueue,
 ) -> Option<Vec<u8>> {
-    read_back(paint?.tile_target(tile)?, device, queue)
+    let target = paint?.tile_target(tile)?;
+    if target.dimensions() != (size, size) {
+        return None;
+    }
+    read_back(target, device, queue)
 }
 
 /// Shared readback for both painted sources.
@@ -788,7 +795,7 @@ mod tests {
             &paint.tiles_present(),
             size,
             |_| Ok(map_set_from(vec![200u8; (size * size * 4) as usize], size)),
-            |tile| painted_base_color_tile(Some(&paint), tile, &device, &queue),
+            |tile| painted_base_color_tile(Some(&paint), tile, size, &device, &queue),
             None,
         )
         .expect("assembly succeeds");
@@ -844,5 +851,20 @@ mod tests {
             "tile 1002 must not carry tile 1001's red"
         );
         std::fs::remove_dir_all(&out).ok();
+    }
+
+    #[test]
+    fn painted_tile_source_skips_a_target_of_another_size() {
+        // The export-size picker can ask for 8K while the paint target is
+        // 512: the bridge must decline (flat placeholder, honestly
+        // badged) instead of reading back bytes the size gate rejects.
+        let Some((device, queue)) = try_request_device() else {
+            return;
+        };
+        let paint = PaintState::new(device.clone(), queue.clone()).expect("paint state builds");
+        assert_eq!(paint.target_size(), (512, 512));
+        let at_512 = painted_base_color_tile(Some(&paint), 1001, 512, &device, &queue);
+        assert_eq!(at_512.map(|b| b.len()), Some(512 * 512 * 4));
+        assert!(painted_base_color_tile(Some(&paint), 1001, 8192, &device, &queue).is_none());
     }
 }

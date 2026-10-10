@@ -781,6 +781,30 @@ mod tests {
     }
 
     #[test]
+    fn ceiling_admits_8k_and_rejects_one_past_it() {
+        // The §6 8K row: 8192² is exactly the 2^26-texel ceiling.
+        let k8 = ImageBuffer::filled(8192, 8192, [1, 2, 3, 255]).expect("8K is within the ceiling");
+        assert_eq!((k8.width(), k8.height()), (8192, 8192));
+        assert_eq!(k8.data.len(), 8192 * 8192 * 4);
+        assert_eq!(k8.data.len(), 256 << 20, "256 MiB of RGBA8");
+        assert_eq!(k8.pixel(8191, 8191), Some([1, 2, 3, 255]));
+        drop(k8);
+        // One past on either side fails before allocating.
+        for (w, h) in [(8193, 1), (1, 8193), (8193, 8193)] {
+            assert!(
+                matches!(
+                    ImageBuffer::filled(w, h, [0; 4]),
+                    Err(ImageError::DimensionsTooLarge { width, height }) if (width, height) == (w, h)
+                ),
+                "{w}x{h} must exceed the ceiling"
+            );
+        }
+        // `new` takes caller-allocated bytes and checks only the layout
+        // contract (no ceiling): an 8K buffer passes it too.
+        assert!(ImageBuffer::new(8192, 8192, vec![0u8; 8192 * 8192 * 4]).is_ok());
+    }
+
+    #[test]
     fn filled_covers_every_texel() {
         let buf = ImageBuffer::filled(4, 4, [255, 0, 0, 255]).unwrap();
         assert_eq!(buf.data.len(), 64);

@@ -117,6 +117,13 @@ pub fn write_png(
     Ok(())
 }
 
+/// The decoder's allocation ceiling for [`read_png_rgba8`]: 1 GiB, room
+/// for an 8192² RGBA8 raster (256 MiB) several times over. The `png`
+/// crate's default is 64 MiB — a quarter of one 8K RGBA8 image — so the
+/// limit is set explicitly rather than relying on which of the decoder's
+/// allocations a given `png` release counts against it.
+pub const DECODE_LIMIT_BYTES: usize = 1 << 30;
+
 /// Reads a PNG file into RGBA8 bytes (width×height×4, row-major).
 ///
 /// Accepted inputs: 8-bit RGBA (returned as-is) and 8-bit RGB (opaque
@@ -142,7 +149,12 @@ pub fn write_png(
 /// [`PngError::Io`] from the filesystem.
 pub fn read_png_rgba8(path: &Path) -> Result<(u32, u32, Vec<u8>), PngError> {
     let file = File::open(path)?;
-    let decoder = png::Decoder::new(file);
+    let decoder = png::Decoder::new_with_limits(
+        file,
+        png::Limits {
+            bytes: DECODE_LIMIT_BYTES,
+        },
+    );
     let mut reader = decoder
         .read_info()
         .map_err(|e| PngError::Decode(e.to_string()))?;

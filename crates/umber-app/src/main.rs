@@ -29,6 +29,7 @@ mod paint_state;
 #[cfg(test)]
 mod perf_soak;
 mod plugins;
+mod size_presets;
 mod tile_selection;
 mod uv_view;
 mod viewport;

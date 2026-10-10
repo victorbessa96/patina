@@ -419,14 +419,15 @@ fn write_outputs(
         let is_normal = output.maps.iter().any(|(kind, _)| *kind == MapKind::Normal);
         let needs_flip = is_normal && output.normal_convention != WORKING_NORMAL_CONVENTION;
 
+        // One input list reused across texels: a per-texel Vec was 67M
+        // heap allocations per output at 8K.
+        let mut texel_inputs: Vec<Texel> = Vec::with_capacity(map_slices.len());
         for t in 0..texels {
-            let texel_inputs: Vec<Texel> = map_slices
-                .iter()
-                .map(|bytes| {
-                    let i = t * 4;
-                    Texel::from([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]])
-                })
-                .collect();
+            texel_inputs.clear();
+            texel_inputs.extend(map_slices.iter().map(|bytes| {
+                let i = t * 4;
+                Texel::from([bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]])
+            }));
             let mut out = pack_texel(output, &texel_inputs);
             if needs_flip {
                 let texel = Texel::from(out);

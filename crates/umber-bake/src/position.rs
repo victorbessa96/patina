@@ -412,11 +412,27 @@ pub(crate) fn bake_position_and_normal(
     })
 }
 
+/// The `rows_per_band` a banded readback uses: as many `padded_row`-byte
+/// rows as fit one `max_buffer_size` staging buffer (at least one, at most
+/// `height`). Pure so the 8K arithmetic is testable without a device.
+///
+/// Why bands: an 8192² `Rgba32Float` texture is 1 GiB, four times
+/// `wgpu::Limits::default().max_buffer_size` (256 MiB) — the limit every
+/// umber device requests — so a single whole-texture staging buffer fails
+/// validation at 8K. Bands of `max_buffer_size` read the same bytes back
+/// through one reused staging buffer.
+pub(crate) fn readback_rows_per_band(padded_row: u32, height: u32, max_buffer_size: u64) -> u32 {
+    let rows = (max_buffer_size / u64::from(padded_row.max(1))).max(1);
+    u32::try_from(rows).unwrap_or(u32::MAX).min(height.max(1))
+}
+
 /// Reads a `Rgba32Float` texture back as tightly-packed `f32` RGBA
 /// (`width * height * 4` floats, row-major), de-padding the 256-byte-row
 /// GPU copy alignment — the `f32` analog of `paint::PaintTarget`'s
-/// `read_back_rgba8` (16 bytes/texel instead of 4, otherwise the same
-/// shape).
+/// `read_back_rgba8` (16 bytes/texel instead of 4), copied out in row
+/// bands no larger than the device's `max_buffer_size`
+/// ([`readback_rows_per_band`]) so 8K textures read back on a
+/// default-limits device.
 fn read_back_rgba32f(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -427,67 +443,77 @@ fn read_back_rgba32f(
     let unpadded_row = width * 16;
     let padding = (256 - (unpadded_row % 256)) % 256;
     let padded_row = unpadded_row + padding;
-    let size = padded_row as u64 * height as u64;
+    let band_rows = readback_rows_per_band(padded_row, height, device.limits().max_buffer_size);
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("umber_bake_position_readback"),
-        size,
+        size: padded_row as u64 * band_rows as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("umber_bake_position_readback_encoder"),
-    });
-    encoder.copy_texture_to_buffer(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_row),
-                rows_per_image: Some(height),
+
+    let mut out = Vec::with_capacity(width as usize * height as usize * 4);
+    let mut band_start = 0;
+    while band_start < height {
+        let rows = band_rows.min(height - band_start);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("umber_bake_position_readback_encoder"),
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: band_start,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
             },
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit(Some(encoder.finish()));
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row),
+                    rows_per_image: Some(rows),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height: rows,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(Some(encoder.finish()));
 
-    let slice = buffer.slice(..);
-    let (sender, receiver) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |result| {
-        let _ = sender.send(result);
-    });
-    device
-        .poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        })
-        .map_err(|e| PositionMapError::Readback(format!("device poll: {e}")))?;
-    receiver
-        .recv()
-        .map_err(|_| PositionMapError::Readback("map callback channel closed".into()))?
-        .map_err(|e| PositionMapError::Readback(format!("buffer map: {e}")))?;
+        let slice = buffer.slice(..padded_row as u64 * rows as u64);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|e| PositionMapError::Readback(format!("device poll: {e}")))?;
+        receiver
+            .recv()
+            .map_err(|_| PositionMapError::Readback("map callback channel closed".into()))?
+            .map_err(|e| PositionMapError::Readback(format!("buffer map: {e}")))?;
 
-    let data = slice
-        .get_mapped_range()
-        .map_err(|e| PositionMapError::Readback(format!("mapped range: {e}")))?;
-    let bytes: &[u8] = &data;
-    let mut out = Vec::with_capacity((width * height * 4) as usize);
-    for row in 0..height as usize {
-        let start = row * padded_row as usize;
-        let row_bytes = &bytes[start..start + unpadded_row as usize];
-        out.extend_from_slice(bytemuck::cast_slice::<u8, f32>(row_bytes));
+        let data = slice
+            .get_mapped_range()
+            .map_err(|e| PositionMapError::Readback(format!("mapped range: {e}")))?;
+        let bytes: &[u8] = &data;
+        for row in 0..rows as usize {
+            let start = row * padded_row as usize;
+            let row_bytes = &bytes[start..start + unpadded_row as usize];
+            out.extend_from_slice(bytemuck::cast_slice::<u8, f32>(row_bytes));
+        }
+        drop(data);
+        buffer.unmap();
+        band_start += rows;
     }
-    drop(data);
-    buffer.unmap();
     Ok(out)
 }
 
@@ -675,6 +701,26 @@ mod tests {
         assert!(validate(&unit_mesh(), 32, 32).is_ok());
     }
 
+    #[test]
+    fn eight_k_f32_readback_splits_into_default_limit_bands() {
+        // The 8K audit's one real GPU cap: 8192² Rgba32Float is 1 GiB of
+        // staging (8192 * 16 = 131072-byte rows, already 256-aligned) —
+        // 4x the default 256 MiB max_buffer_size. Bands of 2048 rows fit
+        // exactly; four of them cover the texture.
+        let default_max = wgpu::Limits::default().max_buffer_size;
+        assert_eq!(default_max, 256 << 20);
+        let padded_row = 8192 * 16;
+        assert_eq!(padded_row as u64 * 8192, 1 << 30, "1 GiB whole-texture");
+        let band = readback_rows_per_band(padded_row, 8192, default_max);
+        assert_eq!(band, 2048);
+        assert_eq!(padded_row as u64 * band as u64, default_max);
+        assert_eq!(8192_u32.div_ceil(band), 4);
+        // Small targets stay one band (the pre-8K single copy).
+        assert_eq!(readback_rows_per_band(33 * 16 + 240, 33, default_max), 33);
+        // A row wider than the limit still progresses one row per band.
+        assert_eq!(readback_rows_per_band(1024, 10, 100), 1);
+    }
+
     #[cfg(feature = "gpu")]
     mod gpu {
         use super::*;
@@ -849,6 +895,72 @@ mod tests {
                 [0.0, 0.0, 0.0, 0.0],
                 "texel outside the UV footprint must read fully zero"
             );
+        }
+
+        /// A default-limits device on a HARDWARE adapter only. The 8K
+        /// tests dispatch 8192² texels into GiB-scale textures: seconds on
+        /// a real GPU, minutes and gigabytes of host RAM on lavapipe/WARP
+        /// (CI's software adapters), so `DeviceType::Cpu` skips.
+        fn try_request_hw_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+            let instance = wgpu::Instance::default();
+            let Ok(adapter) = pollster::block_on(
+                instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+            ) else {
+                eprintln!("skipping: no wgpu adapter available");
+                return None;
+            };
+            let info = adapter.get_info();
+            if info.device_type == wgpu::DeviceType::Cpu {
+                eprintln!("skipping 8K test: software adapter ({})", info.name);
+                return None;
+            }
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+        }
+
+        #[test]
+        fn eight_k_position_map_reads_back_through_bands() {
+            // Before the banded readback this failed validation: one 1 GiB
+            // staging buffer vs the default 256 MiB max_buffer_size.
+            let Some((device, queue)) = try_request_hw_device() else {
+                return;
+            };
+            const K8: u32 = 8192;
+            let map = bake_position_map(
+                &device,
+                &queue,
+                &half_uv_quad(),
+                &PositionMapParams {
+                    width: K8,
+                    height: K8,
+                },
+            )
+            .expect("8K bake should succeed");
+            assert_eq!(map.len(), K8 as usize * K8 as usize * 4);
+
+            let want = |x: u32, y: u32| {
+                let (u, v) = texel_uv(K8, K8, x, y);
+                [(u - 0.5) * 4.0 - 1.0, (v - 0.5) * 4.0 - 1.0]
+            };
+            // Rows 2047/2048 straddle the first band seam (2048 rows per
+            // band at the default limit): both covered, both at their own
+            // analytic positions — the bands stitched in order.
+            for y in [100, 2047, 2048, 4000] {
+                let t = texel(&map, K8, 6144, y);
+                assert_eq!(t[3], 1.0, "texel (6144, {y}) must be covered");
+                let w = want(6144, y);
+                assert!(
+                    (t[0] - w[0]).abs() < 1e-3 && (t[1] - w[1]).abs() < 1e-3,
+                    "texel (6144, {y}) = {t:?}, expected {w:?}"
+                );
+            }
+            // Uncovered (u, v < 0.5), including a texel in the LAST band.
+            for (x, y) in [(2048, 6144), (100, 8191)] {
+                assert_eq!(
+                    texel(&map, K8, x, y),
+                    [0.0, 0.0, 0.0, 0.0],
+                    "texel ({x}, {y}) is outside the UV footprint"
+                );
+            }
         }
 
         #[test]

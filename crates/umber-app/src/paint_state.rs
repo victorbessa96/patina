@@ -286,10 +286,18 @@ impl PaintState {
         self.active_tile
     }
 
+    /// The edge lengths every tile's paint target has (as of the last
+    /// [`Self::resize_target`]; applied on the next drain). The Export
+    /// dialog's painted-source badge gates on this matching the export
+    /// size.
+    pub fn target_size(&self) -> (u32, u32) {
+        self.target_size
+    }
+
     /// Switches every tile's paint target to `width`x`height` (contents
     /// dropped); tiles created later use the same size. The stroke-soak
-    /// test uses this to run against a 4K target; the app itself stays on
-    /// [`TARGET_SIZE`].
+    /// test uses this to run against a 4K target, the 8K test against
+    /// 8192²; the app itself stays on [`TARGET_SIZE`].
     pub fn resize_target(&mut self, width: u32, height: u32) {
         self.texels_per_uv = width as f32;
         self.target_size = (width, height);
