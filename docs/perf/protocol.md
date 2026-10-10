@@ -10,7 +10,7 @@ painting work so every new perf-relevant change ships with a number.
 
 | Budget | Target | How measured |
 |---|---|---|
-| Input-to-photon | < 20 ms @ 60Hz | `frame_timestamps` tracing span: stylus/pointer event receive → frame present callback. P50/P95/P99 per session, reported in the perf HUD + tracy. |
+| Input-to-photon | < 20 ms @ 60Hz | `frame_timestamps` tracing span: stylus/pointer event receive → frame present callback. P50/P95/P99 per session, reported in the perf HUD + tracy. v1 headless lower bound: see *The input-to-photon session* below. |
 | Stroke throughput | 4K set, no dropped dabs @ 200Hz input | Dab-count instrumentation: dabs staged vs dabs rendered per frame. A dropped dab is a staged dab absent from the frame's upload. Assert zero in the stroke soak test. |
 | Viewport | 60 fps sustained, P95 frame-time < 16.7ms, 1M-tri + 4K set | The reference-scene benchmark: a 1M-tri procedural mesh (subdivided cube grid, checked in) rendered headless via lavapipe in CI + live on dev GPUs. |
 | Undo RAM | 100 steps @ 4K within ~2GB | TilePool accounting: `total_bytes()` sampled after each undo push in the soak test; assert monotonic-under-cap. |
@@ -30,6 +30,43 @@ painting work so every new perf-relevant change ships with a number.
    reference-scene render. Numbers land in the CI summary + a
    `perf/baseline.json` checked in; a regression >10% on any budget
    fails the job.
+
+## The input-to-photon session (input→photon row)
+
+`crates/umber-app/src/input_photon.rs`, behind umber-app's `perf` feature
+(design: `docs/specs/input-photon-design.md`):
+
+```
+UMBER_I2P_EVENTS=5000 UMBER_I2P_JSON=i2p.json \
+  cargo test -p umber-app --features perf --release input_photon -- --nocapture
+```
+
+- Session: N synthetic pointer events (default 5000) on the stroke
+  soak's 200Hz logical clock, one diagonal begin/extend/end stroke across
+  a 4096² target, each pushed through `PaintState`'s real event path and
+  drained with `process_pending` (the drain main.rs's `frame` span wraps).
+  No wall-clock sleeping.
+- Per-event delta: logical receive mark → the first drain at or after it
+  whose dispatch counter advanced (the frame that composited its paint),
+  i.e. `(j − i) × 5ms` + that drain's measured wall span (push → GPU
+  completion via `device.poll(Wait)`). Events after the last dispatching
+  drain are reported as `unpresented`, never counted.
+- **Present proxy: the PaintThread's GPU completion**, not the winit
+  present callback (unreachable headless). egui layout, the compositor
+  pass and the swapchain/vsync wait are NOT included, so the number is a
+  **lower bound** on true input-to-photon. The live tracy session is the
+  follow-up.
+- The test asserts only that the harness is correct: dabs staged, at
+  least one dispatching drain, events presented, p50 ≤ p95 ≤ p99. It
+  prints the P95 < 20ms verdict without failing on it. The nightly
+  job's >10% regression comparison is the gate.
+- Output: one `input-to-photon baseline:` line (events presented,
+  synthesized, unpresented, p50/p95/p99, verdict), plus one
+  `input-to-photon json:` line (`events, p50_ms, p95_ms, p99_ms,
+  budget_ms`, where `events` is the presented count the percentiles
+  cover). Set `UMBER_I2P_JSON` to also write the JSON to a file. The
+  harness doesn't print the adapter, so note the hardware class by hand
+  with every row (lavapipe and the dev GPU are separate baselines).
 
 ## The reference-scene bench (viewport row)
 

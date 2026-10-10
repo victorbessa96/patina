@@ -18,9 +18,10 @@ use umber_core::layers::{LayerCommand, LayerKind};
 
 /// Requests a paint-capable device (graceful skip where no wgpu adapter
 /// exists — the same pattern as `paint_state::tests::try_request_device`).
-/// Returns `None` when the test must be skipped.
+/// Returns `None` when the test must be skipped. Shared with the
+/// input→photon harness (`crate::input_photon`).
 #[cfg(feature = "perf")]
-fn try_request_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+pub(crate) fn try_request_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     let instance = wgpu::Instance::default();
     let Ok(adapter) =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))

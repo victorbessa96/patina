@@ -25,6 +25,8 @@ mod export_dialog;
 mod graph_canvas;
 mod graph_panel;
 mod i18n;
+#[cfg(test)]
+mod input_photon;
 mod paint_state;
 #[cfg(test)]
 mod perf_soak;
