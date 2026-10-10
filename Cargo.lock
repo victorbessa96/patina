@@ -3799,6 +3799,7 @@ dependencies = [
  "env_logger",
  "glam",
  "log",
+ "pollster 1.0.1",
  "rfd",
  "stylus",
  "thiserror 2.0.21",
@@ -3809,6 +3810,7 @@ dependencies = [
  "umber-export",
  "umber-gpu",
  "umber-mesh",
+ "wgpu",
 ]
 
 [[package]]
