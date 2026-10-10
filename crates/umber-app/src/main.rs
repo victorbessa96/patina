@@ -19,6 +19,7 @@ mod brush_panel;
 mod document;
 mod env;
 mod export_dialog;
+mod graph_panel;
 mod paint_state;
 #[cfg(test)]
 mod perf_soak;
@@ -31,6 +32,7 @@ use egui::containers::menu::{MenuBar, MenuButton};
 use egui::{CentralPanel, Id, Ui, WidgetText};
 use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
 use export_dialog::{ExportContext, ExportDialog};
+use graph_panel::GraphPanel;
 use std::path::{Path, PathBuf};
 use umber_gpu::GpuContext;
 use uv_view::UvView;
@@ -48,6 +50,7 @@ pub enum Panel {
     TextureSets,
     Bakes,
     Export,
+    Graph,
 }
 
 /// Implements the egui_dock tab interface. Built fresh each frame, borrowing
@@ -59,6 +62,7 @@ struct PanelViewer<'a> {
     uv_view: &'a mut UvView,
     bakes: &'a mut BakesPanel,
     export: &'a mut ExportDialog,
+    graph: &'a mut GraphPanel,
     mesh: Option<&'a umber_mesh::MeshData>,
     mesh_path: Option<&'a std::path::Path>,
     gpu: &'a GpuContext,
@@ -85,6 +89,7 @@ impl TabViewer for PanelViewer<'_> {
             Panel::TextureSets => "Texture Sets".into(),
             Panel::Bakes => "Bakes".into(),
             Panel::Export => "Export".into(),
+            Panel::Graph => "Graph".into(),
         }
     }
 
@@ -123,8 +128,12 @@ impl TabViewer for PanelViewer<'_> {
                     // the center views keep staging strokes into it.
                     paint: self.paint.as_deref(),
                     doc: Some(&*self.doc),
+                    graph: Some(&*self.graph),
                 };
                 self.export.show(ui, ctx);
+            }
+            Panel::Graph => {
+                self.graph.show(ui);
             }
         }
     }
@@ -146,6 +155,8 @@ pub struct AppState {
     pub bakes: BakesPanel,
     /// The export dialog: preset choice, output dir + last-export status.
     pub export: ExportDialog,
+    /// The node-graph panel: procedural graph + cached eval (wave-5).
+    pub graph: GraphPanel,
 }
 
 /// The eframe app.
@@ -207,6 +218,7 @@ impl UmberApp {
                     Panel::TextureSets,
                     Panel::Bakes,
                     Panel::Export,
+                    Panel::Graph,
                 ],
             );
             let [_top, _bottom] =
@@ -327,7 +339,10 @@ impl UmberApp {
 
     /// Saves the document as a `.umber` project directory via a save
     /// dialog: one texture set (named from the loaded mesh), the
-    /// layer stack + project settings through `umber_core::project`.
+    /// layer stack + project settings through `umber_core::project`,
+    /// plus the graph panel's graph as a `.mtlx` string (the additive
+    /// wave-5 carry — omitted when the panel's graph is empty, so
+    /// graph-less projects save exactly the old shape).
     fn save_project(&mut self) {
         let set_name = self.project_texture_set_name();
         let Some(dir) = rfd::FileDialog::new()
@@ -335,6 +350,11 @@ impl UmberApp {
             .save_file()
         else {
             return;
+        };
+        let graphs_mtlx = if self.state.graph.graph().nodes.is_empty() {
+            Vec::new()
+        } else {
+            vec![self.state.graph.to_mtlx()]
         };
         let model = umber_core::project::ProjectModel::new(
             vec![umber_core::TextureSet::new_default(&set_name)],
@@ -345,7 +365,8 @@ impl UmberApp {
             umber_core::project::ProjectSettings {
                 active_texture_set: Some(set_name.clone()),
             },
-        );
+        )
+        .with_graphs_mtlx(graphs_mtlx);
         match umber_core::project::save_to_dir(&model, &dir) {
             Ok(()) => log::info!("project saved: {}", dir.display()),
             Err(e) => log::error!("project save failed: {e}"),
@@ -354,7 +375,9 @@ impl UmberApp {
 
     /// Loads a `.umber` project directory: restores the active texture
     /// set's layer stack into the document (undo history starts fresh;
-    /// the journal is session-scoped by design).
+    /// the journal is session-scoped by design) and the first carried
+    /// `.mtlx` graph into the graph panel (a parse failure keeps the
+    /// current panel graph and logs — the panel's status line says so).
     fn open_project(&mut self) {
         let Some(dir) = rfd::FileDialog::new().pick_folder() else {
             return;
@@ -374,6 +397,16 @@ impl UmberApp {
                     return;
                 };
                 self.state.doc.load_stack(entry.stack.clone());
+                if let Some(doc) = model.graphs_mtlx.first() {
+                    if self.state.graph.load_mtlx(doc) {
+                        log::info!("project graph restored into the Graph panel");
+                    } else {
+                        log::error!(
+                            "project graph failed to parse; panel graph unchanged: {}",
+                            self.state.graph.status()
+                        );
+                    }
+                }
                 log::info!(
                     "project loaded: {} ({} layers in {name:?})",
                     dir.display(),
@@ -466,6 +499,7 @@ impl eframe::App for UmberApp {
                 uv_view: &mut self.state.uv_view,
                 bakes: &mut self.state.bakes,
                 export: &mut self.state.export,
+                graph: &mut self.state.graph,
                 mesh: self.state.mesh.as_ref(),
                 mesh_path: self.state.mesh_path.as_deref(),
                 gpu: &self.gpu,

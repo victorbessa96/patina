@@ -175,6 +175,16 @@ impl NodeRegistry {
     pub fn get(&self, node_def: &str) -> Option<Arc<dyn NodeImpl>> {
         self.impls.get(node_def).cloned()
     }
+
+    /// The registered `node_def` names, sorted (the app bridge's
+    /// Add-Node combo reads this — additive slice-5 API; the registry
+    /// itself stays the dispatch table, this is just its listing).
+    #[must_use]
+    pub fn node_defs(&self) -> Vec<&str> {
+        let mut defs: Vec<&str> = self.impls.keys().map(String::as_str).collect();
+        defs.sort_unstable();
+        defs
+    }
 }
 
 fn param<'a>(params: &'a [(String, ParamValue)], name: &str) -> Option<&'a ParamValue> {

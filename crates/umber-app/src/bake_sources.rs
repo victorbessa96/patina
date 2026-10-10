@@ -28,9 +28,30 @@ use crate::paint_state::PaintState;
 pub enum BaseColorSource {
     /// Live paint-target readback (paint-what-you-export).
     Painted,
-    /// Flat placeholder: no paint session, a failed readback, or a
-    /// size mismatch — the honest fallback, never silent.
+    /// Procedural graph output (the wave-5 slice-5 bridge): carries the
+    /// output node's id so the badge names what it consumed.
+    Graph(u64),
+    /// Flat placeholder: no paint session, no graph output, a failed
+    /// readback, or a size mismatch — the honest fallback, never silent.
     FlatPlaceholder,
+}
+
+/// Pure three-way selection for the Base Color source (no GPU/IO): the
+/// painted readback wins when correctly sized, else the graph output
+/// (naming its node), else the flat placeholder. Extracted so the
+/// dialog's badge and the driver can never disagree about priority.
+pub fn pick_base_color_source(painted_len_ok: bool, graph: Option<(u64, bool)>) -> BaseColorSource {
+    if painted_len_ok {
+        BaseColorSource::Painted
+    } else if let Some((node, len_ok)) = graph {
+        if len_ok {
+            BaseColorSource::Graph(node)
+        } else {
+            BaseColorSource::FlatPlaceholder
+        }
+    } else {
+        BaseColorSource::FlatPlaceholder
+    }
 }
 
 /// Reads the live paint target back as tightly-packed RGBA8 bytes
@@ -76,25 +97,57 @@ pub fn flat_base_color_rgba8(size: u32) -> Vec<u8> {
 ///
 /// V1 scope: only Base Color comes from paint; normal/AO/etc. keep
 /// their baked sources (paint-per-channel is a later slice).
+///
+/// Retained as the two-source convenience (the painted bridge's
+/// original entry point, still covered by its tests); the dialog drives
+/// the three-way [`apply_base_color_with_graph`].
+#[allow(dead_code)]
 pub fn apply_base_color(
     set: &mut umber_export::MapSet,
     size: u32,
     painted: Option<Vec<u8>>,
 ) -> BaseColorSource {
+    apply_base_color_with_graph(set, size, painted, None)
+}
+
+/// Three-way Base Color attach (the graph bridge): painted first, then
+/// the graph output `(output node id, bytes)` when correctly sized,
+/// else the flat placeholder. Priority preserves the painted bridge
+/// exactly — a live session still wins over a graph.
+pub fn apply_base_color_with_graph(
+    set: &mut umber_export::MapSet,
+    size: u32,
+    painted: Option<Vec<u8>>,
+    graph: Option<(u64, Vec<u8>)>,
+) -> BaseColorSource {
     let expected = (size as usize) * (size as usize) * 4;
-    match painted {
-        Some(bytes) if bytes.len() == expected => {
-            set.set(umber_export::MapKind::BaseColor, bytes);
-            BaseColorSource::Painted
+    let painted_len_ok = painted.as_ref().is_some_and(|b| b.len() == expected);
+    let graph_len_ok = graph.as_ref().is_some_and(|(_, b)| b.len() == expected);
+    let source = pick_base_color_source(
+        painted_len_ok,
+        graph.as_ref().map(|(node, _)| (*node, graph_len_ok)),
+    );
+    match source {
+        BaseColorSource::Painted => {
+            set.set(
+                umber_export::MapKind::BaseColor,
+                painted.expect("painted length checked"),
+            );
         }
-        _ => {
+        BaseColorSource::Graph(_) => {
+            set.set(
+                umber_export::MapKind::BaseColor,
+                graph.map(|(_, b)| b).expect("graph length checked"),
+            );
+        }
+        BaseColorSource::FlatPlaceholder => {
             set.set(
                 umber_export::MapKind::BaseColor,
                 flat_base_color_rgba8(size),
             );
-            BaseColorSource::FlatPlaceholder
         }
     }
+    source
 }
 
 /// Bakes ambient occlusion over `mesh` at `size²` with `rays` hemisphere
@@ -280,6 +333,57 @@ mod tests {
         let mut set = map_set_from(ao, size);
         let painted = vec![7u8; (size * size * 4) as usize];
         let source = apply_base_color(&mut set, size, Some(painted));
+        assert_eq!(source, BaseColorSource::Painted);
+    }
+
+    #[test]
+    fn pick_base_color_source_prefers_painted_then_graph_then_flat() {
+        // Pure-logic priority probe (headless): painted wins, else the
+        // graph (naming its node), else flat. A priority regression
+        // FAILS here (e.g. graph stealing a live session).
+        assert_eq!(
+            pick_base_color_source(true, Some((7, true))),
+            BaseColorSource::Painted
+        );
+        assert_eq!(
+            pick_base_color_source(false, Some((7, true))),
+            BaseColorSource::Graph(7)
+        );
+        assert_eq!(
+            pick_base_color_source(false, Some((7, false))),
+            BaseColorSource::FlatPlaceholder
+        );
+        assert_eq!(
+            pick_base_color_source(false, None),
+            BaseColorSource::FlatPlaceholder
+        );
+        assert_eq!(pick_base_color_source(true, None), BaseColorSource::Painted);
+    }
+
+    #[test]
+    fn apply_base_color_with_graph_feeds_the_driver() {
+        // Graph bytes at exactly size²×4 land on Base Color with the
+        // Graph(node) source; wrong-sized graph bytes fall back to flat.
+        let size = 2;
+        let ao = vec![9u8; (size * size * 4) as usize];
+        let mut set = map_set_from(ao, size);
+        let graph_bytes = vec![3u8; (size * size * 4) as usize];
+        let source = apply_base_color_with_graph(&mut set, size, None, Some((11, graph_bytes)));
+        assert_eq!(source, BaseColorSource::Graph(11));
+
+        let mut set = map_set_from(vec![9u8; (size * size * 4) as usize], size);
+        let source = apply_base_color_with_graph(&mut set, size, None, Some((11, vec![1u8; 7])));
+        assert_eq!(source, BaseColorSource::FlatPlaceholder);
+
+        // Painted still wins over a valid graph (the painted bridge is
+        // preserved, not replaced).
+        let mut set = map_set_from(vec![9u8; (size * size * 4) as usize], size);
+        let source = apply_base_color_with_graph(
+            &mut set,
+            size,
+            Some(vec![7u8; (size * size * 4) as usize]),
+            Some((11, vec![3u8; (size * size * 4) as usize])),
+        );
         assert_eq!(source, BaseColorSource::Painted);
     }
 

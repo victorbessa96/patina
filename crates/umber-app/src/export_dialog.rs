@@ -35,6 +35,7 @@ use anyhow::Context as _;
 use crate::bake_sources::{self, BaseColorSource};
 use crate::bakes_panel;
 use crate::document::Document;
+use crate::graph_panel::GraphPanel;
 use crate::paint_state::PaintState;
 
 /// The four built-in engine presets the dialog can drive
@@ -148,6 +149,29 @@ pub struct ExportContext<'a> {
     /// The open document (for the `$layerName` token; `None` behaves
     /// like an empty document).
     pub doc: Option<&'a Document>,
+    /// The graph panel (for the procedural Base Color bridge; `None`
+    /// or no evaluated output behaves like no graph — see the badge).
+    pub graph: Option<&'a GraphPanel>,
+}
+
+/// What the badge shows before an export: the shared pick-fn priority
+/// over liveness probes (paint session present? graph output at the
+/// export size?), so the badge and the driver can never disagree. Pure
+/// logic — directly testable without a GPU.
+pub fn prospective_base_source(
+    painted_live: bool,
+    graph: Option<&GraphPanel>,
+    size: u32,
+) -> BaseColorSource {
+    let probe = graph.and_then(|g| {
+        g.output_node().map(|node| {
+            let len_ok = g
+                .export_output_dims()
+                .is_some_and(|dims| dims == (size, size));
+            (node, len_ok)
+        })
+    });
+    bake_sources::pick_base_color_source(painted_live, probe)
 }
 
 /// V1 `$layerName` source: the topmost layer's display name (stack order
@@ -270,13 +294,29 @@ impl ExportDialog {
             }
         });
 
-        // Painted-source badge: the user must SEE which source feeds the
-        // Base Color output — honesty in UI (v1: Base Color only;
-        // normal/AO stay baked; paint-per-channel is a later slice).
-        if ctx.paint.is_some() {
-            ui.label("Base Color source: painted — what you painted is what exports.");
-        } else {
-            ui.label("Base Color source: flat placeholder — no paint session live.");
+        // Source badge: the user must SEE which source feeds the Base
+        // Color output — honesty in UI (three-way: painted, graph,
+        // flat; normal/AO stay baked; paint-per-channel is a later
+        // slice). The badge mirrors the driver's priority exactly via
+        // the shared pick fn (painted live session wins over graph).
+        match prospective_base_source(
+            ctx.paint.is_some(),
+            ctx.graph,
+            bakes_panel::DEFAULT_RESOLUTION,
+        ) {
+            BaseColorSource::Painted => {
+                ui.label("Base Color source: painted — what you painted is what exports.");
+            }
+            BaseColorSource::Graph(node) => {
+                ui.label(format!(
+                    "Base Color source: graph node {node} — the panel's evaluated output."
+                ));
+            }
+            BaseColorSource::FlatPlaceholder => {
+                ui.label(
+                    "Base Color source: flat placeholder — no paint session or graph output live.",
+                );
+            }
         }
 
         let enabled = self.can_export(mesh_loaded, gpu_ready);
@@ -284,16 +324,7 @@ impl ExportDialog {
             .add_enabled(enabled, egui::Button::new("Export"))
             .clicked()
         {
-            if let (Some(gpu), Some(mesh)) = (ctx.gpu, ctx.mesh) {
-                self.export_now(
-                    &gpu.device,
-                    &gpu.queue,
-                    mesh,
-                    ctx.mesh_path,
-                    ctx.paint,
-                    ctx.doc,
-                );
-            }
+            self.export_now(&ctx);
         }
 
         ui.separator();
@@ -303,16 +334,8 @@ impl ExportDialog {
     /// Runs the export synchronously and records the outcome in
     /// `status`/`last_written`/`last_skipped` (never propagates: the
     /// panel reports failures as a status line, not a crash).
-    fn export_now(
-        &mut self,
-        device: &umber_gpu::WgpuDevice,
-        queue: &umber_gpu::WgpuQueue,
-        mesh: &umber_mesh::MeshData,
-        mesh_path: Option<&Path>,
-        paint: Option<&PaintState>,
-        doc: Option<&Document>,
-    ) {
-        match self.run(device, queue, mesh, mesh_path, paint, doc) {
+    fn export_now(&mut self, ctx: &ExportContext<'_>) {
+        match self.run(ctx) {
             Ok(outcome) => {
                 let names: Vec<String> = outcome
                     .written
@@ -324,8 +347,11 @@ impl ExportDialog {
                     })
                     .collect();
                 let base_note = match outcome.base_source {
-                    BaseColorSource::Painted => "Base Color: painted",
-                    BaseColorSource::FlatPlaceholder => "Base Color: flat placeholder",
+                    BaseColorSource::Painted => "Base Color: painted".to_string(),
+                    BaseColorSource::Graph(node) => {
+                        format!("Base Color: graph node {node}")
+                    }
+                    BaseColorSource::FlatPlaceholder => "Base Color: flat placeholder".to_string(),
                 };
                 let mut status = format!(
                     "Exported {} outputs ({base_note}; bake {} ms, write {} ms): {}",
@@ -358,19 +384,19 @@ impl ExportDialog {
     }
 
     /// The synchronous export driver: bakes the source `MapSet` (AO +
-    /// flat normal + painted-or-flat Base Color), filters the selected
+    /// flat normal + painted-or-graph-or-flat Base Color), filters the selected
     /// preset to its satisfiable outputs, and runs it with the full
     /// driver-side token sources. `Result`-typed so failures carry
     /// context instead of unwrapping.
-    fn run(
-        &self,
-        device: &umber_gpu::WgpuDevice,
-        queue: &umber_gpu::WgpuQueue,
-        mesh: &umber_mesh::MeshData,
-        mesh_path: Option<&Path>,
-        paint: Option<&PaintState>,
-        doc: Option<&Document>,
-    ) -> anyhow::Result<ExportOutcome> {
+    fn run(&self, ctx: &ExportContext<'_>) -> anyhow::Result<ExportOutcome> {
+        let (Some(gpu), Some(mesh)) = (ctx.gpu, ctx.mesh) else {
+            anyhow::bail!("export needs a loaded mesh and a GPU device");
+        };
+        let (device, queue) = (&gpu.device, &gpu.queue);
+        let mesh_path = ctx.mesh_path;
+        let paint = ctx.paint;
+        let doc = ctx.doc;
+        let graph = ctx.graph;
         let fallback = PathBuf::from(bakes_panel::FALLBACK_TEXTURE_SET);
         let texture_set = umber_mesh::texture_set_name(mesh_path.unwrap_or(&fallback), mesh);
         let size = bakes_panel::DEFAULT_RESOLUTION;
@@ -379,11 +405,14 @@ impl ExportDialog {
         let mut map_set =
             bake_sources::bake_export_map_set(device, queue, mesh, size, bakes_panel::DEFAULT_RAYS)
                 .context("building export map set")?;
-        // Painted bridge: Base Color reads the live target when a
-        // session exists, else the flat placeholder (never silent — the
+        // Painted bridge, then the graph bridge: Base Color reads the
+        // live target when a session exists, else the panel's evaluated
+        // graph output, else the flat placeholder (never silent — the
         // source rides the outcome into the status line).
         let painted = bake_sources::painted_base_color(paint, device, queue);
-        let base_source = bake_sources::apply_base_color(&mut map_set, size, painted);
+        let graphed = graph.and_then(|g| g.output_node().zip(g.export_base_color()));
+        let base_source =
+            bake_sources::apply_base_color_with_graph(&mut map_set, size, painted, graphed);
         let bake_ms = bake_started.elapsed().as_millis();
 
         let available: Vec<umber_export::MapKind> = map_set.maps_iter().collect();
@@ -614,6 +643,41 @@ mod tests {
                 "{choice:?}: normal output must survive too"
             );
         }
+    }
+
+    #[test]
+    fn prospective_source_picks_graph_when_set() {
+        use crate::graph_panel::GraphPanel;
+        // No graph at all: flat.
+        assert_eq!(
+            prospective_base_source(false, None, 512),
+            BaseColorSource::FlatPlaceholder
+        );
+        // Evaluated uniform graph, no paint: Graph (naming the node).
+        let mut panel = GraphPanel::new();
+        let id = panel.add_node("uniform");
+        panel.set_output_node(id);
+        panel.evaluate();
+        assert_eq!(
+            prospective_base_source(false, Some(&panel), 512),
+            BaseColorSource::Graph(id)
+        );
+        // A live paint session still wins over a ready graph.
+        assert_eq!(
+            prospective_base_source(true, Some(&panel), 512),
+            BaseColorSource::Painted
+        );
+        // Graph evaluated at another size: flat (honest size gate).
+        assert_eq!(
+            prospective_base_source(false, Some(&panel), 256),
+            BaseColorSource::FlatPlaceholder
+        );
+        // Unevaluated graph: flat.
+        let fresh = GraphPanel::new();
+        assert_eq!(
+            prospective_base_source(false, Some(&fresh), 512),
+            BaseColorSource::FlatPlaceholder
+        );
     }
 
     #[test]

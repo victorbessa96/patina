@@ -17,6 +17,7 @@ umber-gpu = { workspace = true }
 umber-brush = { workspace = true }
 umber-bake = { workspace = true }
 umber-export = { workspace = true }
+umber-graph = { workspace = true }
 umber-color = { workspace = true }
 stylus = { workspace = true }
 eframe = { workspace = true }

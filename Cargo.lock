@@ -3939,6 +3939,7 @@ dependencies = [
  "umber-core",
  "umber-export",
  "umber-gpu",
+ "umber-graph",
  "umber-mesh",
  "wgpu",
 ]

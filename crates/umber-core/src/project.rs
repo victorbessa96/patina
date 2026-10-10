@@ -124,10 +124,17 @@ pub struct ProjectModel {
     pub layers: Vec<TextureSetLayers>,
     /// Project-wide settings.
     pub settings: ProjectSettings,
+    /// Procedural node graphs, one `.mtlx` document string each
+    /// (wave-5 slice 5: the graph panel's carry — `umber-graph`'s
+    /// `to_mtlx`/`from_mtlx` strings, kept opaque here so `umber-core`
+    /// stays graph-agnostic). Empty for pre-graph projects; old files
+    /// load unchanged via the `serde(default)` on the file schema.
+    pub graphs_mtlx: Vec<String>,
 }
 
 impl ProjectModel {
-    /// Builds a project at [`CURRENT_PROJECT_VERSION`].
+    /// Builds a project at [`CURRENT_PROJECT_VERSION`], with no graphs
+    /// (use [`Self::with_graphs_mtlx`] to carry node graphs).
     pub fn new(
         texture_sets: Vec<TextureSet>,
         layers: Vec<TextureSetLayers>,
@@ -138,7 +145,16 @@ impl ProjectModel {
             texture_sets,
             layers,
             settings,
+            graphs_mtlx: Vec::new(),
         }
+    }
+
+    /// Attaches node-graph `.mtlx` strings (builder — the struct stays
+    /// constructible through [`Self::new`] unchanged).
+    #[must_use]
+    pub fn with_graphs_mtlx(mut self, graphs_mtlx: Vec<String>) -> Self {
+        self.graphs_mtlx = graphs_mtlx;
+        self
     }
 }
 
@@ -151,6 +167,10 @@ struct ProjectFile {
     texture_sets: Vec<TextureSet>,
     layer_sets: Vec<LayerSetOrder>,
     settings: ProjectSettings,
+    /// Additive wave-5 carry (see [`ProjectModel::graphs_mtlx`]):
+    /// `default` keeps pre-graph files loading unchanged.
+    #[serde(default)]
+    graphs_mtlx: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -331,6 +351,7 @@ pub fn save_to_dir(model: &ProjectModel, dir: &Path) -> Result<(), ProjectError>
         texture_sets: model.texture_sets.clone(),
         layer_sets,
         settings: model.settings.clone(),
+        graphs_mtlx: model.graphs_mtlx.clone(),
     };
     fs::write(dir.join("project.json"), to_pretty_json_bytes(&file)?)?;
     Ok(())
@@ -398,6 +419,7 @@ pub fn load_from_dir(dir: &Path) -> Result<ProjectModel, ProjectError> {
         texture_sets: file.texture_sets,
         layers,
         settings: file.settings,
+        graphs_mtlx: file.graphs_mtlx,
     })
 }
 
@@ -487,6 +509,7 @@ mod tests {
                 })
                 .collect(),
             settings: model.settings.clone(),
+            graphs_mtlx: model.graphs_mtlx.clone(),
         };
 
         let bytes_1 = to_pretty_json_bytes(&file).unwrap();
