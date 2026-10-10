@@ -103,7 +103,8 @@ pub fn cube_grid(subdivisions: u32) -> umber_mesh::MeshData {
             for i in 0..row {
                 let s = i as f32 / n as f32;
                 let (a, b) = (2.0 * s - 1.0, 2.0 * t - 1.0);
-                mesh.positions.push(std::array::from_fn(|k| normal[k] + a * u[k] + b * v[k]));
+                mesh.positions
+                    .push(std::array::from_fn(|k| normal[k] + a * u[k] + b * v[k]));
                 mesh.normals.push(*normal);
                 mesh.uvs.push([s, t]);
             }
@@ -168,7 +169,8 @@ impl TextureSet {
     /// (submitted and waited on — outside any timed region).
     pub fn new(gpu: &GpuContext) -> Self {
         let size = TEXTURE_SET_SIZE;
-        let maps: [PaintTarget; 4] = std::array::from_fn(|_| PaintTarget::new(&gpu.device, size, size));
+        let maps: [PaintTarget; 4] =
+            std::array::from_fn(|_| PaintTarget::new(&gpu.device, size, size));
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -630,7 +632,10 @@ mod tests {
         assert_eq!(percentile_sorted(&sorted, 0.50), Duration::from_millis(50));
         assert_eq!(percentile_sorted(&sorted, 0.95), Duration::from_millis(95));
         assert_eq!(percentile_sorted(&sorted, 0.99), Duration::from_millis(99));
-        assert_eq!(percentile_sorted(&sorted[..1], 0.99), Duration::from_millis(1));
+        assert_eq!(
+            percentile_sorted(&sorted[..1], 0.99),
+            Duration::from_millis(1)
+        );
     }
 
     #[test]
