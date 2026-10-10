@@ -117,7 +117,7 @@ impl Library {
     /// [`Self::load_from_dirs`] itself.
     pub fn load_default_dirs() -> Library {
         let mut dirs = Vec::new();
-        if let Some(user) = user_brushes_dir() {
+        if let Some(user) = user_preset_dir() {
             dirs.push(user);
         }
         if let Some(install) = install_brushes_dir() {
@@ -127,11 +127,31 @@ impl Library {
     }
 }
 
+/// Pure path computation for the per-user brushes directory (the
+/// Linux/XDG side, factored out so the panel's Save-As path and unit
+/// tests share it without touching env vars): `$XDG/umber/brushes`
+/// when `xdg` is set and non-empty, else
+/// `$HOME/.local/share/umber/brushes`.
+pub fn user_preset_dir_from(home: &str, xdg: Option<&str>) -> PathBuf {
+    match xdg {
+        Some(dir) if !dir.is_empty() => Path::new(dir).join("umber").join("brushes"),
+        _ => Path::new(home)
+            .join(".local")
+            .join("share")
+            .join("umber")
+            .join("brushes"),
+    }
+}
+
 /// The per-user brushes directory: `$XDG_DATA_HOME/umber/brushes`, or
 /// `$HOME/.local/share/umber/brushes` when `XDG_DATA_HOME` is unset or
 /// empty (Linux); `%APPDATA%\umber\brushes` on Windows. `None` when no
 /// usable home is discoverable (missing/empty env vars).
-fn user_brushes_dir() -> Option<PathBuf> {
+///
+/// The env-reading wrapper over [`user_preset_dir_from`]; thin by design
+/// (env vars are process-global, so only the pure computation is unit
+/// tested). The properties panel's Save-As path writes here.
+pub fn user_preset_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         let appdata = std::env::var_os("APPDATA")?;
@@ -142,22 +162,11 @@ fn user_brushes_dir() -> Option<PathBuf> {
     }
     #[cfg(not(windows))]
     {
-        if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-            if !xdg.is_empty() {
-                return Some(Path::new(&xdg).join("umber").join("brushes"));
-            }
-        }
-        let home = std::env::var_os("HOME")?;
-        if home.is_empty() {
-            return None;
-        }
-        Some(
-            Path::new(&home)
-                .join(".local")
-                .join("share")
-                .join("umber")
-                .join("brushes"),
-        )
+        let home = std::env::var("HOME").ok().filter(|s| !s.is_empty())?;
+        let xdg = std::env::var("XDG_DATA_HOME")
+            .ok()
+            .filter(|s| !s.is_empty());
+        Some(user_preset_dir_from(&home, xdg.as_deref()))
     }
 }
 

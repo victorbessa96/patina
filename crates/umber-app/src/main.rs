@@ -15,6 +15,7 @@
 
 mod bake_sources;
 mod bakes_panel;
+mod brush_panel;
 mod document;
 mod export_dialog;
 mod paint_state;
@@ -22,6 +23,7 @@ mod uv_view;
 mod viewport;
 
 use bakes_panel::{BakesContext, BakesPanel};
+use brush_panel::BrushPanel;
 use egui::containers::menu::{MenuBar, MenuButton};
 use egui::{CentralPanel, Id, Ui, WidgetText};
 use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
@@ -59,6 +61,7 @@ struct PanelViewer<'a> {
     gpu: &'a GpuContext,
     paint: Option<&'a mut paint_state::PaintState>,
     doc: &'a mut document::Document,
+    brush: &'a mut BrushPanel,
 }
 
 impl TabViewer for PanelViewer<'_> {
@@ -88,7 +91,7 @@ impl TabViewer for PanelViewer<'_> {
             Panel::UvView => self.uv_view.ui(ui, self.mesh, self.gpu, self.paint.take()),
             Panel::LayerStack => document::layers_ui(ui, self.doc),
             Panel::Properties => {
-                ui.label("Properties (Wave 2)");
+                self.brush.show(ui);
             }
             Panel::Assets => {
                 ui.label("Assets / shelf (Wave 4+)");
@@ -140,6 +143,7 @@ pub struct UmberApp {
     pub state: AppState,
     dock: DockState<Panel>,
     gpu: GpuContext,
+    brush_panel: BrushPanel,
 }
 
 impl UmberApp {
@@ -204,6 +208,7 @@ impl UmberApp {
             },
             dock,
             gpu,
+            brush_panel: BrushPanel::new(),
         })
     }
 }
@@ -377,6 +382,7 @@ impl eframe::App for UmberApp {
                 gpu: &self.gpu,
                 paint: self.state.paint.as_mut(),
                 doc: &mut self.state.doc,
+                brush: &mut self.brush_panel,
             };
             DockArea::new(&mut self.dock)
                 .style(Style::from_egui(ui.style()))
