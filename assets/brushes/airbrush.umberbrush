@@ -1,0 +1,64 @@
+{
+  "format": "umber-brush-preset",
+  "version": 1,
+  "name": "Airbrush",
+  "params": {
+    "color": [
+      0.85,
+      0.2,
+      0.1,
+      1.0
+    ],
+    "alpha": 0.25,
+    "hardness": 0.0,
+    "pressure_gamma": 1.0
+  },
+  "one_euro": {
+    "min_cutoff": 0.5,
+    "beta": 0.004,
+    "d_cutoff": 1.0
+  },
+  "lazy_mouse": {
+    "radius_px": 18.0,
+    "strength": 0.85
+  },
+  "spacing": {
+    "dabs_per_radius": 48.0
+  },
+  "alpha_curve": [
+    [
+      0,
+      0.0
+    ],
+    [
+      0.2,
+      0.15
+    ],
+    [
+      0.6,
+      0.5
+    ],
+    [
+      1,
+      1.0
+    ]
+  ],
+  "radius_curve": [
+    [
+      0,
+      0
+    ],
+    [
+      0.3333333333333333,
+      0.3333333333333333
+    ],
+    [
+      0.6666666666666666,
+      0.6666666666666666
+    ],
+    [
+      1,
+      1
+    ]
+  ]
+}
