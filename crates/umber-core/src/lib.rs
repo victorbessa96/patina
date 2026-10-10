@@ -11,10 +11,12 @@
 
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub mod assets;
 pub mod layers;
 pub mod project;
+pub mod tiles;
 pub mod undo;
 
 pub use assets::{AssetError, AssetRef, AssetStore};
@@ -24,6 +26,7 @@ pub use project::{
     load_from_dir, save_to_dir, ProjectError, ProjectModel, ProjectSettings, TextureSetLayers,
     CURRENT_PROJECT_VERSION,
 };
+pub use tiles::{TileChannels, TileSet};
 pub use undo::{Command, UndoStack};
 
 /// A named channel of a texture set (e.g. baseColor, roughness, normal).
@@ -44,11 +47,19 @@ pub enum ChannelKind {
 
 /// One texture set: a resolution plus a stack of channels.
 /// Wave 1: model skeleton; painting + per-channel blending land in Wave 2.
+///
+/// Wave 5 (UDIM slice 2): `tiles` carries the per-tile channel maps.
+/// Empty means "tile 1001 implied by `resolution`/`channels`" — the
+/// `serde(default)` keeps pre-tile `.umber` files loading unchanged,
+/// and the [`TileSet`] conversions normalize 1001-only sets back to
+/// this empty form. `BTreeMap` keeps tile ids sorted on the wire.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TextureSet {
     pub name: String,
     pub resolution: u32,
     pub channels: Vec<Channel>,
+    #[serde(default)]
+    pub tiles: BTreeMap<u16, TileChannels>,
 }
 
 impl TextureSet {
@@ -79,6 +90,7 @@ impl TextureSet {
                     kind: ChannelKind::Data,
                 },
             ],
+            tiles: BTreeMap::new(),
         }
     }
 }

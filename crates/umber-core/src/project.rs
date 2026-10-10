@@ -428,6 +428,7 @@ mod tests {
     use super::*;
     use crate::layers::{BlendMode, LayerKind, LayerMask};
     use crate::{Channel, ChannelKind};
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -452,6 +453,7 @@ mod tests {
                 name: "baseColor".into(),
                 kind: ChannelKind::Color,
             }],
+            tiles: BTreeMap::new(),
         };
 
         let mut stack_a = LayerStack::new();
@@ -532,6 +534,84 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir_a);
         let _ = fs::remove_dir_all(&dir_b);
+    }
+
+    /// A two-tile texture set: tile 1001 keeps the default channels at
+    /// 2048, tile 1002 carries baseColor only at 1024.
+    fn two_tile_texture_set() -> TextureSet {
+        let mut set = TextureSet::new_default("Body");
+        set.tiles.insert(
+            1001,
+            crate::TileChannels::new(set.resolution, set.channels.clone()),
+        );
+        set.tiles.insert(
+            1002,
+            crate::TileChannels::new(
+                1024,
+                vec![Channel {
+                    name: "baseColor".into(),
+                    kind: ChannelKind::Color,
+                }],
+            ),
+        );
+        set
+    }
+
+    #[test]
+    fn save_load_save_round_trip_is_byte_identical_with_two_tile_set() {
+        let mut model = fixture_model();
+        model.texture_sets[0] = two_tile_texture_set();
+        let dir_a = unique_temp_dir("tiles-a");
+        let dir_b = unique_temp_dir("tiles-b");
+
+        save_to_dir(&model, &dir_a).expect("first save");
+        let loaded = load_from_dir(&dir_a).expect("load");
+        assert_eq!(loaded, model, "loaded model must equal the original");
+        assert_eq!(
+            loaded.texture_sets[0].tiles, model.texture_sets[0].tiles,
+            "the additive tiles field must survive the round trip"
+        );
+        assert_eq!(
+            loaded.texture_sets[0]
+                .tiles
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![1001, 1002],
+            "both tiles present, sorted (BTreeMap wire order)"
+        );
+
+        save_to_dir(&loaded, &dir_b).expect("second save");
+        assert_dirs_byte_identical(&dir_a, &dir_b);
+
+        let _ = fs::remove_dir_all(&dir_a);
+        let _ = fs::remove_dir_all(&dir_b);
+    }
+
+    #[test]
+    fn pre_tile_project_json_loads_with_implied_1001() {
+        // Old files have no "tiles" key on texture sets: serde(default)
+        // yields the empty map, which the TileSet conversion reads as
+        // the implied 1001-only set.
+        let dir = unique_temp_dir("pre-tile");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("project.json"),
+            br#"{"version":1,"texture_sets":[{"name":"Body","resolution":2048,"channels":[{"name":"baseColor","kind":"Color"}]}],"layer_sets":[{"texture_set":"Body","layer_ids":[],"next_layer_id":0}],"settings":{"active_texture_set":null}}"#,
+        )
+        .unwrap();
+
+        let loaded = load_from_dir(&dir).expect("pre-tile file must load");
+        assert!(
+            loaded.texture_sets[0].tiles.is_empty(),
+            "no tiles key -> empty map (1001 implied)"
+        );
+        let tiled = crate::TileSet::from(&loaded.texture_sets[0]);
+        assert_eq!(tiled.tiles_present(), vec![1001]);
+        assert_eq!(tiled.tile(1001).unwrap().resolution, 2048);
+        assert_eq!(tiled.tile(1001).unwrap().channels.len(), 1);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

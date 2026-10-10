@@ -13,3 +13,4 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 blake3 = { workspace = true }
 profiling = { workspace = true }
+umber-mesh = { workspace = true }
