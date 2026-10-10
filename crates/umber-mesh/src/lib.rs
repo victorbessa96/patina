@@ -10,6 +10,7 @@ pub mod fbx;
 pub mod gltf;
 pub mod mesh_maps;
 pub mod raycast;
+pub mod seam;
 
 pub use fbx::load_fbx;
 pub use gltf::load_gltf;
