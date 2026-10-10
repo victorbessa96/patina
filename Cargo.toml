@@ -51,6 +51,10 @@ crossbeam = "0.8"
 log = "0.4"
 env_logger = "0.11"
 
+# Perf instrumentation facade (docs/specs/perf-instrumentation-design.md):
+# zero-cost no-op spans unless a backend feature is enabled.
+profiling = "1"
+
 # Mesh import
 gltf = "1"
 tobj = "4"

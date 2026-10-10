@@ -136,6 +136,7 @@ pub fn dilate_map(
     height: u32,
     params: &DilateParams,
 ) -> Result<Vec<u8>, DilateError> {
+    profiling::scope!("bake_pass");
     validate(map, width, height)?;
 
     if params.iterations == 0 {
@@ -343,6 +344,7 @@ pub fn dilate_map_filled(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, DilateError> {
+    profiling::scope!("bake_pass");
     let params = DilateParams {
         iterations: width.saturating_add(height),
     };
@@ -368,6 +370,7 @@ pub fn fill_uncovered(
     height: u32,
     color: [u8; 4],
 ) -> Result<(), DilateError> {
+    profiling::scope!("bake_pass");
     let expected = (width as usize) * (height as usize) * 4;
     if map.len() != expected {
         return Err(DilateError::SizeMismatch {

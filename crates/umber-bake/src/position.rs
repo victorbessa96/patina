@@ -516,6 +516,7 @@ pub fn bake_position_map(
     mesh: &MeshData,
     params: &PositionMapParams,
 ) -> Result<Vec<f32>, PositionMapError> {
+    profiling::scope!("bake_pass");
     let gpu = bake_position_and_normal(device, queue, mesh, params.width, params.height)?;
     read_back_rgba32f(device, queue, &gpu.position_texture, gpu.width, gpu.height)
 }
@@ -535,6 +536,7 @@ pub fn bake_world_normal_map(
     mesh: &MeshData,
     params: &PositionMapParams,
 ) -> Result<Vec<f32>, PositionMapError> {
+    profiling::scope!("bake_pass");
     let gpu = bake_position_and_normal(device, queue, mesh, params.width, params.height)?;
     read_back_rgba32f(device, queue, &gpu.normal_texture, gpu.width, gpu.height)
 }

@@ -80,6 +80,10 @@ pub struct PaintState {
     /// the seam-blind zero-cost contract).
     #[cfg(test)]
     staged_batches: usize,
+    /// Staged dabs since construction (test observability for the stroke
+    /// soak's zero-drop assert: staged here must equal composited at drain).
+    #[cfg(all(test, feature = "perf"))]
+    staged_dabs: u64,
 }
 
 impl PaintState {
@@ -111,6 +115,8 @@ impl PaintState {
             event_seq: 0,
             #[cfg(test)]
             staged_batches: 0,
+            #[cfg(all(test, feature = "perf"))]
+            staged_dabs: 0,
         })
     }
 
@@ -180,6 +186,16 @@ impl PaintState {
         self.thread.paint_target()
     }
 
+    /// Switches the paint target to `width`x`height` (contents dropped).
+    /// The stroke-soak test uses this to run against a 4K target; the app
+    /// itself stays on [`TARGET_SIZE`].
+    pub fn resize_target(&mut self, width: u32, height: u32) {
+        self.texels_per_uv = width as f32;
+        let _ = self
+            .thread
+            .publish(vec![PaintThreadCommand::Resize { width, height }]);
+    }
+
     /// Brush footprint in UV units: the mirror gate distance
     /// (`BRUSH_RADIUS_TEXELS / texels_per_uv`, plus [`SEAM_MIRROR_MARGIN`).
     fn seam_radius_uv(&self) -> f32 {
@@ -196,6 +212,7 @@ impl PaintState {
     }
 
     fn push_event_inner(&mut self, uv: Pos2, pressure: f32, expand_seams: bool) {
+        profiling::scope!("stroke_eval");
         // Seam-aware expansion at the UV layer, before texel conversion
         // (design slice 3, item 2): mirror positions become ADDITIONAL
         // `push_event_inner` calls at the mirrored UVs with
@@ -248,6 +265,8 @@ impl PaintState {
         }
         // Stage as one command; the thread splits into capacity segments
         // and overlap-safe dispatches.
+        #[cfg(all(test, feature = "perf"))]
+        let staged_n = dabs.len() as u64;
         let _ = self
             .thread
             .publish(vec![PaintThreadCommand::Stage { dabs }]);
@@ -259,6 +278,11 @@ impl PaintState {
         {
             self.staged_batches += 1;
         }
+        // Soak observability: total staged dabs for the zero-drop assert.
+        #[cfg(all(test, feature = "perf"))]
+        {
+            self.staged_dabs += staged_n;
+        }
     }
 
     /// Staged `Stage`-batch count since construction (test observability;
@@ -266,6 +290,13 @@ impl PaintState {
     #[cfg(test)]
     pub(crate) fn staged_batch_count(&self) -> usize {
         self.staged_batches
+    }
+
+    /// Staged dabs since construction (test observability; see the
+    /// stroke soak's zero-drop assert in `perf_soak`).
+    #[cfg(all(test, feature = "perf"))]
+    pub(crate) fn staged_dab_count(&self) -> u64 {
+        self.staged_dabs
     }
 }
 

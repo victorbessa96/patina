@@ -88,6 +88,7 @@ impl<C: Command> UndoStack<C> {
     /// the redo stack — a fresh edit invalidates any previously-undone
     /// future.
     pub fn push(&mut self, mut command: C, doc: &mut C::Doc) {
+        profiling::scope!("undo_push");
         command.apply(doc);
         self.bytes_held += command.memory_bytes();
 

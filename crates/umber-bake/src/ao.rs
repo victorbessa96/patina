@@ -339,6 +339,7 @@ pub fn run(
     width: u32,
     height: u32,
 ) -> Result<Vec<u8>, AoBakeError> {
+    profiling::scope!("bake_pass");
     validate(mesh, params, width, height)?;
 
     let triangles = build_triangles(mesh);
@@ -541,6 +542,7 @@ pub fn bake_ao_mesh(
     height: u32,
     params: &AoBakeParams,
 ) -> Result<Vec<u8>, AoBakeError> {
+    profiling::scope!("bake_pass");
     bake_ao_mesh_inner(device, queue, mesh, width, height, params).map(|both| both.ao)
 }
 
@@ -567,6 +569,7 @@ pub fn bake_ao_and_bent_mesh(
     height: u32,
     params: &AoBakeParams,
 ) -> Result<AoWithBent, AoBakeError> {
+    profiling::scope!("bake_pass");
     bake_ao_mesh_inner(device, queue, mesh, width, height, params)
 }
 

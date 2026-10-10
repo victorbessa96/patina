@@ -212,6 +212,7 @@ pub fn bake_id_mesh(
     mesh: &MeshData,
     params: &IdBakeParams,
 ) -> Result<Vec<u8>, IdBakeError> {
+    profiling::scope!("bake_pass");
     validate(mesh, params)?;
     let width = params.width;
     let height = params.height;

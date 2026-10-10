@@ -16,6 +16,7 @@ egui-wgpu = { workspace = true }
 epaint = { workspace = true }
 bytemuck = { workspace = true }
 pollster = { workspace = true, optional = true }
+profiling = { workspace = true }
 
 [features]
 gpu = ["pollster"]

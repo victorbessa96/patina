@@ -87,6 +87,7 @@ impl Viewport {
         ui.painter().rect_filled(rect, 0.0, EMPTY_VIEWPORT_COLOR);
 
         if let Some(mesh) = &self.mesh {
+            profiling::scope!("display_pass");
             let aspect = rect.width() / rect.height();
             let view_proj = self.camera.view_proj(aspect);
             // Normalized once here (review #6): the shader re-normalizes

@@ -228,6 +228,7 @@ impl PaintThread {
         encoder: &mut wgpu::CommandEncoder,
         dabs: &[Dab],
     ) -> Result<(), PaintError> {
+        profiling::scope!("dab_upload");
         let capacity = self.dab_buffer.capacity();
         for segment in dabs.chunks(capacity) {
             let mut group: Vec<Dab> = Vec::with_capacity(segment.len());

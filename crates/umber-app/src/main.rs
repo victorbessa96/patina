@@ -19,6 +19,8 @@ mod brush_panel;
 mod document;
 mod export_dialog;
 mod paint_state;
+#[cfg(test)]
+mod perf_soak;
 mod uv_view;
 mod viewport;
 
@@ -144,6 +146,17 @@ pub struct UmberApp {
     dock: DockState<Panel>,
     gpu: GpuContext,
     brush_panel: BrushPanel,
+    /// Perf HUD toggle (View menu). `perf` feature only.
+    #[cfg(feature = "perf")]
+    show_perf_hud: bool,
+    /// Previous frame's `egui::InputState::time`, for the HUD's frame-ms
+    /// line (`perf` feature only).
+    #[cfg(feature = "perf")]
+    last_frame_time: Option<f64>,
+    /// Cumulative `dabs_composited` at the previous frame, for the HUD's
+    /// dab-throughput delta (`perf` feature only).
+    #[cfg(feature = "perf")]
+    last_dabs_composited: u64,
 }
 
 impl UmberApp {
@@ -209,6 +222,12 @@ impl UmberApp {
             dock,
             gpu,
             brush_panel: BrushPanel::new(),
+            #[cfg(feature = "perf")]
+            show_perf_hud: false,
+            #[cfg(feature = "perf")]
+            last_frame_time: None,
+            #[cfg(feature = "perf")]
+            last_dabs_composited: 0,
         })
     }
 }
@@ -326,6 +345,7 @@ impl UmberApp {
 
 impl eframe::App for UmberApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        profiling::scope!("frame");
         // Top bar: MenuBar container (egui 0.36 API).
         MenuBar::new().ui(ui, |ui| {
             MenuButton::new("File").ui(ui, |ui| {
@@ -364,6 +384,12 @@ impl eframe::App for UmberApp {
                     self.export_paint_png();
                 }
             });
+            MenuButton::new("View").ui(ui, |ui| {
+                #[cfg(feature = "perf")]
+                ui.checkbox(&mut self.show_perf_hud, "Show Perf HUD");
+                #[cfg(not(feature = "perf"))]
+                ui.label("Perf HUD needs --features perf");
+            });
             MenuButton::new("Help").ui(ui, |ui| {
                 if ui.button("About Umber").clicked() {
                     ui.label("Umber v0.1.0 — Wave 2 in progress");
@@ -393,6 +419,45 @@ impl eframe::App for UmberApp {
         if let Some(paint) = self.state.paint.as_mut() {
             if let Err(err) = paint.process_pending() {
                 log::warn!("paint processing failed: {err:#}");
+            }
+        }
+
+        // Perf HUD (read-only overlay, `perf` feature only): frame ms from
+        // egui's input-time delta, dab throughput from FrameStats deltas,
+        // paint-target bytes, undo depth. No budget enforcement — display
+        // only, per the instrumentation design.
+        #[cfg(feature = "perf")]
+        {
+            let now = ui.input(|i| i.time);
+            let frame_ms = self
+                .last_frame_time
+                .map(|t| (now - t) * 1000.0)
+                .unwrap_or(0.0);
+            self.last_frame_time = Some(now);
+            if self.show_perf_hud {
+                let dabs_total = self
+                    .state
+                    .paint
+                    .as_ref()
+                    .map(|p| p.last_stats().dabs_composited)
+                    .unwrap_or(0);
+                let dabs_delta = dabs_total.saturating_sub(self.last_dabs_composited);
+                self.last_dabs_composited = dabs_total;
+                let target_bytes = self
+                    .state
+                    .paint
+                    .as_ref()
+                    .map(|p| p.paint_target().byte_len())
+                    .unwrap_or(0);
+                let undo_depth = self.state.doc.history.len();
+                egui::Window::new("Perf HUD").show(ui.ctx(), |ui| {
+                    ui.label(format!("frame: {frame_ms:.2} ms"));
+                    ui.label(format!(
+                        "dabs this frame: {dabs_delta} (total {dabs_total})"
+                    ));
+                    ui.label(format!("paint target: {target_bytes} bytes"));
+                    ui.label(format!("undo depth: {undo_depth}"));
+                });
             }
         }
     }

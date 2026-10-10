@@ -159,6 +159,7 @@ pub fn bake_tangent_normal_mesh(
     height: u32,
     params: &TangentNormalParams,
 ) -> Result<Vec<u8>, TangentNormalBakeError> {
+    profiling::scope!("bake_pass");
     validate(width, height)?;
 
     let position_map = bake_position_and_normal(device, queue, mesh, width, height)?;

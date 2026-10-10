@@ -137,6 +137,7 @@ pub fn bake_curvature_mesh(
     height: u32,
     params: &CurvatureParams,
 ) -> Result<Vec<u8>, CurvatureBakeError> {
+    profiling::scope!("bake_pass");
     validate(width, height)?;
 
     let position_map = bake_position_and_normal(device, queue, mesh, width, height)?;

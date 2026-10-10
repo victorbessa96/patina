@@ -56,6 +56,17 @@ impl Document {
     pub fn layers(&self) -> &[Layer] {
         &self.stack.layers
     }
+
+    /// Approximate in-memory size of the document in bytes (layer metadata
+    /// only — see [`umber_core::layers::LayerStack::memory_bytes`]).
+    ///
+    /// An honest approximation, documented, not the §12 budget: the undo
+    /// soak test samples this after each push to assert sub-linear growth
+    /// plus an empirical ceiling (2x the observed size, recorded in the
+    /// test output — the §12 ~2GB @ 4K target needs tile accounting first).
+    pub fn in_memory_bytes(&self) -> usize {
+        self.stack.memory_bytes()
+    }
 }
 
 /// Draws the Layers panel: per-layer visibility toggle, name, kind badge.

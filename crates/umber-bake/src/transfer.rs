@@ -376,6 +376,7 @@ pub fn bake_transfer_mesh(
     high: &MeshData,
     params: &TransferParams,
 ) -> Result<Vec<u8>, TransferError> {
+    profiling::scope!("bake_pass");
     validate(low, high, params)?;
     let width = params.width;
     let height = params.height;

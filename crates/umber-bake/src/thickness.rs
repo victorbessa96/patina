@@ -220,6 +220,7 @@ pub fn bake_thickness_mesh(
     height: u32,
     params: &ThicknessParams,
 ) -> Result<Vec<u8>, ThicknessBakeError> {
+    profiling::scope!("bake_pass");
     validate(params, width, height)?;
 
     let position_map = bake_position_and_normal(device, queue, mesh, width, height)?;

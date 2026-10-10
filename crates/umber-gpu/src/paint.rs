@@ -268,6 +268,13 @@ impl PaintTarget {
         (self.width, self.height)
     }
 
+    /// Backing-store size in bytes (RGBA8: 4 bytes/texel). The perf HUD's
+    /// paint-target line reads this; it is the v1 proxy for the §12 tile
+    /// budget until the tile-pool allocator lands its own accounting.
+    pub fn byte_len(&self) -> usize {
+        self.width as usize * self.height as usize * 4
+    }
+
     /// The backing GPU texture — for readback (e.g. in golden-image tests)
     /// or future tile-pool wiring.
     pub fn texture(&self) -> &wgpu::Texture {

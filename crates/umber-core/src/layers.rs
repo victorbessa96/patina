@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use std::mem::size_of;
+
 use crate::undo::Command;
 
 /// What a layer contains and how its children (if any) relate to the stack.
@@ -106,6 +108,15 @@ pub struct Layer {
     pub blend_mode: BlendMode,
     /// Attached paint mask, if any.
     pub mask: Option<LayerMask>,
+}
+
+impl Layer {
+    /// Approximate RAM held by this layer, in bytes: the inline struct
+    /// plus heap name bytes. See [`LayerStack::memory_bytes`] for the
+    /// honesty contract (metadata only, no GPU tiles yet).
+    pub fn memory_bytes(&self) -> usize {
+        size_of::<Layer>() + self.name.len() + self.mask.as_ref().map(|m| m.name.len()).unwrap_or(0)
+    }
 }
 
 /// An ordered stack of layers for one texture set.
@@ -260,6 +271,19 @@ impl LayerStack {
         let old = layer.blend_mode;
         layer.blend_mode = mode;
         Some(old)
+    }
+
+    /// Approximate RAM held by the whole stack, in bytes: per-layer
+    /// [`Layer::memory_bytes`] plus the `Vec` buffer itself.
+    ///
+    /// An honest approximation, not a budget: layer metadata only (names,
+    /// struct fields). GPU-tile bytes are not modeled here — they arrive
+    /// with the tile-pool slice, at which point this sum grows a tile term.
+    /// The undo soak test samples this after each push to assert the growth
+    /// curve's shape (sub-linear) plus an empirical byte ceiling.
+    pub fn memory_bytes(&self) -> usize {
+        self.layers.iter().map(Layer::memory_bytes).sum::<usize>()
+            + self.layers.capacity() * size_of::<Layer>()
     }
 }
 
