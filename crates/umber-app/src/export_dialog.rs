@@ -36,9 +36,10 @@
 //! painted-source badge) so a flat-placeholder export never masquerades
 //! as painted.
 //!
-//! Synchronous for the same reason as the Bakes panel (`bakes_panel.rs`
-//! module docs): no async job system exists yet, and one AO bake + a
-//! handful of PNG writes at 512² is sub-second.
+//! Still synchronous: one AO bake + a handful of PNG writes at 512² is
+//! sub-second. The Bakes panel moved its bake onto a worker thread (wave 5,
+//! `bakes_panel.rs` module docs); giving Export the same `std::thread` +
+//! `mpsc` job treatment is the follow-up slice.
 //!
 //! GPU access follows the `viewport`/`paint_state`/`bakes_panel` pattern:
 //! this module never names a `wgpu` type.

@@ -9,7 +9,9 @@
 //! API note: egui 0.36 replaced menu::bar with MenuBar/MenuButton
 //! containers, TopBottomPanel with the unified Panel API, and moved
 //! NativeOptions to eframe; this file was written against the vendored
-//! source, not remembered APIs. Threading: single-threaded skeleton — the
+//! source, not remembered APIs. Threading: the UI thread owns everything
+//! except Bakes-panel bakes, which run on a `std::thread` worker
+//! (`bakes_panel::BakeJobHandle`, polled each frame below); the
 //! paint-thread + ring-buffer architecture (docs/specs/architecture.md)
 //! lands with the paint engine.
 
@@ -422,6 +424,16 @@ impl UmberApp {
 impl eframe::App for UmberApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         profiling::scope!("frame");
+        // Async bake (wave 5): drain a finished bake job here, not only in
+        // the Bakes tab's `show` (egui_dock skips hidden tabs), and keep
+        // frames coming while one runs — egui otherwise repaints only on
+        // input, so the result would sit until the mouse moved. (The click
+        // frame itself starts the job after this poll; the tab's spinner
+        // requests the next frame, and this keeps it going from there.)
+        if self.state.bakes.poll_job() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
         // Overlay keybinds (Wave-4 item 7): W toggles the wireframe, G
         // the ground grid. Skipped while a text edit has focus (brush
         // preset names, save-as dialog) so typing never flips the

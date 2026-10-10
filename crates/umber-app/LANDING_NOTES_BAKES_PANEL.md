@@ -43,36 +43,55 @@ and `umber-bake` internals were read-only sources — no lines touched there.
   features — the bake entry points need no `gpu` feature; `pollster` stays
   behind it).
 
-## The synchronous-bake tradeoff (read before asking for threads)
+## Async bake jobs (wave 5 — built)
 
-The Bake click runs all selected bakes inline and blocks the frame. This is
-deliberate and honest, not a missing feature:
+The Bake click no longer blocks the frame (the wave-3 synchronous tradeoff
+is retired). Shape:
 
-- A 512² headless bake is sub-second per map; even 4 maps at 512² is a few
-  seconds of one user-triggered click — the same blocking-readback tradeoff
-  `export_paint_png` already makes at 512².
-- There is **no async runtime in the app yet** (single-threaded shell per
-  `main.rs` docs). A hand-rolled thread + channel just for bakes would
-  duplicate what Wave 5 must build properly anyway (below), while adding
-  lifetime hazards around `GpuContext`/egui repaints for zero visual gain
-  (no progress bar exists to stay responsive *for*).
-- Cost ceiling is bounded by UI: resolutions top out at 2048 and rays at 64,
-  so the worst click is large but finite and user-initiated.
+- **What moves to the thread:** `bake_now` snapshots an owned `BakeRequest`
+  on the main thread — `device.clone()` + `queue.clone()`, `mesh.clone()`
+  (`MeshData: Clone`), resolution/rays/dilation, and every planned job with
+  its output path already resolved (texture-set name + tiled/untiled
+  naming). The old `run_all(&self, …)` became the free `run_bake(request)`
+  with the same body; it runs on a named `umber-bake` `std::thread` and
+  sends one `anyhow::Result<Vec<BakeRecord>>` back over `std::sync::mpsc`.
+  No new deps.
+- **wgpu threading shape:** in wgpu 30 on native, `Device`/`Queue` are
+  Arc-backed `Clone + Send + Sync`, and `Queue::submit`/`Device::poll` are
+  internally synchronized — the worker's bake submissions and blocking
+  readback waits interleave safely with eframe's frame submissions on the
+  same queue. Nothing in the bake needs main-thread-only state, so the
+  whole bake (GPU submission included) is off-thread. The `Send + 'static`
+  bound on `BakeJobHandle::spawn` pins this at compile time.
+- **Precedent note:** `umber_gpu::PaintThread` is *not* an OS thread despite
+  its name — it is a same-thread mpsc command queue drained by
+  `process_pending` once per frame. This slice adds the codebase's first
+  real worker thread; it borrows PaintThread's owned-clone handle shape
+  (`PaintThread::new(device.clone(), queue.clone(), …)`), not a thread.
+- **Polling:** `BakesPanel::poll_job` drains the channel (`try_recv`); it is
+  called from `UmberApp::ui` every frame (egui_dock skips hidden tabs, so
+  the result lands even if the Bakes tab is closed mid-bake) and from
+  `show`. While a job runs, the app requests a repaint every 100 ms so
+  completion shows up without mouse input.
+- **Guards:** one bake at a time — `can_bake` is false while a job is in
+  flight (the button disables, a spinner + `Baking N maps…` shows), and
+  `bake_now`/`start_job` are no-ops if a job exists.
+- **Worker death:** a worker that panics (e.g. wgpu's uncaptured-error
+  handler fires on the submitting thread) drops its sender; `poll_job`
+  treats `Disconnected` as `Bake failed: bake worker exited without a
+  result…` and re-enables the button — never "Baking…" forever.
 
-## Wave-5 async job plan (not built here)
-
-When the job system lands, this panel is its first client:
-1. `run_all` already returns owned `Vec<BakeRecord>` and takes only shared
-   refs — it moves onto a worker thread almost as-is (device/queue are
-   `Clone`; mesh + settings cross by value).
-2. Per-map `Instant` timings become progress events (`started {map}`,
-   `finished {record}`) over the job channel; the status line renders the
-   in-flight job instead of only the last one.
-3. Cancellation = drop the in-flight submission between maps (bakes are
-   per-map sequential, so the abort points already exist).
-4. Auto-re-bake-on-parameter-change (requirements §3 P1) reuses the same
-   path with a debounce + dirty flag; pipeline caching (fresh pipeline per
-   call today, per every baker's docs) should be revisited at the same time.
+V1 limits (follow-ups):
+1. No progress events — the job reports once, at the end. Per-map
+   `started`/`finished` events over the same channel are the next step.
+2. No cancellation (abort points exist between maps; not wired).
+3. Quitting mid-bake abandons the detached worker; a PNG being written at
+   exit can be left truncated.
+4. **Async export is not in this slice.** The Export dialog still bakes AO
+   synchronously through `bake_sources` inside its run; giving it the same
+   `std::thread` + `mpsc` treatment is the follow-up.
+5. Auto-re-bake-on-parameter-change (requirements §3 P1) and pipeline
+   caching remain open.
 
 ## Tests
 
@@ -85,11 +104,21 @@ equal `format_mesh_map` **and** round-trip through `parse_mesh_map`
 (bounds, degenerate-span mid-gray, uncovered zeros), all-uncovered/empty
 encode. `cargo test -p umber-app`: 5 → 14.
 
+Async jobs (wave 5) add headless job-plumbing tests driven through
+`start_job` with gated closures (no GPU): the result lands only through
+`poll_job` after the worker finishes (`Baking 1 map…` → `Baked …` with the
+skipped note); an in-flight job disables `can_bake` and refuses a second
+start; an `Err` reaches the status line with its context chain and keeps
+the previous records; a panicking worker reports failure instead of
+baking forever. Two GPU-gated (adapter-skip) tests drive the real
+`bake_now`: a 128² AO bake of a quad lands on disk via the worker, and an
+empty mesh's `ao bake` error crosses the channel to the status line.
+
 ## Reviewer checklist
 
-- [ ] **Blocking Bake is intentional** (see tradeoff above) — do not file
-  "UI freezes on Bake" as a bug before Wave 5; do file it if a bake *fails
-  silently* (status line must always say what happened).
+- [ ] **Bake runs on a worker** (see async jobs above) — "UI freezes on
+  Bake" is now a bug; so is a bake that *fails silently* or leaves the
+  panel stuck on "Baking…" (status line must always say what happened).
 - [ ] **`umber-bake`/`umber-export`/`umber-cli` untouched** — `git status`
   should show only `umber-app` files (plus this note). The position-encode
   port duplicates CLI logic deliberately (CLI owns its copy); if the

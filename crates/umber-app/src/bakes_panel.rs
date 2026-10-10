@@ -1,16 +1,31 @@
 //! The Bakes panel: headless-driven mesh-map baking from the egui shell.
 //!
-//! Wave 3 scope: a synchronous Bake button over the real bake engine
+//! Wave 3 scope: a Bake button over the real bake engine
 //! (`umber-bake`'s mesh-fed entry points) plus the `umber-mesh`
 //! `TextureSetName_map` output convention and the `umber-export` PNG
 //! writer — the same composition `umber-cli`'s `bake-all` uses, surfaced
 //! in the dock beside the layer stack.
 //!
-//! The click blocks the frame: a 512² headless bake is sub-second per map
-//! (no UI work happens mid-bake), so a job queue would add machinery
-//! without a user-visible win at this scale. A real async job system
-//! (progress, cancellation, re-bake-on-change) is Wave 5 work — see
-//! `LANDING_NOTES_BAKES_PANEL.md`.
+//! Async bake (wave 5): the click no longer blocks the frame. `bake_now`
+//! snapshots everything the bake reads into an owned [`BakeRequest`]
+//! (cloned `wgpu` device + queue — Arc-backed handles, `Send + Sync` on
+//! native — a clone of the mesh, the scalar settings, and each job's
+//! output path resolved up front) and moves it onto a `std::thread`
+//! worker ([`BakeJobHandle`]). The worker runs [`run_bake`] — the old
+//! synchronous driver, unchanged in body — and sends the one result back
+//! over an `mpsc` channel. The panel drains it with [`BakesPanel::poll_job`]
+//! each frame (`main.rs` polls even while the Bakes tab is hidden). Nothing
+//! stays main-thread-only: wgpu's `Queue::submit`/`Device::poll` are
+//! internally synchronized, so the worker's submissions and readback waits
+//! interleave safely with eframe's frame submissions on the same queue.
+//! While a job is in flight the Bake button is disabled ([`BakesPanel::can_bake`])
+//! and `bake_now` is a no-op — one bake at a time.
+//!
+//! V1 has no progress events or cancellation (the job reports once, at
+//! the end), and quitting mid-bake abandons the detached worker (a PNG
+//! being written at exit can be left truncated). The Export dialog still
+//! bakes synchronously through `bake_sources` — async export is the
+//! follow-up slice. See `LANDING_NOTES_BAKES_PANEL.md`.
 //!
 //! GPU access follows the `viewport`/`paint_state` pattern: this module
 //! never names a `wgpu` type, taking `umber_gpu::WgpuDevice`/`WgpuQueue`
@@ -35,6 +50,7 @@
 //! and the remaining per-tile bakers are wave-6 work.
 
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::Instant;
 
 use umber_mesh::FIRST_TILE;
@@ -225,6 +241,66 @@ pub struct BakesContext<'a> {
     pub mesh_path: Option<&'a Path>,
 }
 
+/// What a bake worker sends back: every written map, or the first failure.
+type BakeOutcome = anyhow::Result<Vec<BakeRecord>>;
+
+/// Everything one Bake reads, owned so it can move onto the worker thread
+/// (the `Send + 'static` bound on [`BakeJobHandle::spawn`] pins that at
+/// compile time — a non-`Send` GPU handle here would fail to build).
+struct BakeRequest {
+    device: umber_gpu::WgpuDevice,
+    queue: umber_gpu::WgpuQueue,
+    mesh: umber_mesh::MeshData,
+    /// Square bake resolution in texels.
+    size: u32,
+    rays: u32,
+    dilation_iterations: u32,
+    /// The planned jobs, each with its output path (resolved on the main
+    /// thread from the panel's output dir + texture-set name).
+    jobs: Vec<(BakeJob, PathBuf)>,
+}
+
+/// One in-flight bake on a worker thread: the receiving end of its
+/// one-shot result channel, plus what the status line needs afterward.
+pub struct BakeJobHandle {
+    receiver: mpsc::Receiver<BakeOutcome>,
+    /// The plan's skipped (tile, map) pairs, appended to the done status.
+    skipped: Vec<(u16, BakeSelection)>,
+}
+
+impl BakeJobHandle {
+    /// Runs `work` on a fresh named thread; its result arrives through
+    /// [`Self::try_finish`]. The thread is detached (its `JoinHandle` is
+    /// dropped): completion is observed through the channel alone.
+    fn spawn<F>(skipped: Vec<(u16, BakeSelection)>, work: F) -> std::io::Result<Self>
+    where
+        F: FnOnce() -> BakeOutcome + Send + 'static,
+    {
+        let (sender, receiver) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("umber-bake".into())
+            .spawn(move || {
+                // The panel may be gone (app quit); a dead receiver is fine.
+                let _ = sender.send(work());
+            })?;
+        Ok(Self { receiver, skipped })
+    }
+
+    /// The job's result once the worker has finished, `None` while it is
+    /// still running. A worker that died without sending (a panic — e.g.
+    /// wgpu's uncaptured-error handler fires on the submitting thread)
+    /// reports as a failure, never as "still baking" forever.
+    fn try_finish(&self) -> Option<BakeOutcome> {
+        match self.receiver.try_recv() {
+            Ok(outcome) => Some(outcome),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err(anyhow::anyhow!(
+                "bake worker exited without a result (it panicked; see the log)"
+            ))),
+        }
+    }
+}
+
 /// The Bakes panel state: bake settings + the last bake's status.
 ///
 /// The egui drawing itself (`show`) is untested by construction; every
@@ -244,6 +320,8 @@ pub struct BakesPanel {
     tiles: TileSelection,
     /// The loaded mesh's present tiles, cached across frames.
     mesh_tiles: MeshTilesCache,
+    /// The in-flight bake, if any (at most one at a time).
+    job: Option<BakeJobHandle>,
 }
 
 impl BakesPanel {
@@ -264,6 +342,7 @@ impl BakesPanel {
             last_records: Vec::new(),
             tiles: TileSelection::new(),
             mesh_tiles: MeshTilesCache::default(),
+            job: None,
         }
     }
 
@@ -379,10 +458,30 @@ impl BakesPanel {
         self.bake_ao || self.bake_curvature || self.bake_thickness || self.bake_position
     }
 
-    /// Whether the Bake button is enabled: mesh + GPU present and at
-    /// least one map checked.
+    /// Whether the Bake button is enabled: mesh + GPU present, at least
+    /// one map checked, and no bake already in flight.
     pub fn can_bake(&self, mesh_loaded: bool, gpu_ready: bool) -> bool {
-        mesh_loaded && gpu_ready && self.any_selected()
+        mesh_loaded && gpu_ready && self.any_selected() && !self.is_baking()
+    }
+
+    /// Whether a bake job is running on its worker thread.
+    pub fn is_baking(&self) -> bool {
+        self.job.is_some()
+    }
+
+    /// Drains a finished bake job into `status`/`last_records` (call once
+    /// per frame). Returns whether a job is still in flight afterward —
+    /// the caller keeps repainting while it is.
+    pub fn poll_job(&mut self) -> bool {
+        let Some(job) = &self.job else {
+            return false;
+        };
+        let Some(outcome) = job.try_finish() else {
+            return true;
+        };
+        let skipped = self.job.take().map(|job| job.skipped).unwrap_or_default();
+        self.apply_outcome(outcome, &skipped);
+        false
     }
 
     /// The output path for one map under the panel's output dir, via the
@@ -408,12 +507,14 @@ impl BakesPanel {
     }
 
     /// Draws the panel: resolution combo, per-map checkboxes, rays and
-    /// dilation sliders, output-dir row, the synchronous Bake button,
-    /// and the status line.
+    /// dilation sliders, output-dir row, the Bake button (starts a
+    /// background job), and the status line.
     ///
     /// Gated: with no mesh (or no GPU) a reason line replaces the bake
-    /// controls' effect — the Bake button is disabled either way.
+    /// controls' effect — the Bake button is disabled either way, and
+    /// while a bake is in flight.
     pub fn show(&mut self, ui: &mut egui::Ui, ctx: BakesContext<'_>) {
+        self.poll_job();
         let mesh_loaded = ctx.mesh.is_some();
         let gpu_ready = ctx.gpu.is_some();
         if !mesh_loaded {
@@ -475,12 +576,19 @@ impl BakesPanel {
         }
 
         ui.separator();
-        ui.label(self.status.clone());
+        ui.horizontal_wrapped(|ui| {
+            if self.is_baking() {
+                ui.spinner();
+            }
+            ui.label(self.status.clone());
+        });
     }
 
-    /// Runs every checked bake over the selected tiles synchronously and
-    /// records the outcome in `status`/`last_records` (never propagates:
-    /// the panel reports failures as a status line, not a crash).
+    /// Starts every checked bake over the selected tiles as a background
+    /// job ([`BakeJobHandle`]); [`Self::poll_job`] records the outcome in
+    /// `status`/`last_records` when it lands (never propagates: the panel
+    /// reports failures as a status line, not a crash). A no-op while a
+    /// bake is already in flight.
     fn bake_now(
         &mut self,
         device: &umber_gpu::WgpuDevice,
@@ -488,9 +596,72 @@ impl BakesPanel {
         mesh: &umber_mesh::MeshData,
         mesh_path: Option<&Path>,
     ) {
+        if self.is_baking() {
+            return;
+        }
         let present = self.mesh_tiles.get(mesh).to_vec();
         let plan = self.bake_plan(&present);
-        match self.run_all(device, queue, mesh, mesh_path, &plan) {
+        let fallback = PathBuf::from(FALLBACK_TEXTURE_SET);
+        let set = umber_mesh::texture_set_name(mesh_path.unwrap_or(&fallback), mesh);
+        let jobs = plan
+            .jobs
+            .iter()
+            .map(|job| {
+                let path = if plan.tiled {
+                    self.tiled_output_path_for(&set, job.selection, job.tile)
+                } else {
+                    self.output_path_for(&set, job.selection)
+                };
+                (*job, path)
+            })
+            .collect();
+        let request = BakeRequest {
+            device: device.clone(),
+            queue: queue.clone(),
+            mesh: mesh.clone(),
+            size: self.resolution,
+            rays: self.rays,
+            dilation_iterations: self.dilation_iterations,
+            jobs,
+        };
+        self.start_job(plan.jobs.len(), plan.skipped, move || run_bake(request));
+    }
+
+    /// Spawns `work` as the panel's bake job and shows the in-flight
+    /// status; returns `false` (and does nothing) when a job is already
+    /// running. `bake_now`'s only path onto a worker — the plumbing tests
+    /// drive it directly with GPU-free closures.
+    fn start_job<F>(
+        &mut self,
+        job_count: usize,
+        skipped: Vec<(u16, BakeSelection)>,
+        work: F,
+    ) -> bool
+    where
+        F: FnOnce() -> BakeOutcome + Send + 'static,
+    {
+        if self.is_baking() {
+            return false;
+        }
+        match BakeJobHandle::spawn(skipped, work) {
+            Ok(job) => {
+                let noun = if job_count == 1 { "map" } else { "maps" };
+                self.status = format!("Baking {job_count} {noun}…");
+                self.job = Some(job);
+                true
+            }
+            Err(err) => {
+                log::error!("bake worker failed to start: {err}");
+                self.status = format!("Bake failed: could not start the bake worker: {err}");
+                false
+            }
+        }
+    }
+
+    /// Records a finished job's outcome in `status`/`last_records` — the
+    /// same status lines the synchronous Bake wrote.
+    fn apply_outcome(&mut self, outcome: BakeOutcome, skipped: &[(u16, BakeSelection)]) {
+        match outcome {
             Ok(records) => {
                 let total: u128 = records.iter().map(|r| r.elapsed_ms).sum();
                 let parts: Vec<String> = records
@@ -510,7 +681,7 @@ impl BakesPanel {
                     records.len(),
                     parts.join(", ")
                 );
-                if let Some(note) = skipped_note(&plan.skipped) {
+                if let Some(note) = skipped_note(skipped) {
                     status.push_str(&format!(" — {note}"));
                 }
                 self.status = status;
@@ -522,108 +693,97 @@ impl BakesPanel {
             }
         }
     }
+}
 
-    /// The synchronous bake driver: one mesh-fed bake per planned job
-    /// ([`plan_bake`]), each followed by the dilation post-pass, written
-    /// as PNG via the mesh-map convention (tile-suffixed when the plan is
-    /// tiled). Shared with `bake_now`; `Result`-typed so failures carry
-    /// context instead of unwrapping.
-    fn run_all(
-        &self,
-        device: &umber_gpu::WgpuDevice,
-        queue: &umber_gpu::WgpuQueue,
-        mesh: &umber_mesh::MeshData,
-        mesh_path: Option<&Path>,
-        plan: &BakePlan,
-    ) -> anyhow::Result<Vec<BakeRecord>> {
-        use anyhow::Context as _;
+/// The bake driver (runs on the job's worker thread): one mesh-fed bake
+/// per planned job ([`plan_bake`]), each followed by the dilation
+/// post-pass, written as PNG to the job's pre-resolved path (the mesh-map
+/// convention, tile-suffixed when the plan is tiled). `Result`-typed so
+/// failures carry context instead of unwrapping; the first failure ends
+/// the bake (maps already written stay on disk, as before).
+fn run_bake(request: BakeRequest) -> BakeOutcome {
+    use anyhow::Context as _;
 
-        let fallback = PathBuf::from(FALLBACK_TEXTURE_SET);
-        let set = umber_mesh::texture_set_name(mesh_path.unwrap_or(&fallback), mesh);
-        let size = self.resolution;
-        let dilate = umber_bake::DilateParams::new(self.dilation_iterations);
-        let mut records = Vec::new();
+    let BakeRequest {
+        device,
+        queue,
+        mesh,
+        size,
+        rays,
+        dilation_iterations,
+        jobs,
+    } = request;
+    let (device, queue, mesh) = (&device, &queue, &mesh);
+    let dilate = umber_bake::DilateParams::new(dilation_iterations);
+    let mut records = Vec::new();
 
-        for job in &plan.jobs {
-            let selection = job.selection;
-            let started = Instant::now();
-            // `plan_bake` routes only AO to `BakeSource::Tile`; every
-            // other map's job is a whole-mesh bake.
-            let bytes: Vec<u8> = match selection {
-                BakeSelection::Ao => {
-                    // Shared with the Export dialog (`bake_sources::bake_ao`)
-                    // — this panel dilates afterward; the export path uses
-                    // the raw bake directly (see `bake_sources` docs).
-                    let raw = match job.source {
-                        BakeSource::WholeMesh => {
-                            crate::bake_sources::bake_ao(device, queue, mesh, size, self.rays)?
-                        }
-                        BakeSource::Tile => crate::bake_sources::bake_ao_tile(
-                            device, queue, mesh, size, self.rays, job.tile,
-                        )?,
-                    };
-                    umber_bake::dilation::dilate_map(device, queue, &raw, size, size, &dilate)
-                        .context("ao dilation")?
-                }
-                BakeSelection::Curvature => {
-                    let raw = umber_bake::curvature::bake_curvature_mesh(
-                        device,
-                        queue,
-                        mesh,
-                        size,
-                        size,
-                        &umber_bake::CurvatureParams::default(),
-                    )
-                    .context("curvature bake")?;
-                    umber_bake::dilation::dilate_map(device, queue, &raw, size, size, &dilate)
-                        .context("curvature dilation")?
-                }
-                BakeSelection::Thickness => {
-                    let params = umber_bake::ThicknessParams {
-                        rays: self.rays,
-                        ..umber_bake::ThicknessParams::default()
-                    };
-                    let raw = umber_bake::thickness::bake_thickness_mesh(
-                        device, queue, mesh, size, size, &params,
-                    )
-                    .context("thickness bake")?;
-                    umber_bake::dilation::dilate_map(device, queue, &raw, size, size, &dilate)
-                        .context("thickness dilation")?
-                }
-                BakeSelection::Position => {
-                    let params = umber_bake::position::PositionMapParams {
-                        width: size,
-                        height: size,
-                    };
-                    let f32map =
-                        umber_bake::position::bake_position_map(device, queue, mesh, &params)
-                            .context("position bake")?;
-                    let raw = encode_position_rgba8(&f32map);
-                    umber_bake::dilation::dilate_map(device, queue, &raw, size, size, &dilate)
-                        .context("position dilation")?
-                }
-            };
-            let path = if plan.tiled {
-                self.tiled_output_path_for(&set, selection, job.tile)
-            } else {
-                self.output_path_for(&set, selection)
-            };
-            umber_export::png::write_png(
-                &path,
-                size,
-                size,
-                &bytes,
-                umber_export::png::Transfer::Srgb,
-            )
+    for (job, path) in jobs {
+        let selection = job.selection;
+        let started = Instant::now();
+        // `plan_bake` routes only AO to `BakeSource::Tile`; every
+        // other map's job is a whole-mesh bake.
+        let bytes: Vec<u8> = match selection {
+            BakeSelection::Ao => {
+                // Shared with the Export dialog (`bake_sources::bake_ao`)
+                // — this panel dilates afterward; the export path uses
+                // the raw bake directly (see `bake_sources` docs).
+                let raw = match job.source {
+                    BakeSource::WholeMesh => {
+                        crate::bake_sources::bake_ao(device, queue, mesh, size, rays)?
+                    }
+                    BakeSource::Tile => crate::bake_sources::bake_ao_tile(
+                        device, queue, mesh, size, rays, job.tile,
+                    )?,
+                };
+                umber_bake::dilation::dilate_map(device, queue, &raw, size, size, &dilate)
+                    .context("ao dilation")?
+            }
+            BakeSelection::Curvature => {
+                let raw = umber_bake::curvature::bake_curvature_mesh(
+                    device,
+                    queue,
+                    mesh,
+                    size,
+                    size,
+                    &umber_bake::CurvatureParams::default(),
+                )
+                .context("curvature bake")?;
+                umber_bake::dilation::dilate_map(device, queue, &raw, size, size, &dilate)
+                    .context("curvature dilation")?
+            }
+            BakeSelection::Thickness => {
+                let params = umber_bake::ThicknessParams {
+                    rays,
+                    ..umber_bake::ThicknessParams::default()
+                };
+                let raw = umber_bake::thickness::bake_thickness_mesh(
+                    device, queue, mesh, size, size, &params,
+                )
+                .context("thickness bake")?;
+                umber_bake::dilation::dilate_map(device, queue, &raw, size, size, &dilate)
+                    .context("thickness dilation")?
+            }
+            BakeSelection::Position => {
+                let params = umber_bake::position::PositionMapParams {
+                    width: size,
+                    height: size,
+                };
+                let f32map = umber_bake::position::bake_position_map(device, queue, mesh, &params)
+                    .context("position bake")?;
+                let raw = encode_position_rgba8(&f32map);
+                umber_bake::dilation::dilate_map(device, queue, &raw, size, size, &dilate)
+                    .context("position dilation")?
+            }
+        };
+        umber_export::png::write_png(&path, size, size, &bytes, umber_export::png::Transfer::Srgb)
             .with_context(|| format!("writing {}", path.display()))?;
-            records.push(BakeRecord {
-                selection,
-                path,
-                elapsed_ms: started.elapsed().as_millis(),
-            });
-        }
-        Ok(records)
+        records.push(BakeRecord {
+            selection,
+            path,
+            elapsed_ms: started.elapsed().as_millis(),
+        });
     }
+    Ok(records)
 }
 
 impl Default for BakesPanel {
@@ -967,5 +1127,209 @@ mod tests {
         let f32map = vec![1.0f32, 2.0, 3.0, 0.0];
         assert_eq!(encode_position_rgba8(&f32map), vec![0, 0, 0, 0]);
         assert!(encode_position_rgba8(&[]).is_empty());
+    }
+
+    // --- Async bake job plumbing (wave 5) -------------------------------
+
+    /// Drives the real per-frame `poll_job` until the job lands; fails
+    /// after 5 s so a hung (or never-spawned) worker fails the test
+    /// instead of hanging it.
+    fn await_job(p: &mut BakesPanel) {
+        await_job_within(p, 5);
+    }
+
+    /// [`await_job`] with a custom deadline — the GPU-gated tests allow a
+    /// cold shader compile on a software adapter.
+    fn await_job_within(p: &mut BakesPanel, secs: u64) {
+        let deadline = Instant::now() + std::time::Duration::from_secs(secs);
+        while p.poll_job() {
+            assert!(Instant::now() < deadline, "bake job never finished");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// A job body that parks on a gate until the test releases it, then
+    /// yields `outcome` — makes the "still baking" window deterministic.
+    fn gated(outcome: BakeOutcome) -> (mpsc::Sender<()>, Box<dyn FnOnce() -> BakeOutcome + Send>) {
+        let (release, gate) = mpsc::channel::<()>();
+        let work = move || {
+            let _ = gate.recv();
+            outcome
+        };
+        (release, Box::new(work))
+    }
+
+    fn record(name: &str, elapsed_ms: u128) -> BakeRecord {
+        BakeRecord {
+            selection: BakeSelection::Ao,
+            path: Path::new("/tmp/umber-bakes-test").join(name),
+            elapsed_ms,
+        }
+    }
+
+    #[test]
+    fn bake_job_lands_through_poll_only_after_the_worker_finishes() {
+        // THE CAN-FAIL CORE: the result reaches `status`/`last_records`
+        // only through `poll_job` after the worker sends — a bake that
+        // ran inline (or a poll that never drains) fails here.
+        let mut p = panel();
+        let (release, work) = gated(Ok(vec![record("Sword_ambient_occlusion.png", 7)]));
+        assert!(p.start_job(1, vec![(1002, BakeSelection::Curvature)], work));
+        assert!(p.is_baking());
+        // Worker parked on the gate: polling reports in-flight, and the
+        // panel shows the baking status with no records yet.
+        assert!(p.poll_job());
+        assert!(p.is_baking());
+        assert_eq!(p.status(), "Baking 1 map…");
+        assert!(p.last_records().is_empty());
+
+        release.send(()).expect("worker is waiting on the gate");
+        await_job(&mut p);
+        assert!(!p.is_baking());
+        assert_eq!(p.last_records().len(), 1);
+        assert_eq!(
+            p.status(),
+            "Baked 1 map in 7 ms: Sword_ambient_occlusion.png (7 ms) — skipped (v1 bakes \
+             only AO per tile; other maps tile 1001 only): Curvature 1002"
+        );
+        // Drained: further polls are idle and keep the result.
+        assert!(!p.poll_job());
+        assert_eq!(p.last_records().len(), 1);
+    }
+
+    #[test]
+    fn in_flight_job_disables_bake_and_refuses_a_second_start() {
+        let mut p = panel();
+        assert!(p.can_bake(true, true));
+        let (release, work) = gated(Ok(vec![record("first.png", 1)]));
+        assert!(p.start_job(1, Vec::new(), work));
+        // The button's enabled logic: off while baking, whatever else holds.
+        assert!(!p.can_bake(true, true));
+        // A second click is a no-op: the in-flight job stays the one that
+        // lands (the second body would report "second.png").
+        let (_second_release, second) = gated(Ok(vec![record("second.png", 2)]));
+        assert!(!p.start_job(1, Vec::new(), second));
+        assert_eq!(p.status(), "Baking 1 map…");
+
+        release.send(()).expect("worker is waiting on the gate");
+        await_job(&mut p);
+        assert_eq!(p.last_records()[0].path.file_name().unwrap(), "first.png");
+        // Done: the button re-enables.
+        assert!(p.can_bake(true, true));
+    }
+
+    #[test]
+    fn failed_job_reaches_the_status_line_and_keeps_old_records() {
+        let mut p = panel();
+        let (release, work) = gated(Ok(vec![record("old.png", 3)]));
+        p.start_job(1, Vec::new(), work);
+        release.send(()).unwrap();
+        await_job(&mut p);
+
+        let (release, work) = gated(Err(anyhow::anyhow!("empty mesh").context("ao bake")));
+        assert!(p.start_job(4, Vec::new(), work));
+        assert_eq!(p.status(), "Baking 4 maps…");
+        release.send(()).unwrap();
+        await_job(&mut p);
+        assert!(!p.is_baking());
+        // `{err:#}` keeps the whole context chain, as the sync path did.
+        assert_eq!(p.status(), "Bake failed: ao bake: empty mesh");
+        // A failure doesn't wipe the last successful bake's records.
+        assert_eq!(p.last_records()[0].path.file_name().unwrap(), "old.png");
+        assert!(p.can_bake(true, true));
+    }
+
+    #[test]
+    fn panicked_worker_reports_failure_instead_of_baking_forever() {
+        // A worker that dies without sending drops the channel: the poll
+        // must turn `Disconnected` into a failure and re-enable the button
+        // (treating it like `Empty` would show "Baking…" forever).
+        let mut p = panel();
+        assert!(p.start_job(1, Vec::new(), || panic!("simulated wgpu validation panic")));
+        await_job(&mut p);
+        assert!(!p.is_baking());
+        assert!(
+            p.status()
+                .starts_with("Bake failed: bake worker exited without a result"),
+            "{}",
+            p.status()
+        );
+        assert!(p.can_bake(true, true));
+    }
+
+    /// A plain device (graceful skip where no wgpu adapter exists — the
+    /// `umber-bake` GPU tests' pattern; the bakers need no extra features).
+    fn try_request_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let instance = wgpu::Instance::default();
+        let Ok(adapter) =
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+        else {
+            eprintln!("skipping: no wgpu adapter available");
+            return None;
+        };
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    }
+
+    #[test]
+    fn bake_now_runs_on_a_worker_and_writes_the_map() {
+        // GPU-gated end to end: the real `bake_now` hands a cloned device,
+        // queue, and mesh to the worker; the map only lands via `poll_job`.
+        let Some((device, queue)) = try_request_device() else {
+            return;
+        };
+        let quad = umber_mesh::MeshData {
+            positions: vec![
+                [-1.0, -1.0, 0.0],
+                [1.0, -1.0, 0.0],
+                [1.0, 1.0, 0.0],
+                [-1.0, 1.0, 0.0],
+            ],
+            normals: vec![[0.0, 0.0, 1.0]; 4],
+            uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            material_names: vec![],
+        };
+        let dir = std::env::temp_dir().join(format!("umber-bake-job-{}", std::process::id()));
+        let mut p = BakesPanel::new(dir.clone());
+        p.set_resolution(128);
+        p.set_rays(MIN_RAYS);
+        for selection in [
+            BakeSelection::Curvature,
+            BakeSelection::Thickness,
+            BakeSelection::Position,
+        ] {
+            p.set_map_enabled(selection, false);
+        }
+        p.bake_now(&device, &queue, &quad, Some(Path::new("Quad.obj")));
+        // Only `poll_job` clears the job, so this holds even if the
+        // worker already finished — a synchronous bake_now fails here.
+        assert!(p.is_baking());
+        assert!(p.last_records().is_empty());
+        await_job_within(&mut p, 60);
+        assert!(p.status().starts_with("Baked 1 map"), "{}", p.status());
+        let written = &p.last_records()[0].path;
+        assert_eq!(written, &dir.join("Quad_ambient_occlusion.png"));
+        assert!(written.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bake_now_error_from_the_worker_reaches_the_status_line() {
+        // GPU-gated: an empty mesh fails inside the worker (the bake core
+        // rejects it); the error crosses the channel into the status line.
+        let Some((device, queue)) = try_request_device() else {
+            return;
+        };
+        let mut p = panel();
+        p.bake_now(&device, &queue, &umber_mesh::MeshData::default(), None);
+        assert!(p.is_baking());
+        await_job_within(&mut p, 60);
+        assert!(
+            p.status().starts_with("Bake failed: ao bake"),
+            "{}",
+            p.status()
+        );
+        assert!(p.last_records().is_empty());
+        assert!(p.can_bake(true, true));
     }
 }
