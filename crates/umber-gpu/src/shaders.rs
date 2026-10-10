@@ -10,8 +10,26 @@
 /// normals (no textures yet — that lands with the paint engine).
 /// Matches the `Vertex` and `CameraUniform` layouts in `renderer.rs`;
 /// bindings 1–3 are the diffuse IBL set, 4–7 the specular tier (see
-/// `GpuContext`'s bind-group layout).
+/// `GpuContext`'s bind-group layout). Group 1 is the display LUT
+/// (`crate::display_lut`; the snippet is that module's
+/// `DISPLAY_LUT_WGSL`, verbatim), applied to the final shaded color as
+/// the last step before the target.
 pub const MESH_SHADER: &str = r#"
+// ---- display LUT (crate::display_lut — keep verbatim) ----
+@group(1) @binding(0) var display_lut: texture_2d<f32>;
+
+fn display_lut_index(c: f32) -> i32 {
+    return i32(floor(clamp(c, 0.0, 1.0) * 255.0 + 0.5));
+}
+
+fn apply_display_lut(color: vec3<f32>) -> vec3<f32> {
+    let r = textureLoad(display_lut, vec2<i32>(display_lut_index(color.r), 0), 0).r;
+    let g = textureLoad(display_lut, vec2<i32>(display_lut_index(color.g), 0), 0).g;
+    let b = textureLoad(display_lut, vec2<i32>(display_lut_index(color.b), 0), 0).b;
+    return vec3<f32>(r, g, b);
+}
+// ---- end display LUT ----
+
 struct Camera {
     view_proj: mat4x4<f32>,
     // xyz = normalized direction the light travels (surface -> fragment),
@@ -159,7 +177,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         let ab = env_brdf_approx(n_dot_v, rough);
         color = color + prefiltered_env(reflect_dir, rough) * (f0 * ab.x + ab.y);
     }
-    return vec4<f32>(color, 1.0);
+    // Display LUT: the viewer chain, the last step before the target
+    // (after diffuse + specular — the chain sees the finished color).
+    // The identity table returns round(clamp(c)·255)/255, the byte the
+    // unorm target would store for c anyway.
+    return vec4<f32>(apply_display_lut(color), 1.0);
 }
 "#;
 

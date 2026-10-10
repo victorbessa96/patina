@@ -45,9 +45,26 @@ struct TexturedVertex {
     uv: [f32; 2],
 }
 
-/// WGSL for the textured-quad display pass.
-const TEXTURE_DISPLAY_SHADER: &str = r#"
+/// WGSL for the textured-quad display pass. Group 1 is the display LUT
+/// (`crate::display_lut` — the snippet below is that module's
+/// `DISPLAY_LUT_WGSL`, verbatim).
+pub(crate) const TEXTURE_DISPLAY_SHADER: &str = r#"
 // Full-target textured quad: present the paint surface inside a panel.
+
+// ---- display LUT (crate::display_lut — keep verbatim) ----
+@group(1) @binding(0) var display_lut: texture_2d<f32>;
+
+fn display_lut_index(c: f32) -> i32 {
+    return i32(floor(clamp(c, 0.0, 1.0) * 255.0 + 0.5));
+}
+
+fn apply_display_lut(color: vec3<f32>) -> vec3<f32> {
+    let r = textureLoad(display_lut, vec2<i32>(display_lut_index(color.r), 0), 0).r;
+    let g = textureLoad(display_lut, vec2<i32>(display_lut_index(color.g), 0), 0).g;
+    let b = textureLoad(display_lut, vec2<i32>(display_lut_index(color.b), 0), 0).b;
+    return vec3<f32>(r, g, b);
+}
+// ---- end display LUT ----
 
 struct ScreenUniform {
     resolution: vec2<f32>,  // target surface size (pixels)
@@ -83,9 +100,12 @@ fn vs_main(@location(0) pos: vec2<f32>, @location(1) uv_in: vec2<f32>) -> Vertex
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let color = textureSample(tex, samp, in.uv);
     // The paint buffer is linear rgba8unorm; the pipeline's fragment
-    // target format matches the egui surface, whose transfer does the
-    // sRGB encode. Alpha forced to 1 (opaque presentation).
-    return vec4<f32>(color.rgb, 1.0);
+    // target format matches the egui surface (non-sRGB). The display
+    // LUT is the last step before the target: nearest sampling hands it
+    // one of the 256 stored levels, which addresses its entry exactly
+    // (the identity LUT returns the texel unchanged). Alpha forced to 1
+    // (opaque presentation).
+    return vec4<f32>(apply_display_lut(color.rgb), 1.0);
 }
 "#;
 
@@ -98,17 +118,26 @@ struct ScreenUniformData {
     quad_size: [f32; 2],
 }
 
-/// Static display resources: quad pipeline, bind-group layout, sampler.
+/// Static display resources: quad pipeline, bind-group layout, sampler,
+/// and the identity display LUT bound when a caller passes no LUT.
 /// Built once per `GpuContext`; per-frame work is only the callback.
 pub struct TextureDisplay {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    identity_lut: crate::display_lut::DisplayLut,
 }
 
 impl TextureDisplay {
-    /// Creates the pipeline + shared resources on `device`.
-    pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
+    /// Creates the pipeline + shared resources on `device`. `lut_layout`
+    /// is the context's shared display-LUT layout (group 1);
+    /// `identity_lut` is the context's identity fallback.
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        lut_layout: &wgpu::BindGroupLayout,
+        identity_lut: crate::display_lut::DisplayLut,
+    ) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("umber_texture_display_shader"),
             source: wgpu::ShaderSource::Wgsl(TEXTURE_DISPLAY_SHADER.into()),
@@ -150,7 +179,8 @@ impl TextureDisplay {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("umber_texture_display_pipeline_layout"),
-            bind_group_layouts: &[Some(&layout)],
+            // Group 1: the display LUT (crate::display_lut).
+            bind_group_layouts: &[Some(&layout), Some(lut_layout)],
             immediate_size: 0,
         });
 
@@ -213,17 +243,34 @@ impl TextureDisplay {
             pipeline,
             layout,
             sampler,
+            identity_lut,
         }
     }
 
     /// Builds the per-frame callback presenting `target` at panel-space
     /// `rect` (egui points; converted to pixels per-frame in `prepare`
-    /// using the frame's actual scale factor).
+    /// using the frame's actual scale factor), through `lut` — the app's
+    /// display LUT, or `None` for the identity table (renders exactly
+    /// the pre-LUT bytes).
     pub fn callback(
         &self,
         device: &wgpu::Device,
         target: &crate::paint::PaintTarget,
         rect: epaint::emath::Rect,
+        lut: Option<&crate::display_lut::DisplayLut>,
+    ) -> TextureDisplayCallback {
+        self.callback_for_view(device, target.view(), rect, lut)
+    }
+
+    /// [`Self::callback`] over any filterable 2D view — the golden test
+    /// presents a plain `Rgba8Unorm` texture (a `PaintTarget` needs the
+    /// storage-texture feature some test adapters lack).
+    pub(crate) fn callback_for_view(
+        &self,
+        device: &wgpu::Device,
+        source: &wgpu::TextureView,
+        rect: epaint::emath::Rect,
+        lut: Option<&crate::display_lut::DisplayLut>,
     ) -> TextureDisplayCallback {
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("umber_texture_display_uniform"),
@@ -255,10 +302,11 @@ impl TextureDisplay {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(target.view()),
+                    resource: wgpu::BindingResource::TextureView(source),
                 },
             ],
         });
+        let lut_bind_group = lut.unwrap_or(&self.identity_lut).bind_group().clone();
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("umber_texture_display_quad"),
             contents: bytemuck::bytes_of(&QUAD_VERTS),
@@ -267,6 +315,7 @@ impl TextureDisplay {
         TextureDisplayCallback {
             pipeline: self.pipeline.clone(),
             bind_group,
+            lut_bind_group,
             vertex_buffer,
             uniform_buffer,
             rect_points: rect,
@@ -281,6 +330,9 @@ impl TextureDisplay {
 pub struct TextureDisplayCallback {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+    /// Group 1: the display LUT's bind group (the app's, or the identity
+    /// fallback).
+    lut_bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
     /// The quad rect in egui points, as of this frame. Converted to
@@ -304,8 +356,7 @@ impl egui_wgpu::CallbackTrait for TextureDisplayCallback {
         // (`ScissorRect::new`): scale by pixels_per_point, and divide by
         // the descriptor's size_in_pixels — the actual surface size —
         // not a caller-reconstructed viewport approximation.
-        let uniform = screen_uniform(&self.rect_points, screen_descriptor);
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
+        self.write_uniform(queue, screen_descriptor);
         Vec::new()
     }
 
@@ -315,8 +366,27 @@ impl egui_wgpu::CallbackTrait for TextureDisplayCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         _callback_resources: &egui_wgpu::CallbackResources,
     ) {
+        self.draw(render_pass);
+    }
+}
+
+impl TextureDisplayCallback {
+    /// `prepare`'s uniform write, callable without egui's callback
+    /// plumbing (the golden test's offscreen pass).
+    pub(crate) fn write_uniform(
+        &self,
+        queue: &wgpu::Queue,
+        screen_descriptor: &egui_wgpu::ScreenDescriptor,
+    ) {
+        let uniform = screen_uniform(&self.rect_points, screen_descriptor);
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
+    }
+
+    /// The draw `paint` records, onto any render pass.
+    pub(crate) fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>) {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, &self.bind_group, &[]);
+        render_pass.set_bind_group(1, &self.lut_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.draw(0..4, 0..1);
     }
@@ -424,5 +494,205 @@ mod tests {
         let (x2, y2) = ndc(&u);
         let (x1, y1) = ndc(&u1);
         assert!((x2 - x1).abs() < 1e-6 && (y2 - y1).abs() < 1e-6);
+    }
+
+    // ---- the display-LUT golden (GPU-gated: the harness's adapter
+    // rule — any adapter incl. lavapipe/WARP, skip with a note when none;
+    // bit-equality is within one adapter, which these comparisons are).
+
+    #[cfg(feature = "gpu")]
+    mod gpu {
+        use crate::display_lut::{identity_lut_bytes, DisplayLut, DISPLAY_LUT_BYTES};
+        use crate::golden::{compare_rgba8, RenderTarget};
+        use crate::renderer::GpuContext;
+
+        /// 16×16 = 256 texels: the source holds every byte level per
+        /// channel, so every LUT entry is exercised.
+        const SIDE: u32 = 16;
+
+        fn try_request_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
+            let instance = wgpu::Instance::default();
+            let adapter = pollster::block_on(
+                instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
+            )
+            .ok()?;
+            let (device, queue) =
+                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+                    .ok()?;
+            Some((adapter, device, queue))
+        }
+
+        /// The context on the eframe surface's format class (non-sRGB
+        /// `Rgba8Unorm`), no depth (the display quad has none).
+        fn context() -> Option<GpuContext> {
+            let (adapter, device, queue) = try_request_device()?;
+            Some(GpuContext::new(
+                adapter,
+                device,
+                queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                None,
+            ))
+        }
+
+        /// Source texel k (row-major): r = k, g = 255 − k, b = 97k mod
+        /// 256 (97 is odd, so b also walks all 256 levels), a = k (the
+        /// display forces alpha to 1 regardless).
+        fn source_bytes() -> Vec<u8> {
+            (0..256u32)
+                .flat_map(|k| [k as u8, (255 - k) as u8, (k * 97 % 256) as u8, k as u8])
+                .collect()
+        }
+
+        /// What the pre-LUT shader drew: the texel's rgb, alpha 255.
+        fn pre_lut_expected(source: &[u8]) -> Vec<u8> {
+            source
+                .chunks_exact(4)
+                .flat_map(|t| [t[0], t[1], t[2], 255])
+                .collect()
+        }
+
+        fn source_view(gpu: &GpuContext, bytes: &[u8]) -> wgpu::TextureView {
+            let extent = wgpu::Extent3d {
+                width: SIDE,
+                height: SIDE,
+                depth_or_array_layers: 1,
+            };
+            let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("umber_lut_golden_source"),
+                size: extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                // The paint target's format.
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            gpu.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytes,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(SIDE * 4),
+                    rows_per_image: Some(SIDE),
+                },
+                extent,
+            );
+            texture.create_view(&wgpu::TextureViewDescriptor::default())
+        }
+
+        /// Presents `source` 1:1 (quad = the whole 16×16 target at 1
+        /// px/pt, so pixel (x, y) samples texel (x, y) — nearest, row 0
+        /// at the top) through `lut`, and reads the target back.
+        fn present(
+            gpu: &GpuContext,
+            source: &wgpu::TextureView,
+            lut: Option<&DisplayLut>,
+        ) -> Vec<u8> {
+            let target =
+                RenderTarget::with_format(&gpu.device, SIDE, SIDE, wgpu::TextureFormat::Rgba8Unorm);
+            let rect = epaint::emath::Rect::from_min_size(
+                epaint::emath::Pos2::ZERO,
+                epaint::emath::vec2(SIDE as f32, SIDE as f32),
+            );
+            let callback = gpu
+                .texture_display()
+                .callback_for_view(&gpu.device, source, rect, lut);
+            callback.write_uniform(
+                &gpu.queue,
+                &egui_wgpu::ScreenDescriptor {
+                    size_in_pixels: [SIDE, SIDE],
+                    pixels_per_point: 1.0,
+                },
+            );
+            let mut encoder = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("umber_lut_golden_encoder"),
+                });
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("umber_lut_golden_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target.view(),
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                callback.draw(&mut pass);
+            }
+            gpu.queue.submit(Some(encoder.finish()));
+            target
+                .read_back(&gpu.device, &gpu.queue)
+                .expect("golden readback")
+        }
+
+        /// THE GOLDEN (the design's test 3): the UV view's display is
+        /// byte-identical to the pre-LUT render with the identity LUT —
+        /// both the context's fallback (`None`) and an app-style LUT
+        /// built from the identity bytes and bound explicitly.
+        #[test]
+        fn identity_lut_render_is_byte_identical() {
+            let Some(gpu) = context() else {
+                eprintln!("skipping identity_lut_render_is_byte_identical: no wgpu adapter");
+                return;
+            };
+            let source = source_bytes();
+            let view = source_view(&gpu, &source);
+            let expected = pre_lut_expected(&source);
+
+            let fallback = present(&gpu, &view, None);
+            compare_rgba8(&fallback, &expected, 0).expect("fallback identity LUT");
+
+            let bound = DisplayLut::new(&gpu, &identity_lut_bytes());
+            let with_lut = present(&gpu, &view, Some(&bound));
+            compare_rgba8(&with_lut, &expected, 0).expect("bound identity LUT");
+            assert_eq!(with_lut, fallback);
+        }
+
+        /// THE CAN-FAIL COMPANION: an identity-only golden also passes
+        /// if the shader ignores the LUT. An inverting table (entry i =
+        /// 255 − i), installed through the app's in-place `upload` path,
+        /// must invert every channel — proving the LUT is read, each
+        /// channel picks its own entry, and a rebuild needs no rebind.
+        #[test]
+        fn uploaded_lut_reaches_the_pixels() {
+            let Some(gpu) = context() else {
+                eprintln!("skipping uploaded_lut_reaches_the_pixels: no wgpu adapter");
+                return;
+            };
+            let source = source_bytes();
+            let view = source_view(&gpu, &source);
+
+            let lut = DisplayLut::new(&gpu, &identity_lut_bytes());
+            let mut inverted = [0u8; DISPLAY_LUT_BYTES];
+            for (i, entry) in inverted.chunks_exact_mut(4).enumerate() {
+                let b = 255 - i as u8;
+                entry.copy_from_slice(&[b, b, b, 255]);
+            }
+            lut.upload(&gpu, &inverted);
+
+            let out = present(&gpu, &view, Some(&lut));
+            let expected: Vec<u8> = source
+                .chunks_exact(4)
+                .flat_map(|t| [255 - t[0], 255 - t[1], 255 - t[2], 255])
+                .collect();
+            compare_rgba8(&out, &expected, 0).expect("inverted LUT");
+            assert_ne!(out, pre_lut_expected(&source));
+        }
     }
 }

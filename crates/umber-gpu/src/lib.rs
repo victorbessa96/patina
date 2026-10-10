@@ -17,6 +17,7 @@
 
 pub mod bake_shaders;
 pub mod camera;
+pub mod display_lut;
 pub mod golden;
 pub mod ibl;
 pub mod material;
@@ -34,6 +35,7 @@ pub mod ref_scene;
 pub mod tile_pool;
 
 pub use camera::{world_from_ndc, OrbitCamera};
+pub use display_lut::{identity_lut_bytes, DisplayLut, DISPLAY_LUT_BYTES};
 pub use ibl::{EnvFlags, EnvFormat, EnvIrradiance, IblError, SpecParams};
 pub use paint::{Dab, DabBuffer, PaintCompositor, PaintError, PaintTarget};
 pub use paint_thread::{FrameStats, PaintThread, PaintThreadCommand};

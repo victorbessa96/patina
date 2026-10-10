@@ -82,6 +82,10 @@ struct PanelViewer<'a> {
     doc: &'a mut document::Document,
     brush: &'a mut BrushPanel,
     display: &'a mut umber_color::DisplaySettings,
+    /// The display LUT's sync state (the Display panel marks it dirty).
+    display_lut_state: &'a mut display_panel::DisplayLutState,
+    /// The device display LUT both GPU views sample.
+    display_lut: &'a umber_gpu::DisplayLut,
 }
 
 impl TabViewer for PanelViewer<'_> {
@@ -109,10 +113,19 @@ impl TabViewer for PanelViewer<'_> {
 
     fn ui(&mut self, ui: &mut Ui, tab: &mut Self::Tab) {
         match tab {
-            Panel::Viewport => self.viewport.ui(ui, self.gpu, self.paint.as_deref_mut()),
-            Panel::UvView => self
-                .uv_view
-                .ui(ui, self.mesh, self.gpu, self.paint.as_deref_mut()),
+            Panel::Viewport => self.viewport.ui(
+                ui,
+                self.gpu,
+                self.paint.as_deref_mut(),
+                Some(self.display_lut),
+            ),
+            Panel::UvView => self.uv_view.ui(
+                ui,
+                self.mesh,
+                self.gpu,
+                self.paint.as_deref_mut(),
+                Some(self.display_lut),
+            ),
             Panel::LayerStack => document::layers_ui(ui, self.doc),
             Panel::Properties => {
                 self.brush.show(ui);
@@ -150,7 +163,7 @@ impl TabViewer for PanelViewer<'_> {
                 self.graph.show(ui);
             }
             Panel::Display => {
-                display_panel::show(ui, self.display);
+                display_panel::show(ui, self.display, self.display_lut_state);
             }
         }
     }
@@ -174,9 +187,12 @@ pub struct AppState {
     pub export: ExportDialog,
     /// The node-graph panel: procedural graph + cached eval (wave-5).
     pub graph: GraphPanel,
-    /// The viewer chain (Display panel; saved in the project). CPU
-    /// preview only until the GPU display LUT consumes it.
+    /// The viewer chain (Display panel; saved in the project). Reaches
+    /// the viewport + UV view through the GPU display LUT.
     pub display: umber_color::DisplaySettings,
+    /// Whether the device display LUT matches `display` (starts dirty;
+    /// the frame loop rebuilds + uploads).
+    pub display_lut: display_panel::DisplayLutState,
 }
 
 /// The eframe app.
@@ -184,6 +200,10 @@ pub struct UmberApp {
     pub state: AppState,
     dock: DockState<Panel>,
     gpu: GpuContext,
+    /// The device display LUT (created at startup on eframe's device;
+    /// rewritten in place when `state.display_lut` is dirty). Handed to
+    /// the viewport's mesh pass and the UV view's paint display.
+    display_lut: umber_gpu::DisplayLut,
     brush_panel: BrushPanel,
     /// Perf HUD toggle (View menu). `perf` feature only.
     #[cfg(feature = "perf")]
@@ -225,6 +245,9 @@ impl UmberApp {
             // (review #1 + architecture rule).
             umber_gpu::renderer::depth_format(),
         );
+        // The display LUT, identity until the first frame's rebuild
+        // (`AppState::display_lut` starts dirty) uploads the chain.
+        let display_lut = umber_gpu::DisplayLut::new(&gpu, &umber_gpu::identity_lut_bytes());
 
         // Layout: [left column | center (3D + 2D UV tabs)] with history docked right.
         let mut dock = DockState::new(vec![Panel::Viewport, Panel::UvView]);
@@ -272,6 +295,7 @@ impl UmberApp {
             },
             dock,
             gpu,
+            display_lut,
             brush_panel: BrushPanel::new(),
             #[cfg(feature = "perf")]
             show_perf_hud: false,
@@ -426,6 +450,7 @@ impl UmberApp {
                 // Hand-edited files can carry out-of-range values; the
                 // sliders' ranges are the contract.
                 self.state.display = model.settings.display.sanitized();
+                self.state.display_lut.mark_display_lut_dirty();
                 if let Some(doc) = model.graphs_mtlx.first() {
                     if self.state.graph.load_mtlx(doc) {
                         log::info!("project graph restored into the Graph panel");
@@ -543,11 +568,24 @@ impl eframe::App for UmberApp {
                 doc: &mut self.state.doc,
                 brush: &mut self.brush_panel,
                 display: &mut self.state.display,
+                display_lut_state: &mut self.state.display_lut,
+                display_lut: &self.display_lut,
             };
             DockArea::new(&mut self.dock)
                 .style(Style::from_egui(ui.style()))
                 .show_inside(ui, &mut viewer);
         });
+
+        // Display LUT rebuild, after the panels (the Display panel's
+        // edits this frame included): the upload is staged on the queue,
+        // so it lands before egui submits this frame — the callbacks the
+        // views just built (same texture, unchanged bind group) already
+        // draw with the new table. One more frame refreshes the panel's
+        // status line, which read "Rebuilding" while the LUT was dirty.
+        if let Some(bytes) = self.state.display_lut.take_rebuild(&self.state.display) {
+            self.display_lut.upload(&self.gpu, &bytes);
+            ui.ctx().request_repaint();
+        }
 
         // Drain the paint channel once per frame after all panels ran.
         if let Some(paint) = self.state.paint.as_mut() {

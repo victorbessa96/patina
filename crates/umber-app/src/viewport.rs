@@ -7,7 +7,7 @@
 //! behind `umber-gpu`.
 
 use egui::{Color32, PointerButton, Response, Sense, Ui};
-use umber_gpu::{EnvIrradiance, GpuContext, MeshBuffers, OrbitCamera};
+use umber_gpu::{DisplayLut, EnvIrradiance, GpuContext, MeshBuffers, OrbitCamera};
 
 /// Background shown when there is no mesh loaded (and behind the mesh
 /// otherwise, since the shared egui render pass has no clear op of its
@@ -90,11 +90,16 @@ impl Viewport {
     /// Paint mode: Ctrl/Cmd (or pen-tip with `ctrl`) + primary drag casts
     /// the pointer through the camera into the mesh and feeds the hit UV
     /// to `paint`'s stroke path. Plain drag orbits; shift-drag pans.
+    ///
+    /// `display_lut` is the app's display LUT (the Display panel's
+    /// chain), applied as the mesh pass's last step; `None` draws
+    /// through the identity table.
     pub fn ui(
         &mut self,
         ui: &mut Ui,
         gpu: &GpuContext,
         paint: Option<&mut crate::paint_state::PaintState>,
+        display_lut: Option<&DisplayLut>,
     ) {
         let rect = ui.available_rect_before_wrap();
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -138,7 +143,7 @@ impl Viewport {
                 let grid = gpu.grid_callback(view_proj);
                 ui.painter().add(umber_gpu::grid_paint_shape(rect, grid));
             }
-            let callback = mesh.paint_callback(gpu, uniform);
+            let callback = mesh.paint_callback(gpu, uniform, display_lut);
             let shape = umber_gpu::mesh_paint_shape(rect, callback);
             ui.painter().add(shape);
             if self.show_wireframe {

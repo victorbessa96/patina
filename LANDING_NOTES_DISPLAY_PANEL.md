@@ -62,3 +62,29 @@ umber-color — the chain fn lives in umber-color, so the
 builder sits beside it), the two shader bindings + bind-group
 wiring (umber-gpu), the panel status flip, the four tests.
 No new deps.
+
+## Landed (code-only, un-built — awaiting review)
+
+- **Format**: 256×1 `Rgba8Unorm` D2 (not `…Srgb`, not D1).
+  The eframe surface is non-sRGB (`preferred_framebuffer_format`
+  picks `Rgba8Unorm`/`Bgra8Unorm`), so entries are final display
+  bytes — no double encode. D2 mirrors every other binding and
+  avoids GL-backend 1D quirks.
+- **Read**: `textureLoad` at `round(clamp(c,0,1)·255)`, no
+  sampler, each channel from its own entry's component
+  (`umber_gpu::display_lut::DISPLAY_LUT_WGSL`, pasted verbatim
+  into both shaders; a test pins the copies).
+- **Sampling point**: the last step before the target — the
+  mesh pass after diffuse + specular; the texture display on
+  the sampled texel's rgb (alpha still forced to 1).
+- **Binding**: group 1 of both pipelines (additive — group 0 and
+  the wireframe pass are untouched). Consumers take
+  `Option<&DisplayLut>`; `None` binds the context's identity LUT.
+- **Ownership**: `UmberApp::display_lut` (created at startup);
+  `AppState::display_lut` (`DisplayLutState`) starts dirty, the
+  panel marks it on edit, `open_project` on load; the frame loop
+  `take_rebuild`s after the panels and uploads in place
+  (`queue.write_texture` — no bind-group churn).
+- **Limits**: input clamps to 0..1; 256 nearest levels band in the
+  shadows on the mesh pass under sRGB/Rec.709; the grid,
+  wireframe, and egui-drawn UV wireframe are not transformed.

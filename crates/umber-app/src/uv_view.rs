@@ -20,13 +20,16 @@ pub struct UvView;
 
 impl UvView {
     /// Draws the UV wireframe for `mesh` (or a hint when none is loaded)
-    /// and feeds pointer strokes into the paint session.
+    /// and feeds pointer strokes into the paint session. The paint
+    /// canvas presents through `display_lut` (the Display panel's chain;
+    /// `None` = the identity table).
     pub fn ui(
         &mut self,
         ui: &mut Ui,
         mesh: Option<&MeshData>,
         gpu: &umber_gpu::GpuContext,
         mut paint: Option<&mut crate::paint_state::PaintState>,
+        display_lut: Option<&umber_gpu::DisplayLut>,
     ) {
         let rect = ui.available_rect_before_wrap();
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -73,12 +76,16 @@ impl UvView {
         painter.rect_filled(square, 0.0, UV_BG_COLOR);
 
         // Live paint canvas: the paint target presented through the
-        // texture-display callback, clipped to the UV square. Drawn
-        // beneath the wireframe so strokes show through.
+        // texture-display callback, clipped to the UV square, through the
+        // display LUT. Drawn beneath the wireframe so strokes show
+        // through (the egui-drawn UV wireframe is not LUT-transformed).
         if let Some(paint) = paint {
-            let callback =
-                gpu.texture_display()
-                    .callback(&gpu.device, paint.paint_target(), square);
+            let callback = gpu.texture_display().callback(
+                &gpu.device,
+                paint.paint_target(),
+                square,
+                display_lut,
+            );
             let shape = umber_gpu::texture_display::texture_display_shape(square, callback);
             painter.add(shape);
         }

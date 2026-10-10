@@ -23,7 +23,19 @@ pub struct RenderTarget {
 impl RenderTarget {
     /// Creates a new RGBA8 offscreen target.
     pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
-        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        Self::with_format(device, width, height, wgpu::TextureFormat::Rgba8UnormSrgb)
+    }
+
+    /// Creates an offscreen target of an explicit 4-byte color format —
+    /// e.g. `Rgba8Unorm`, the eframe surface's class (non-sRGB), which
+    /// the display-LUT golden renders into ([`Self::read_back`] packs
+    /// 4 bytes per texel, so the format must be a 4-byte one).
+    pub fn with_format(
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("umber_golden_target"),
             size: wgpu::Extent3d {
@@ -59,7 +71,7 @@ impl RenderTarget {
         mesh: &MeshBuffers,
         uniform: CameraUniform,
     ) -> wgpu::CommandBuffer {
-        let callback = mesh.paint_callback(gpu, uniform);
+        let callback = mesh.paint_callback(gpu, uniform, None);
         let mut encoder = gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -171,6 +183,12 @@ impl RenderTarget {
     /// Target color format.
     pub fn format(&self) -> wgpu::TextureFormat {
         self.format
+    }
+
+    /// The color attachment view — for goldens that record their own
+    /// pass (the display-LUT golden in `texture_display`).
+    pub fn view(&self) -> &wgpu::TextureView {
+        &self.texture_view
     }
 }
 

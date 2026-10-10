@@ -175,6 +175,13 @@ pub struct GpuContext {
     grid_pipeline: wgpu::RenderPipeline,
     /// Group-0 layout for the grid pass ([`GridUniform`]).
     grid_layout: wgpu::BindGroupLayout,
+    /// Group-1 layout of the two display-LUT consumers (the mesh pass
+    /// and the texture display) — see `crate::display_lut`.
+    display_lut_layout: wgpu::BindGroupLayout,
+    /// The identity display LUT, bound whenever a consumer is handed no
+    /// LUT (`None`) — renders the pre-LUT bytes. Same always-populated
+    /// pattern as `fallback_env_view`.
+    identity_lut: crate::display_lut::DisplayLut,
 }
 
 /// Depth format used by the viewport mesh pipeline when depth is enabled.
@@ -198,6 +205,12 @@ impl GpuContext {
     /// The texture-display pipeline for presenting paint targets.
     pub fn texture_display(&self) -> &crate::texture_display::TextureDisplay {
         &self.texture_display
+    }
+
+    /// The display-LUT consumers' shared group-1 layout
+    /// ([`crate::display_lut::DisplayLut::new`] builds against it).
+    pub(crate) fn display_lut_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.display_lut_layout
     }
 
     /// Creates a uniform buffer holding `params`, ready for an OpenPBR
@@ -473,9 +486,21 @@ impl GpuContext {
             ],
         });
 
+        // Display LUT (crate::display_lut): group 1 of the mesh pass and
+        // the texture display — an additive group, so group 0 (and the
+        // wireframe pass that reuses its layout) is untouched. The
+        // identity table is the fallback for consumers handed no LUT.
+        let display_lut_layout = crate::display_lut::display_lut_layout(&device);
+        let identity_lut = crate::display_lut::DisplayLut::with_layout(
+            &device,
+            &queue,
+            &display_lut_layout,
+            &crate::display_lut::identity_lut_bytes(),
+        );
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("umber_mesh_pipeline_layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
+            bind_group_layouts: &[Some(&bind_group_layout), Some(&display_lut_layout)],
             immediate_size: 0,
         });
 
@@ -529,7 +554,12 @@ impl GpuContext {
             cache: None,
         });
 
-        let texture_display = crate::texture_display::TextureDisplay::new(&device, color_format);
+        let texture_display = crate::texture_display::TextureDisplay::new(
+            &device,
+            color_format,
+            &display_lut_layout,
+            identity_lut.clone(),
+        );
 
         // OpenPBR pipeline: camera (binding 0) + material params
         // (binding 1, the 96-byte OpenPbrParams uniform).
@@ -777,6 +807,8 @@ impl GpuContext {
             wire_color_layout,
             grid_pipeline,
             grid_layout,
+            display_lut_layout,
+            identity_lut,
         }
     }
 
@@ -1095,11 +1127,19 @@ impl MeshBuffers {
     }
 
     /// Builds this frame's paint callback. `uniform` is computed by the
-    /// caller from the current camera + viewport aspect ratio.
-    pub fn paint_callback(&self, gpu: &GpuContext, uniform: CameraUniform) -> MeshPaintCallback {
+    /// caller from the current camera + viewport aspect ratio. `lut` is
+    /// the app's display LUT (the viewer chain, applied as the pass's
+    /// last step), or `None` for the context's identity table.
+    pub fn paint_callback(
+        &self,
+        gpu: &GpuContext,
+        uniform: CameraUniform,
+        lut: Option<&crate::display_lut::DisplayLut>,
+    ) -> MeshPaintCallback {
         MeshPaintCallback {
             pipeline: gpu.pipeline.clone(),
             bind_group: self.bind_group.clone(),
+            lut_bind_group: lut.unwrap_or(&gpu.identity_lut).bind_group().clone(),
             vertex_buffer: self.vertex_buffer.clone(),
             index_buffer: self.index_buffer.clone(),
             index_count: self.index_count,
@@ -1118,11 +1158,33 @@ impl MeshBuffers {
 pub struct MeshPaintCallback {
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+    /// Group 1: the display LUT's bind group (the app's, or the
+    /// context's identity fallback).
+    lut_bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
     uniform_buffer: wgpu::Buffer,
     uniform: CameraUniform,
+}
+
+impl MeshPaintCallback {
+    /// `prepare`'s camera-uniform write, callable without egui's
+    /// callback plumbing (the perf harness's offscreen frames).
+    pub(crate) fn write_uniform(&self, queue: &wgpu::Queue) {
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&self.uniform));
+    }
+
+    /// Records the mesh draw onto any render pass — the state `paint`
+    /// applies (pipeline, group 0, group 1 = display LUT, buffers).
+    pub(crate) fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, &self.bind_group, &[]);
+        render_pass.set_bind_group(1, &self.lut_bind_group, &[]);
+        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        render_pass.draw_indexed(0..self.index_count, 0, 0..1);
+    }
 }
 
 impl egui_wgpu::CallbackTrait for MeshPaintCallback {
@@ -1134,7 +1196,7 @@ impl egui_wgpu::CallbackTrait for MeshPaintCallback {
         _egui_encoder: &mut wgpu::CommandEncoder,
         _callback_resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&self.uniform));
+        self.write_uniform(queue);
         Vec::new()
     }
 
@@ -1144,11 +1206,7 @@ impl egui_wgpu::CallbackTrait for MeshPaintCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         _callback_resources: &egui_wgpu::CallbackResources,
     ) {
-        render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, &self.bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        render_pass.draw_indexed(0..self.index_count, 0, 0..1);
+        self.draw(render_pass);
     }
 }
 
@@ -1431,7 +1489,7 @@ mod tests {
             assert_eq!(buffers.index_count(), 3);
 
             let uniform = CameraUniform::new(glam::Mat4::IDENTITY, glam::Vec3::NEG_Y);
-            let _callback = buffers.paint_callback(&gpu, uniform);
+            let _callback = buffers.paint_callback(&gpu, uniform, None);
         }
 
         #[test]
@@ -1731,9 +1789,11 @@ mod tests {
                     grid.draw(&mut pass);
                 }
                 if let Some(buffers) = buffers {
-                    // The exact state `MeshPaintCallback::paint` applies.
+                    // The exact state `MeshPaintCallback::paint` applies
+                    // (group 1 = the identity display LUT).
                     pass.set_pipeline(&gpu.pipeline);
                     pass.set_bind_group(0, &buffers.bind_group, &[]);
+                    pass.set_bind_group(1, gpu.identity_lut.bind_group(), &[]);
                     pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
                     pass.set_index_buffer(
                         buffers.index_buffer.slice(..),
@@ -2260,9 +2320,13 @@ mod tests {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                // The exact state `MeshPaintCallback::paint` applies.
+                // The exact state `MeshPaintCallback::paint` applies
+                // (group 1 = the identity display LUT — so the
+                // closed-form fallback tests below double as the mesh
+                // pass's identity-LUT no-regression proof).
                 pass.set_pipeline(&gpu.pipeline);
                 pass.set_bind_group(0, &buffers.bind_group, &[]);
+                pass.set_bind_group(1, gpu.identity_lut.bind_group(), &[]);
                 pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
                 pass.set_index_buffer(buffers.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..buffers.index_count, 0, 0..1);
@@ -2396,6 +2460,95 @@ mod tests {
                     assert!(
                         diff <= 1,
                         "pixel {i} ch{c}: got {px:?}, want {want:?} (≤1 LSB unorm rounding)"
+                    );
+                }
+            }
+        }
+
+        /// DISPLAY LUT, MESH PASS (can-fail): the app's real path —
+        /// `paint_callback(.., Some(lut))` → `MeshPaintCallback::draw`
+        /// setting group 1 — with an inverting table (entry i = 255 − i)
+        /// renders 255 − the closed-form procedural byte. A mesh pass
+        /// that ignored its LUT (or a callback that bound the identity
+        /// fallback instead) renders the un-inverted (69, 75, 98).
+        #[test]
+        fn mesh_pass_reads_the_bound_display_lut() {
+            let Some((adapter, device, queue)) = try_request_device() else {
+                eprintln!("skipping mesh_pass_reads_the_bound_display_lut: no wgpu adapter");
+                return;
+            };
+            const W: u32 = 8;
+            const H: u32 = 8;
+            let gpu = GpuContext::new(
+                adapter,
+                device,
+                queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                None,
+            );
+            let mesh = fullscreen_mesh([0.0, 0.0, 1.0]);
+            let buffers = MeshBuffers::upload(&gpu, &mesh).expect("upload succeeds");
+            let mut inverted = [0u8; crate::display_lut::DISPLAY_LUT_BYTES];
+            for (i, entry) in inverted.chunks_exact_mut(4).enumerate() {
+                let b = 255 - i as u8;
+                entry.copy_from_slice(&[b, b, b, 255]);
+            }
+            let lut = crate::display_lut::DisplayLut::new(&gpu, &inverted);
+            let uniform = CameraUniform::new(glam::Mat4::IDENTITY, glam::Vec3::NEG_Y);
+            let callback = buffers.paint_callback(&gpu, uniform, Some(&lut));
+            callback.write_uniform(&gpu.queue);
+
+            let target = gpu.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("umber_mesh_lut_test_target"),
+                size: wgpu::Extent3d {
+                    width: W,
+                    height: H,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut encoder = gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("umber_mesh_lut_test_encoder"),
+                });
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("umber_mesh_lut_test_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                callback.draw(&mut pass);
+            }
+            gpu.queue.submit(Some(encoder.finish()));
+            let bytes = readback_packed(&gpu.device, &gpu.queue, &target, W, H);
+
+            let plain = expected_procedural_byte([0.0, 0.0, 1.0]);
+            let want = [255 - plain[0], 255 - plain[1], 255 - plain[2], 255];
+            assert_eq!(bytes.len(), (W * H * 4) as usize);
+            for (i, px) in bytes.chunks_exact(4).enumerate() {
+                for c in 0..4 {
+                    let diff = px[c].abs_diff(want[c]);
+                    assert!(
+                        diff <= 1,
+                        "pixel {i} ch{c}: got {px:?}, want {want:?} (inverted LUT)"
                     );
                 }
             }

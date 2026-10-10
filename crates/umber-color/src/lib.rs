@@ -8,7 +8,8 @@
 //! Wave 2: the CPU display-transform reference path ([`display`]) — the
 //! spec the GPU shader and the exporter validate against.
 //! Wave 5: the viewer chain ([`DisplaySettings`] + [`apply_display_chain`])
-//! the app's Display panel edits and the `.umber` project persists.
+//! the app's Display panel edits and the `.umber` project persists, and
+//! [`build_display_lut`] — the chain tabulated for the GPU display LUT.
 
 pub mod display;
 
@@ -16,7 +17,8 @@ pub mod display;
 pub mod ocio;
 
 pub use display::{
-    apply_display, apply_display_chain, invert_display, DisplaySettings, DisplayTransform,
+    apply_display, apply_display_chain, build_display_lut, invert_display, DisplaySettings,
+    DisplayTransform, DISPLAY_LUT_BYTES, DISPLAY_LUT_ENTRIES,
 };
 
 #[cfg(feature = "ocio")]

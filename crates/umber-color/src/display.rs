@@ -10,13 +10,18 @@
 //! BT.709 view, and [`DisplaySettings`] + [`apply_display_chain`] add
 //! the viewer chain — exposure, then the view transform, then display
 //! gamma — that the app's Display panel edits and the `.umber` project
-//! persists. The chain is CPU-only: the GPU display LUT that would
-//! consume it in the viewport / UV view is the named follow-up.
+//! persists.
+//!
+//! The GPU display LUT: [`build_display_lut`] tabulates the chain into
+//! 256 RGBA8 entries (the chain on each `i/255` linear sample, quantized
+//! to the display byte). The app uploads those bytes into
+//! `umber_gpu::DisplayLut`, which the viewport mesh pass and the UV
+//! view's texture display sample as their last step — `umber-gpu` never
+//! sees [`DisplaySettings`], only the bytes.
 //!
 //! Architecture note: this module owns the CPU reference path (software
-//! transforms + tests). The GPU display LUT path lands in `umber-gpu`
-//! with the viewport HDR work — the CPU path is the spec both the
-//! shader and the exporter are validated against.
+//! transforms + tests). The LUT is that path, tabulated — the CPU chain
+//! is the spec both the shader and the exporter are validated against.
 
 use serde::{Deserialize, Serialize};
 
@@ -151,6 +156,34 @@ pub fn apply_display_chain(linear: [f32; 3], s: &DisplaySettings) -> [f32; 3] {
         let inv = 1.0 / s.gamma;
         viewed.map(|c| c.max(0.0).powf(inv))
     }
+}
+
+/// Entries in the GPU display LUT: one per 8-bit linear input level.
+pub const DISPLAY_LUT_ENTRIES: usize = 256;
+/// The LUT's byte length: [`DISPLAY_LUT_ENTRIES`] RGBA8 texels.
+pub const DISPLAY_LUT_BYTES: usize = DISPLAY_LUT_ENTRIES * 4;
+
+/// The chain tabulated for the GPU display LUT: entry `i` is
+/// [`apply_display_chain`] on the linear gray `i/255`, quantized to the
+/// display byte (`clamp(v, 0, 1) · 255`, rounded — the Display panel's
+/// swatch quantization; NaN saturates to 0), alpha 255. RGBA8, entry-
+/// major (`[r0, g0, b0, a0, r1, …]`), ready for a 256×1 `Rgba8Unorm`
+/// upload. The chain is per-channel identical, so r = g = b per entry;
+/// the shader still reads each channel from its own entry's matching
+/// component, which keeps a future per-channel (OCIO) LUT a data change.
+///
+/// The identity settings produce the identity table (`i → i`) byte-for-
+/// byte: the chain returns `i/255` bit-exactly and `(i/255)·255` rounds
+/// back to `i`.
+pub fn build_display_lut(settings: &DisplaySettings) -> [u8; DISPLAY_LUT_BYTES] {
+    let byte = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let mut lut = [0u8; DISPLAY_LUT_BYTES];
+    for (i, entry) in lut.chunks_exact_mut(4).enumerate() {
+        let l = i as f32 / 255.0;
+        let [r, g, b] = apply_display_chain([l, l, l], settings);
+        entry.copy_from_slice(&[byte(r), byte(g), byte(b), 255]);
+    }
+    lut
 }
 
 /// IEC 61966-2-1: linear → sRGB transfer (f32 in 0..=1).
@@ -419,6 +452,72 @@ mod tests {
             gamma: 2.2,
         };
         assert_eq!(ok.sanitized(), ok);
+    }
+
+    // ---- the GPU display LUT ------------------------------------------
+
+    #[test]
+    fn identity_lut_is_byte_exact() {
+        // The design's test 1: Raw / 0 EV / gamma 1 → entry i = (i, i,
+        // i, 255) for every i, no exceptions (the golden render's
+        // no-regression contract rests on this table).
+        let lut = build_display_lut(&DisplaySettings::default());
+        assert_eq!(lut.len(), 1024);
+        for (i, entry) in lut.chunks_exact(4).enumerate() {
+            let b = i as u8;
+            assert_eq!(entry, [b, b, b, 255], "entry {i}");
+        }
+    }
+
+    #[test]
+    fn known_chain_gives_known_lut_bytes() {
+        // The design's test 2: the LUT is the chain's math, tabulated.
+        // Raw +1 EV: entry i = 2i (exact — doubling is an exponent bump,
+        // and (2i/255)·255 rounds to 2i), saturating at 255 from i = 128.
+        let plus_one = build_display_lut(&DisplaySettings {
+            exposure: 1.0,
+            ..DisplaySettings::default()
+        });
+        for (i, entry) in plus_one.chunks_exact(4).enumerate() {
+            let want = (2 * i).min(255) as u8;
+            assert_eq!(entry, [want, want, want, 255], "+1 EV entry {i}");
+        }
+
+        // sRGB view, hand-derived anchors (margins ≥ 0.15 from a
+        // rounding tie): entry 1 = linear 1/255 → 0.049 840 (the
+        // srgb_anchors test) · 255 = 12.71 → 13; entry 128 = linear
+        // 0.501 961 → 1.055·0.501 961^(1/2.4) − 0.055 = 0.736 647 · 255
+        // = 187.85 → 188; the ends pin 0 and 255.
+        let srgb = DisplaySettings {
+            view: DisplayTransform::Srgb,
+            ..DisplaySettings::default()
+        };
+        let lut = build_display_lut(&srgb);
+        let at = |i: usize| lut[i * 4];
+        assert_eq!((at(0), at(1), at(128), at(255)), (0, 13, 188, 255));
+
+        // sRGB + gamma 2.2 (the chain test's settings): every entry is
+        // the chain at the grid point, quantized — and the entry nearest
+        // linear 0.18 (46/255 = 0.180 392) lands on the chain test's
+        // byte 179: sRGB 0.461 825, ^(1/2.2) = 0.703 865 · 255 = 179.486
+        // → 179 (0.014 below the tie — f32 error is ~1e-4 here).
+        let s = DisplaySettings {
+            view: DisplayTransform::Srgb,
+            exposure: 0.0,
+            gamma: 2.2,
+        };
+        let lut = build_display_lut(&s);
+        for (i, entry) in lut.chunks_exact(4).enumerate() {
+            let l = i as f32 / 255.0;
+            let v = apply_display_chain([l, l, l], &s)[0];
+            let want = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            assert_eq!(entry, [want, want, want, 255], "entry {i}");
+        }
+        assert_eq!(lut[46 * 4], 179);
+        // Monotone non-decreasing: the chain never reorders levels.
+        for pair in lut.chunks_exact(4).collect::<Vec<_>>().windows(2) {
+            assert!(pair[1][0] >= pair[0][0], "{pair:?}");
+        }
     }
 
     #[test]

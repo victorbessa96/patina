@@ -434,7 +434,9 @@ pub fn run(
         // callback exactly as the viewport does each frame.
         let camera = OrbitCamera::framing(min, max, base_yaw + i as f32 * YAW_STEP, pitch);
         let uniform = CameraUniform::new(camera.view_proj(aspect), light_dir);
-        let callback = buffers.paint_callback(&gpu, uniform);
+        // Identity display LUT (`None`): the bench measures the pass, and
+        // the LUT read costs the same whatever table is bound.
+        let callback = buffers.paint_callback(&gpu, uniform, None);
         callback.write_uniform(&gpu.queue);
         // Encode + submit + wait.
         let mut encoder = gpu

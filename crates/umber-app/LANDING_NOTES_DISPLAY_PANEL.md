@@ -67,6 +67,11 @@ enum was **extended**:
 
 ## The v1 boundary (no faked GPU effect)
 
+> **Superseded by the GPU display LUT** (see the repo-root
+> `LANDING_NOTES_DISPLAY_PANEL.md`, "Landed"): both views now sample
+> the chain through `umber_gpu::DisplayLut`, and the status line names
+> the live consumers. The text below records the panel slice as landed.
+
 The viewport's mesh pass and the UV view's paint-target display
 (`umber_gpu::texture_display`) both render on the GPU. A CPU chain can't
 reach those pixels, so **neither view changes with these settings yet**.

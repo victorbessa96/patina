@@ -3,30 +3,81 @@
 //! [`umber_color::DisplaySettings`] on `AppState::display`, persisted in
 //! the `.umber` project (`ProjectSettings::display`).
 //!
-//! The v1 boundary, stated plainly: the chain is CPU-only. The 3D
-//! viewport's mesh pass and the UV view's paint-target display
-//! (`umber_gpu::texture_display`) both render on the GPU, and a CPU
-//! function cannot touch those pixels — so neither view is affected by
-//! these settings yet. What the panel does today:
+//! The chain reaches the pixels through the GPU display LUT
+//! (`LANDING_NOTES_DISPLAY_PANEL.md`): [`umber_color::build_display_lut`]
+//! tabulates it into 256 RGBA8 entries, the app uploads them into its
+//! `umber_gpu::DisplayLut`, and both GPU views sample that LUT as their
+//! last step — the 3D viewport's mesh pass and the UV view's paint-
+//! target display (`umber_gpu::texture_display`). What the panel does:
 //!
-//! - the settings rows write the data (and it saves/loads with the
-//!   project), so the GPU consumer has its input ready;
+//! - the settings rows write the data (it saves/loads with the project)
+//!   and, on any change, mark the LUT dirty
+//!   ([`DisplayLutState::mark_display_lut_dirty`]); the frame loop
+//!   rebuilds and uploads it ([`DisplayLutState::take_rebuild`]);
 //! - the preview strip runs the pure [`apply_display_chain`] over a
 //!   synthetic linear ramp ([`PREVIEW_RAMP`]) and paints the results as
-//!   egui swatches — the transform's effect, shown without any GPU;
-//! - the status line names the active chain and says it is preview-only.
+//!   egui swatches — the transform's effect on a known ramp;
+//! - the status line names the active chain and the live consumers.
 //!
-//! The panel also carries the UI-language row (the locale picker of
-//! `docs/specs/i18n-design.md`) — the app's one settings surface today.
-//!
-//! The GPU display LUT (the chain baked into a LUT the viewport and UV
-//! view shaders sample) is the named follow-up; see
-//! `LANDING_NOTES_DISPLAY_PANEL.md`. Real OCIO configs stay gated behind
+//! v1 limits: the ground grid and wireframe overlays are not
+//! transformed (only the two named consumers), and the LUT's input
+//! clamps to 0..1. The panel also carries the UI-language row (the
+//! locale picker of `docs/specs/i18n-design.md`) — the app's one
+//! settings surface today. Real OCIO configs stay gated behind
 //! `umber-color`'s `ocio` feature.
 
 use crate::i18n;
 use egui::{Color32, Ui};
-use umber_color::{apply_display_chain, DisplaySettings, DisplayTransform};
+use umber_color::{
+    apply_display_chain, build_display_lut, DisplaySettings, DisplayTransform, DISPLAY_LUT_BYTES,
+};
+
+/// The GPU display LUT's CPU-side sync state: whether the table on the
+/// device matches the current settings. The panel's write path marks it
+/// dirty; the frame loop calls [`Self::take_rebuild`] once per frame and
+/// uploads what it returns. Starts dirty, so the first frame builds the
+/// LUT from whatever settings the app holds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DisplayLutState {
+    dirty: bool,
+    /// The settings the device LUT was last built from.
+    built: Option<DisplaySettings>,
+}
+
+impl Default for DisplayLutState {
+    fn default() -> Self {
+        Self {
+            dirty: true,
+            built: None,
+        }
+    }
+}
+
+impl DisplayLutState {
+    /// The settings changed: the next [`Self::take_rebuild`] rebuilds.
+    pub fn mark_display_lut_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// The table to upload, if the device LUT is stale: dirty, or built
+    /// from other settings than `settings` (a safety net — a write path
+    /// that forgot to mark still converges in one frame). Clears the
+    /// dirty flag and records `settings` as built.
+    pub fn take_rebuild(&mut self, settings: &DisplaySettings) -> Option<[u8; DISPLAY_LUT_BYTES]> {
+        if !self.dirty && self.built.as_ref() == Some(settings) {
+            return None;
+        }
+        self.dirty = false;
+        self.built = Some(*settings);
+        Some(build_display_lut(settings))
+    }
+
+    /// Whether the device LUT holds `settings` (what the status line
+    /// reports as live).
+    pub fn is_live(&self, settings: &DisplaySettings) -> bool {
+        !self.dirty && self.built.as_ref() == Some(settings)
+    }
+}
 
 /// Number of preview swatches.
 pub const PREVIEW_STOPS: usize = 8;
@@ -69,8 +120,10 @@ fn swatches(s: &DisplaySettings) -> [Color32; PREVIEW_STOPS] {
     preview_values(s).map(to_color32)
 }
 
-/// The status line: the active chain, and the preview-only boundary.
-fn chain_label(s: &DisplaySettings) -> String {
+/// The status line: the active chain, and where it is live — the two
+/// LUT consumers once the device table matches (`live`), else that the
+/// LUT is being rebuilt (the frame loop uploads it this frame).
+fn chain_label(s: &DisplaySettings, live: bool) -> String {
     let chain = if s.is_identity() {
         "identity (Raw, 0 EV, gamma 1)".to_owned()
     } else {
@@ -81,15 +134,19 @@ fn chain_label(s: &DisplaySettings) -> String {
             s.gamma
         )
     };
-    format!(
-        "Active chain: {chain}. Preview only — the viewport and UV view \
-         are unaffected until the GPU display LUT lands."
-    )
+    let status = if live {
+        "Live in the 3D viewport (mesh pass) and the UV view (paint \
+         display) via the GPU display LUT."
+    } else {
+        "Rebuilding the GPU display LUT for the 3D viewport and the UV view."
+    };
+    format!("Active chain: {chain}. {status}")
 }
 
-/// Draws the panel and edits `settings` in place. Returns whether any
-/// value changed this frame.
-pub fn show(ui: &mut Ui, settings: &mut DisplaySettings) -> bool {
+/// Draws the panel and edits `settings` in place; any change marks `lut`
+/// dirty (the frame loop rebuilds it). Returns whether any value changed
+/// this frame.
+pub fn show(ui: &mut Ui, settings: &mut DisplaySettings, lut: &mut DisplayLutState) -> bool {
     let mut changed = false;
 
     egui::ComboBox::from_label("View")
@@ -120,6 +177,9 @@ pub fn show(ui: &mut Ui, settings: &mut DisplaySettings) -> bool {
         *settings = DisplaySettings::default();
         changed = true;
     }
+    if changed {
+        lut.mark_display_lut_dirty();
+    }
 
     ui.add_space(4.0);
     ui.label("Preview (linear ramp, 1 EV per swatch):");
@@ -137,7 +197,7 @@ pub fn show(ui: &mut Ui, settings: &mut DisplaySettings) -> bool {
     }
 
     ui.separator();
-    ui.label(chain_label(settings));
+    ui.label(chain_label(settings, lut.is_live(settings)));
 
     ui.separator();
     language_row(ui);
@@ -261,19 +321,81 @@ mod tests {
     }
 
     #[test]
-    fn chain_label_names_the_chain_and_the_boundary() {
-        let identity = chain_label(&DisplaySettings::default());
+    fn chain_label_names_the_chain_and_the_live_consumers() {
+        let identity = chain_label(&DisplaySettings::default(), true);
         assert!(identity.contains("identity"), "{identity}");
-        assert!(identity.contains("Preview only"), "{identity}");
+        assert!(
+            identity.contains("Live in the 3D viewport (mesh pass) and the UV view"),
+            "{identity}"
+        );
+        assert!(!identity.contains("Preview only"), "{identity}");
         let s = DisplaySettings {
             view: DisplayTransform::Rec709,
             exposure: 1.5,
             gamma: 2.2,
         };
-        let label = chain_label(&s);
+        let label = chain_label(&s, true);
         assert!(
             label.contains("exposure +1.50 EV → Rec.709 → gamma 2.20"),
             "{label}"
+        );
+        let pending = chain_label(&s, false);
+        assert!(
+            pending.contains("Rebuilding the GPU display LUT"),
+            "{pending}"
+        );
+        assert!(!pending.contains("Live in"), "{pending}");
+    }
+
+    #[test]
+    fn lut_dirty_rebuild_cycle_drives_the_status() {
+        // The design's test 4: settings change → rebuild → the status
+        // reflects it, on the data path the frame loop runs.
+        let mut settings = DisplaySettings::default();
+        let mut lut = DisplayLutState::default();
+
+        // Startup is dirty: the first frame builds the identity table —
+        // the exact bytes the GPU side's identity fallback holds.
+        assert!(!lut.is_live(&settings));
+        let first = lut.take_rebuild(&settings).expect("startup build");
+        assert_eq!(first, umber_gpu::identity_lut_bytes());
+        assert!(lut.is_live(&settings));
+        assert!(chain_label(&settings, lut.is_live(&settings)).contains("Live in"));
+        // Clean + unchanged: no upload this frame.
+        assert_eq!(lut.take_rebuild(&settings), None);
+
+        // The panel's write path: +1 EV, marked dirty → not live yet.
+        settings.exposure = 1.0;
+        lut.mark_display_lut_dirty();
+        assert!(!lut.is_live(&settings));
+        assert!(chain_label(&settings, lut.is_live(&settings)).contains("Rebuilding"));
+        // The frame loop rebuilds: the chain's table (entry 100 → 200
+        // under Raw +1 EV), and the status flips back to live.
+        let rebuilt = lut.take_rebuild(&settings).expect("dirty → rebuild");
+        assert_eq!(rebuilt, build_display_lut(&settings));
+        assert_eq!(&rebuilt[400..404], &[200, 200, 200, 255]);
+        assert!(lut.is_live(&settings));
+        assert_eq!(lut.take_rebuild(&settings), None);
+
+        // A write path that forgot to mark (e.g. a project load) is
+        // still caught: the built settings no longer match.
+        settings.view = DisplayTransform::Srgb;
+        assert!(!lut.is_live(&settings));
+        assert_eq!(
+            lut.take_rebuild(&settings),
+            Some(build_display_lut(&settings))
+        );
+        assert!(lut.is_live(&settings));
+    }
+
+    #[test]
+    fn color_and_gpu_agree_on_the_lut_shape() {
+        // The crate boundary: umber-color builds the bytes, umber-gpu
+        // uploads them — same length, same identity table.
+        assert_eq!(DISPLAY_LUT_BYTES, umber_gpu::DISPLAY_LUT_BYTES);
+        assert_eq!(
+            build_display_lut(&DisplaySettings::default()),
+            umber_gpu::identity_lut_bytes()
         );
     }
 }
