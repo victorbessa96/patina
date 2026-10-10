@@ -11,10 +11,19 @@
 //! Wave 3 (this slice): the DAG core — [`topo`] with validation
 //! (dangling refs, duplicate ids) and topological evaluation (Kahn's
 //! algorithm, cycle rejection, inputs resolved before consumers run).
+//! Wave 5 slice 1: the typed eval engine — [`value`] (Uniform/Image
+//! value space, RGBA8 buffers) and [`eval`] (registry-dispatched
+//! evaluation, dirty-aware cached re-evaluation).
 
+pub mod eval;
 pub mod topo;
+pub mod value;
 
+pub use eval::{
+    eval_graph, eval_graph_cached, EvalCache, EvalContext, EvalError, NodeImpl, NodeRegistry,
+};
 pub use topo::{Edge, Graph, GraphError};
+pub use value::{decode_png_rgba8, encode_png_rgba8, ImageBuffer, ImageError, NodeOutput};
 
 /// A node in a graph. The Wave-4 engine evaluates these topologically.
 #[derive(Debug, Clone, PartialEq)]
