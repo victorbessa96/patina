@@ -1695,6 +1695,7 @@ mod tests {
         ///   what the pre-change shader wrote, since the AO path is
         ///   untouched integer hit counting),
         /// - the bent half is byte-identical across the two dual bakes.
+        ///
         /// The pre-existing AO golden tests above run unmodified alongside.
         #[test]
         fn flag_off_ao_matches_plain_entry_and_double_bake_is_deterministic() {
