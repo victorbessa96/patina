@@ -188,6 +188,7 @@ mod tests {
             id,
             node_def: "noise_fractal3d".into(),
             params: vec![("scale".into(), ParamValue::Float(8.0))],
+            canvas: None,
         }
     }
 
@@ -196,6 +197,7 @@ mod tests {
             id,
             node_def: "mix".into(),
             params: vec![("amount".into(), ParamValue::Float(0.5))],
+            canvas: None,
         }
     }
 

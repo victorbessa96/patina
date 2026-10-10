@@ -22,6 +22,7 @@ mod display_panel;
 mod document;
 mod env;
 mod export_dialog;
+mod graph_canvas;
 mod graph_panel;
 mod paint_state;
 #[cfg(test)]

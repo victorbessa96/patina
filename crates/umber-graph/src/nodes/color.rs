@@ -644,21 +644,25 @@ mod tests {
                 ("scale".into(), ParamValue::Float(4.0)),
                 ("seed".into(), ParamValue::Int(7)),
             ],
+            canvas: None,
         });
         g.add_node(crate::Node {
             id: 2,
             node_def: "blur".into(),
             params: vec![("radius".into(), ParamValue::Int(1))],
+            canvas: None,
         });
         g.add_node(crate::Node {
             id: 3,
             node_def: "mix".into(),
             params: vec![("factor".into(), ParamValue::Float(0.5))],
+            canvas: None,
         });
         g.add_node(crate::Node {
             id: 4,
             node_def: "uniform".into(),
             params: vec![("color".into(), ParamValue::Color([1.0, 0.0, 0.0]))],
+            canvas: None,
         });
         g.add_edge(Edge {
             from: 1,

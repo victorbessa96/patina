@@ -579,16 +579,19 @@ mod tests {
                 ("color".into(), ParamValue::Color([1.0, 1.0, 1.0])),
                 ("resolution".into(), ParamValue::Vec2([4.0, 4.0])),
             ],
+            canvas: None,
         });
         g.add_node(Node {
             id: 2,
             node_def: "flood_fill".into(),
             params: vec![],
+            canvas: None,
         });
         g.add_node(Node {
             id: 3,
             node_def: "edge_detect".into(),
             params: vec![],
+            canvas: None,
         });
         g.add_edge(crate::Edge {
             from: 1,

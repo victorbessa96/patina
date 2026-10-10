@@ -15,6 +15,22 @@
 //! placeholders in v1 — the bake bridge does not expose live in-memory
 //! bakes yet, so `mesh_map_generator` nodes evaluate against documented
 //! stand-ins until it does.
+//!
+//! Wave-6: the noodle canvas ([`crate::graph_canvas`]) is the default
+//! interaction surface; the v1 list stays behind a Canvas/List toggle.
+//! Both views share the selected-node param editor below them.
+//!
+//! # Canvas-position persistence (the mtlx carry)
+//!
+//! [`Node::canvas`] rides the panel's `.mtlx` string as a `vector2` input
+//! named [`CANVAS_POS_PARAM`] — chosen because the mtlx layer round-trips
+//! Vec2 params exactly (shortest-round-trip `f32` formatting; pinned by
+//! umber-graph's `round_trip_preserves_data`), so no sidecar map is
+//! needed. [`GraphPanel::to_mtlx`] appends it only for placed nodes (never
+//! touching the live graph), and [`GraphPanel::load_graph`] lifts it back
+//! out of the params into `Node::canvas`. Files without it — every
+//! pre-canvas `.umber` — load with `None`, which the canvas lays out with
+//! its deterministic id-hash scatter.
 
 use std::collections::{HashMap, HashSet};
 
@@ -22,8 +38,23 @@ use umber_graph::{
     eval_graph_cached, EvalCache, EvalContext, Graph, Node, NodeOutput, NodeRegistry, ParamValue,
 };
 
+use crate::graph_canvas::CanvasState;
+
 /// Default raster resolution (square) for a fresh panel.
 const DEFAULT_RESOLUTION: (u32, u32) = (512, 512);
+
+/// The reserved param name carrying [`Node::canvas`] through `.mtlx`
+/// (see module docs). Never shown in the param editor.
+const CANVAS_POS_PARAM: &str = "__canvas_pos";
+
+/// Which interaction surface the panel shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GraphView {
+    /// The noodle canvas (default).
+    Canvas,
+    /// The v1 node list (fallback).
+    List,
+}
 
 /// Sensible starting params for an added node, by `node_def`. Nodes not
 /// listed here start with no params — evaluation then reports the honest
@@ -78,6 +109,10 @@ pub struct GraphPanel {
     /// built from, so the texture only re-uploads when the bytes change.
     texture: Option<egui::TextureHandle>,
     texture_key: Option<(u32, u32, u64)>,
+    /// Canvas or list.
+    view: GraphView,
+    /// The canvas's session state (view, drag, edge selection, menu).
+    pub(crate) canvas: CanvasState,
 }
 
 impl GraphPanel {
@@ -107,6 +142,8 @@ impl GraphPanel {
             edge_from: None,
             texture: None,
             texture_key: None,
+            view: GraphView::Canvas,
+            canvas: CanvasState::default(),
         }
     }
 
@@ -192,12 +229,62 @@ impl GraphPanel {
             id,
             node_def: node_def.to_string(),
             params: default_params(node_def),
+            canvas: None,
         });
         self.dirty.insert(id);
         if self.output_node.is_none() {
             self.output_node = Some(id);
         }
         id
+    }
+
+    /// [`Self::add_node`], placed at a graph-space canvas position (the
+    /// canvas creation menu's path).
+    pub fn add_node_at(&mut self, node_def: &str, pos: [f32; 2]) -> u64 {
+        let id = self.add_node(node_def);
+        self.set_node_canvas(id, pos);
+        id
+    }
+
+    /// Moves a node on the canvas. Position is editor-only data: nothing
+    /// is marked dirty. Returns `false` when the id is unknown.
+    pub fn set_node_canvas(&mut self, node_id: u64, pos: [f32; 2]) -> bool {
+        match self.graph.nodes.iter_mut().find(|n| n.id == node_id) {
+            Some(node) => {
+                node.canvas = Some(pos);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The canvas connect: replaces whatever already feeds `to`'s
+    /// `input` (an input takes one edge), then wires `from` through
+    /// [`Self::add_edge`] — the v1 combo's add/dirty path. Self-loops and
+    /// unknown endpoints return `false` and change nothing.
+    pub fn connect(&mut self, from: u64, to: u64, input: &str) -> bool {
+        let known = |id: u64| self.graph.nodes.iter().any(|n| n.id == id);
+        if from == to || !known(from) || !known(to) {
+            return false;
+        }
+        self.graph
+            .edges
+            .retain(|e| !(e.to == to && e.input == input));
+        self.add_edge(from, to, input)
+    }
+
+    /// Removes the edge feeding `to`'s `input` and marks `to` dirty.
+    /// Returns `false` when no such edge exists.
+    pub fn remove_edge(&mut self, to: u64, input: &str) -> bool {
+        let before = self.graph.edges.len();
+        self.graph
+            .edges
+            .retain(|e| !(e.to == to && e.input == input));
+        if self.graph.edges.len() == before {
+            return false;
+        }
+        self.dirty.insert(to);
+        true
     }
 
     /// Removes a node and every edge touching it. Returns `false` when
@@ -250,8 +337,14 @@ impl GraphPanel {
 
     /// Replaces the graph wholesale (the Open-Project path): cache
     /// cleared, everything marked dirty, output defaulting to the
-    /// highest id, selection cleared.
-    pub fn load_graph(&mut self, graph: Graph) {
+    /// highest id, selection cleared. Carried canvas positions
+    /// ([`CANVAS_POS_PARAM`]) are lifted out of the params into
+    /// [`Node::canvas`].
+    pub fn load_graph(&mut self, mut graph: Graph) {
+        lift_canvas_positions(&mut graph);
+        self.canvas.drag = Default::default();
+        self.canvas.selected_edge = None;
+        self.canvas.menu = None;
         self.next_id = graph.nodes.iter().map(|n| n.id).max().unwrap_or(0) + 1;
         self.output_node = graph.nodes.iter().map(|n| n.id).max();
         self.graph = graph;
@@ -265,9 +358,18 @@ impl GraphPanel {
     }
 
     /// Serializes the graph to a `.mtlx` document string (the
-    /// project-persistence carry).
+    /// project-persistence carry). Placed nodes carry their canvas
+    /// position as a trailing [`CANVAS_POS_PARAM`] `vector2` input (see
+    /// module docs); unplaced nodes emit exactly as before.
     pub fn to_mtlx(&self) -> String {
-        umber_graph::mtlx::to_mtlx(&self.graph, &umber_graph::mtlx::painter_nodedefs())
+        let mut carried = self.graph.clone();
+        for node in &mut carried.nodes {
+            if let Some(pos) = node.canvas {
+                node.params
+                    .push((CANVAS_POS_PARAM.to_string(), ParamValue::Vec2(pos)));
+            }
+        }
+        umber_graph::mtlx::to_mtlx(&carried, &umber_graph::mtlx::painter_nodedefs())
     }
 
     /// Parses a `.mtlx` document string into the panel (the
@@ -396,10 +498,55 @@ impl GraphPanel {
         self.dirty = self.graph.nodes.iter().map(|n| n.id).collect();
     }
 
-    /// Draws the panel: node list, Add-Node combo, the selected node's
-    /// param editors, edge wiring, output marker, Evaluate + status,
-    /// and the output image.
+    /// Draws the panel: the Canvas/List toggle, the chosen view (noodle
+    /// canvas or v1 node list), the Add-Node combo, the selected node's
+    /// param editors, edge wiring, output marker, Evaluate + status, and
+    /// the output image.
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.view, GraphView::Canvas, "Canvas");
+            ui.selectable_value(&mut self.view, GraphView::List, "List");
+        });
+        match self.view {
+            GraphView::Canvas => {
+                crate::graph_canvas::canvas_ui(ui, self);
+                ui.weak(
+                    "Drag empty space to pan, wheel to zoom, drag an output port \
+                     onto an input to connect, right-click to add, Delete removes \
+                     the selected edge.",
+                );
+            }
+            GraphView::List => self.node_list(ui),
+        }
+        self.add_remove_row(ui);
+        self.editor_section(ui);
+
+        ui.add_space(4.0);
+        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Evaluate").clicked() {
+                self.evaluate();
+            }
+            ui.label(format!(
+                "Output: {}",
+                self.output_node
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "none".into())
+            ));
+        });
+        let status = self.status.clone();
+        if status.starts_with("Eval failed") || status.starts_with("Graph load failed") {
+            ui.label(egui::RichText::new(status).color(ui.visuals().error_fg_color));
+        } else {
+            ui.label(status);
+        }
+
+        ui.add_space(4.0);
+        self.output_image(ui);
+    }
+
+    /// The v1 node list (the List view).
+    fn node_list(&mut self, ui: &mut egui::Ui) {
         ui.strong("Nodes");
         let mut ids: Vec<u64> = self.graph.nodes.iter().map(|n| n.id).collect();
         ids.sort_unstable();
@@ -431,7 +578,10 @@ impl GraphPanel {
                     ui.weak("No nodes yet — add one below.");
                 }
             });
+    }
 
+    /// The Add-Node combo + Remove-selected row (both views).
+    fn add_remove_row(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             let defs = self.registry.node_defs();
@@ -458,7 +608,11 @@ impl GraphPanel {
                 }
             }
         });
+    }
 
+    /// The selected node's editor section — the v1 editor verbatim, shared
+    /// by both views (the canvas selects, this edits).
+    fn editor_section(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         ui.separator();
         if let Some(id) = self.selected {
@@ -466,29 +620,6 @@ impl GraphPanel {
         } else {
             ui.weak("Select a node to edit its params.");
         }
-
-        ui.add_space(4.0);
-        ui.separator();
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Evaluate").clicked() {
-                self.evaluate();
-            }
-            ui.label(format!(
-                "Output: {}",
-                self.output_node
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| "none".into())
-            ));
-        });
-        let status = self.status.clone();
-        if status.starts_with("Eval failed") || status.starts_with("Graph load failed") {
-            ui.label(egui::RichText::new(status).color(ui.visuals().error_fg_color));
-        } else {
-            ui.label(status);
-        }
-
-        ui.add_space(4.0);
-        self.output_image(ui);
     }
 
     /// Param editors + edge wiring + output marker for the selected node.
@@ -702,6 +833,30 @@ fn param_editor(
     }
 }
 
+/// Lifts every carried [`CANVAS_POS_PARAM`] out of the node params into
+/// [`Node::canvas`] (the load half of the mtlx carry). The param is always
+/// removed; only a finite `Vec2` becomes a position — anything else
+/// (a foreign-typed or NaN value) leaves the node unplaced (the scatter).
+fn lift_canvas_positions(graph: &mut Graph) {
+    for node in &mut graph.nodes {
+        let mut lifted = None;
+        node.params.retain(|(name, value)| {
+            if name != CANVAS_POS_PARAM {
+                return true;
+            }
+            if let ParamValue::Vec2(pos) = value {
+                if pos.iter().all(|c| c.is_finite()) {
+                    lifted = Some(*pos);
+                }
+            }
+            false
+        });
+        if lifted.is_some() {
+            node.canvas = lifted;
+        }
+    }
+}
+
 /// The v1 mesh-map externals: flat stand-ins at the panel resolution
 /// (see module docs — the bake bridge does not expose live in-memory
 /// bakes yet). AO-flat is opaque white (unoccluded); Normal-flat is
@@ -872,6 +1027,145 @@ mod tests {
             *panel.graph(),
             "nodes AND edges must survive the project round-trip"
         );
+    }
+
+    /// Saves `doc` through the real project dir path and reads it back.
+    fn project_round_trip(doc: String, tag: &str) -> String {
+        let model = umber_core::project::ProjectModel::new(vec![], vec![], Default::default())
+            .with_graphs_mtlx(vec![doc]);
+        let dir =
+            std::env::temp_dir().join(format!("umber-graph-panel-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        umber_core::project::save_to_dir(&model, &dir).expect("save works");
+        let back = umber_core::project::load_from_dir(&dir).expect("load works");
+        std::fs::remove_dir_all(&dir).ok();
+        back.graphs_mtlx.into_iter().next().expect("one graph")
+    }
+
+    #[test]
+    fn canvas_positions_survive_project_save_load_exactly() {
+        let mut saved = GraphPanel::new();
+        let (head, tail) = noise_chain(&mut saved);
+        // Awkward floats: negative, fractional, large, tiny.
+        assert!(saved.set_node_canvas(head, [-123.456, 0.1]));
+        assert!(saved.set_node_canvas(tail, [98765.43, -0.000_123]));
+        let placed = saved.add_node_at("mix", [3.0e-7, 1.0e6 + 0.5]);
+        let unplaced = saved.add_node("blur");
+        assert!(saved.connect(tail, placed, "fg"));
+
+        let doc = project_round_trip(saved.to_mtlx(), "canvas-roundtrip");
+        assert!(doc.contains(CANVAS_POS_PARAM), "positions ride the mtlx");
+
+        let mut loaded = GraphPanel::new();
+        assert!(loaded.load_mtlx(&doc), "status: {}", loaded.status());
+        assert_eq!(
+            loaded.graph(),
+            saved.graph(),
+            "load == saved: params, edges AND canvas positions"
+        );
+        let canvas_of = |p: &GraphPanel, id: u64| {
+            p.graph()
+                .nodes
+                .iter()
+                .find(|n| n.id == id)
+                .and_then(|n| n.canvas)
+        };
+        assert_eq!(canvas_of(&loaded, head), Some([-123.456, 0.1]));
+        assert_eq!(canvas_of(&loaded, tail), Some([98765.43, -0.000_123]));
+        assert_eq!(canvas_of(&loaded, placed), Some([3.0e-7, 1.0e6 + 0.5]));
+        assert_eq!(canvas_of(&loaded, unplaced), None, "unplaced stays None");
+        // The carry param never leaks into the live params (the editor).
+        assert!(loaded
+            .graph()
+            .nodes
+            .iter()
+            .all(|n| n.params.iter().all(|(name, _)| name != CANVAS_POS_PARAM)));
+        // Save → load → save is byte-stable (no duplicate carry params).
+        assert_eq!(loaded.to_mtlx(), saved.to_mtlx());
+    }
+
+    #[test]
+    fn pre_canvas_files_load_unplaced_onto_the_scatter() {
+        // An old-format document: no __canvas_pos anywhere.
+        let mut old = GraphPanel::new();
+        let (head, tail) = noise_chain(&mut old);
+        let doc = old.to_mtlx();
+        assert!(!doc.contains(CANVAS_POS_PARAM), "unplaced nodes emit as v1");
+
+        let mut loaded = GraphPanel::new();
+        assert!(loaded.load_mtlx(&project_round_trip(doc, "canvas-old")));
+        for id in [head, tail] {
+            let node = loaded
+                .graph()
+                .nodes
+                .iter()
+                .find(|n| n.id == id)
+                .expect("node survives");
+            assert_eq!(node.canvas, None);
+            assert_eq!(
+                crate::graph_canvas::node_rect(id, node.canvas).min,
+                crate::graph_canvas::default_position(id),
+                "old files land on the deterministic scatter"
+            );
+        }
+    }
+
+    #[test]
+    fn non_vec2_or_nan_carry_is_dropped_not_placed() {
+        let doc = r#"<?xml version="1.0" encoding="UTF-8"?>
+<materialx version="1.38">
+  <node name="N1" type="uniform">
+    <input name="__canvas_pos" type="string" value="garbage" />
+  </node>
+  <node name="N2" type="uniform">
+    <input name="__canvas_pos" type="vector2" value="NaN, 4" />
+  </node>
+</materialx>
+"#;
+        let mut panel = GraphPanel::new();
+        assert!(panel.load_mtlx(doc), "status: {}", panel.status());
+        for node in &panel.graph().nodes {
+            assert_eq!(node.canvas, None, "node {} must stay unplaced", node.id);
+            assert!(node.params.is_empty(), "carry param stripped: {node:?}");
+        }
+    }
+
+    #[test]
+    fn moving_a_node_dirties_nothing_and_connect_rewires_the_input() {
+        let mut panel = GraphPanel::new();
+        panel.set_resolution((4, 4));
+        let a = panel.add_node("uniform");
+        let b = panel.add_node("uniform");
+        let p = panel.add_node("passthrough");
+        assert!(panel.connect(a, p, "in"));
+        panel.evaluate();
+        assert!(panel.dirty_set().is_empty(), "status: {}", panel.status());
+
+        assert!(panel.set_node_canvas(a, [10.0, 20.0]));
+        assert!(panel.dirty_set().is_empty(), "position is editor-only");
+        assert!(!panel.set_node_canvas(999, [0.0, 0.0]));
+
+        assert!(panel.connect(b, p, "in"), "re-wiring an input");
+        assert!(
+            panel.dirty_set().contains(&p),
+            "same dirty path as add_edge"
+        );
+        let feeding: Vec<u64> = panel
+            .graph()
+            .edges
+            .iter()
+            .filter(|e| e.to == p && e.input == "in")
+            .map(|e| e.from)
+            .collect();
+        assert_eq!(feeding, [b], "one edge per input: the new one replaces");
+        assert!(!panel.connect(p, p, "in"), "no self-loops");
+        assert!(!panel.connect(a, 999, "in"));
+
+        panel.evaluate();
+        assert!(panel.dirty_set().is_empty(), "status: {}", panel.status());
+        assert!(panel.remove_edge(p, "in"));
+        assert!(panel.dirty_set().contains(&p));
+        assert!(!panel.remove_edge(p, "in"), "already gone");
     }
 
     #[test]

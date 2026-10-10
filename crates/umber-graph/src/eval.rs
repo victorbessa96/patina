@@ -558,6 +558,7 @@ mod tests {
             id,
             node_def: "uniform".into(),
             params: vec![("value".into(), ParamValue::Color([1.0, 0.0, 0.0]))],
+            canvas: None,
         }
     }
 
@@ -566,6 +567,7 @@ mod tests {
             id,
             node_def: "passthrough".into(),
             params: vec![],
+            canvas: None,
         }
     }
 
@@ -606,6 +608,7 @@ mod tests {
             id: 1,
             node_def: "uniform".into(),
             params: vec![("color".into(), ParamValue::Color([1.0, 0.0, 0.0]))],
+            canvas: None,
         });
         let out = eval_graph(
             &g,
@@ -634,6 +637,7 @@ mod tests {
                 ("color".into(), ParamValue::Color([0.0, 1.0, 0.0])),
                 ("resolution".into(), ParamValue::Vec2([2.0, 3.0])),
             ],
+            canvas: None,
         });
         let out = eval_graph(
             &g,
@@ -684,6 +688,7 @@ mod tests {
             id: 2,
             node_def: "expect_image".into(),
             params: vec![],
+            canvas: None,
         });
         g.add_edge(edge(1, 2)); // …fed into an Image consumer.
         let mut registry = NodeRegistry::seeded();
@@ -711,6 +716,7 @@ mod tests {
             id: 1,
             node_def: "nope_missing".into(),
             params: vec![],
+            canvas: None,
         });
         let err = eval_graph(
             &g,
@@ -857,6 +863,7 @@ mod tests {
                 id: (i + 1) as u64,
                 node_def: def.to_string(),
                 params: vec![],
+                canvas: None,
             });
         }
         g.add_edge(edge(1, 2));
@@ -941,6 +948,7 @@ mod tests {
                 "path".into(),
                 ParamValue::Asset(path.to_string_lossy().into_owned()),
             )],
+            canvas: None,
         });
         let out = eval_graph(
             &g,
@@ -966,6 +974,7 @@ mod tests {
             id: 1,
             node_def: "image_asset".into(),
             params: vec![("path".into(), ParamValue::Asset("/no/such/file.png".into()))],
+            canvas: None,
         });
         let err = eval_graph(
             &g,
@@ -981,6 +990,7 @@ mod tests {
             id: 1,
             node_def: "image_asset".into(),
             params: vec![("path".into(), ParamValue::Float(1.0))],
+            canvas: None,
         });
         let err = eval_graph(
             &g,

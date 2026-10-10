@@ -34,6 +34,19 @@ pub struct Node {
     /// MaterialX standard node name, or our custom nodedef name.
     pub node_def: String,
     pub params: Vec<(String, ParamValue)>,
+    /// The node's graph-space position on the editor canvas (wave-6,
+    /// `docs/specs/graph-canvas-design.md`). `None` = never placed: the
+    /// canvas lays it out with its deterministic id-hash scatter.
+    ///
+    /// Editor-only data — evaluation never reads it, so moving a node
+    /// dirties nothing. The crate has no serde, so the design's
+    /// `#[serde(default)]` additive rule is enforced by the persistence
+    /// carry instead: the app's Graph panel emits it as a `__canvas_pos`
+    /// `vector2` input in its `.mtlx` string (Vec2 values round-trip
+    /// exactly — see `mtlx::tests::round_trip_preserves_data`) and lifts
+    /// it back out on load; documents without one load as `None`. The
+    /// mtlx layer itself neither emits nor parses this field.
+    pub canvas: Option<[f32; 2]>,
 }
 
 /// Parameter values, matching the MaterialX value space we target.
@@ -64,6 +77,7 @@ mod tests {
                 ("scale".into(), ParamValue::Float(8.0)),
                 ("octaves".into(), ParamValue::Int(5)),
             ],
+            canvas: None,
         };
         assert_eq!(n.params.len(), 2);
     }

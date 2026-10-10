@@ -90,11 +90,13 @@ mod tests {
             id: 1,
             node_def: "noise_perlin".into(),
             params: params.clone(),
+            canvas: None,
         });
         g.add_node(Node {
             id: 2,
             node_def: "passthrough".into(),
             params: vec![],
+            canvas: None,
         });
         g.add_edge(crate::Edge {
             from: 1,

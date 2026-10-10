@@ -806,6 +806,7 @@ pub fn from_mtlx(s: &str) -> Result<(Graph, Vec<NodedefDecl>, Vec<String>), Mtlx
                         id,
                         node_def: ty.to_string(),
                         params,
+                        canvas: None,
                     });
                 }
                 "nodegraph" => walk_node_list(child, nodedefs, nodes, edges, warnings)?,
@@ -855,6 +856,7 @@ mod tests {
                 ("octaves".into(), ParamValue::Int(5)),
                 ("offset".into(), ParamValue::Vec2([0.25, -1.5])),
             ],
+            canvas: None,
         });
         g.add_node(Node {
             id: 2,
@@ -864,6 +866,7 @@ mod tests {
                 ("tint".into(), ParamValue::Color([1.0, 0.5, 0.25])),
                 ("enabled".into(), ParamValue::Bool(true)),
             ],
+            canvas: None,
         });
         g.add_node(Node {
             id: 3,
@@ -873,6 +876,7 @@ mod tests {
                 ("albedo".into(), ParamValue::Asset("b3:deadbeefcafe".into())),
                 ("flag".into(), ParamValue::Bool(false)),
             ],
+            canvas: None,
         });
         g.add_edge(Edge {
             from: 1,
