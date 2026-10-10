@@ -98,6 +98,7 @@
 | Padding: dilation (finite/infinite), transparent/default-color fill; 3D-neighbor aware | P0 | 3 |
 | 8K export (up-sampled from 4K in-app) — canonical row for this requirement (also referenced in §2) | P1 | 5 |
 | PSD export (layered) | P2 | 6+ |
+| PSD import (flatten-on-import; layer maps to texture-set layers) — DESIGNED, deferred: the ag-psd reader exists, but flattening semantics (blend modes, masks, groups) are a large honest-verification surface; deferred until a user need arrives, NOT a technical wall | P3 (designed) | later |
 | MaterialX document export (OpenPBR nodedef + image/UDIM tokens) — "beyond raster" interchange | P0 | 3 (basic), 4 (full) |
 | USD export (textures + .usda + material binding via UsdShade→OpenPBR) | P1 | 5 |
 
