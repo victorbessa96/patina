@@ -1,0 +1,10 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist' — docs/specs/installers-design.md: the two
+# CI-proven targets, the shell/PS installers, checksums on.
+[dist]
+cargo-dist-version = "0.32.0"
+ci = "github"
+installers = ["shell", "powershell"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
