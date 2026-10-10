@@ -121,6 +121,115 @@ impl MapSet {
     }
 }
 
+/// Single-tile UDIM code: every export lands on tile 1001 until the
+/// wave-5 multi-tile texture sets arrive (requirements §2: UDIM is a
+/// wave-4/5 item; the token must still expand today, so it expands to
+/// the only tile that exists).
+pub const SINGLE_TILE_UDIM: &str = "1001";
+
+/// Driver-side sources for the §6 naming tokens, carried per export run.
+///
+/// `$textureSet` was the only token the driver fed (d64a65c); the rest
+/// passed through verbatim. Every field here is static per run except
+/// `$srcMap`/`$colorSpace`, which the driver derives per output (see
+/// [`src_map_token`] / [`output_color_space`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenSources<'a> {
+    /// `$textureSet` — the texture-set name (mesh material or file stem).
+    pub texture_set: &'a str,
+    /// `$mesh` — the loaded mesh's file stem ([`mesh_stem`]); `""` when
+    /// unknown, in which case the placeholder stays literal per
+    /// [`crate::expand_template`]'s empty-value contract.
+    pub mesh: &'a str,
+    /// `$layerName` — v1: the topmost layer's display name (`""` when
+    /// the document has no layers; single-layer painting until the
+    /// layer-compositor export lands).
+    pub layer_name: &'a str,
+    /// `$udim` — v1: always [`SINGLE_TILE_UDIM`].
+    pub udim: &'a str,
+}
+
+impl<'a> TokenSources<'a> {
+    /// Minimal sources: texture set only, mesh/layer empty (the
+    /// headless/CLI shape — filenames using only `$textureSet` expand
+    /// exactly as before, pinned by test).
+    pub fn new(texture_set: &'a str) -> Self {
+        Self {
+            texture_set,
+            mesh: "",
+            layer_name: "",
+            udim: SINGLE_TILE_UDIM,
+        }
+    }
+
+    /// Expands the static (run-level) tokens in `template`, leaving the
+    /// per-output `$srcMap`/`$colorSpace` placeholders untouched — for
+    /// display strings (the Export dialog's skipped-output lines) where
+    /// no output spec exists.
+    pub fn expand_static(&self, template: &str) -> String {
+        crate::expand_template(
+            template,
+            &[
+                ("textureSet", self.texture_set),
+                ("mesh", self.mesh),
+                ("layerName", self.layer_name),
+                ("udim", self.udim),
+            ],
+        )
+    }
+
+    /// Expands every §6 token in one output's filename: the static
+    /// sources plus that output's `$srcMap` ([`src_map_token`]) and
+    /// `$colorSpace` ([`output_color_space`]).
+    pub fn expand_output(&self, output: &crate::presets::OutputSpec) -> String {
+        let src_map = src_map_token(output);
+        let color_space = output_color_space(output);
+        crate::expand_template(
+            &output.filename,
+            &[
+                ("textureSet", self.texture_set),
+                ("mesh", self.mesh),
+                ("layerName", self.layer_name),
+                ("udim", self.udim),
+                ("srcMap", &src_map),
+                ("colorSpace", color_space),
+            ],
+        )
+    }
+}
+
+/// The `$mesh` source: a mesh path's file stem (`sword.obj` → `sword`);
+/// `""` when there is no stem — the placeholder then stays literal.
+pub fn mesh_stem(path: &Path) -> &str {
+    path.file_stem().and_then(|s| s.to_str()).unwrap_or("")
+}
+
+/// The `$srcMap` value for one output: the single input map's naming
+/// token, or — for packed multi-map outputs (ORM etc.) — the input
+/// tokens joined with `_` in wiring order. No inputs → `""` (the
+/// placeholder stays literal).
+pub fn src_map_token(output: &crate::presets::OutputSpec) -> String {
+    output
+        .maps
+        .iter()
+        .map(|(kind, _)| kind.token())
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+/// The `$colorSpace` value for one output: `sRGB` when any input is a
+/// color-managed map (baseColor/emissive — the §9 rule [`run_preset`]
+/// already applies to the PNG transfer), `linear` for pure data
+/// outputs. Same predicate as the transfer choice, so the token never
+/// disagrees with the file's actual encoding.
+pub fn output_color_space(output: &crate::presets::OutputSpec) -> &'static str {
+    if output.maps.iter().any(|(kind, _)| map_kind_is_color(*kind)) {
+        "sRGB"
+    } else {
+        "linear"
+    }
+}
+
 /// JPEG quality used when a preset output picks JPEG (§6 previews).
 pub const DEFAULT_JPEG_QUALITY: u8 = 90;
 
@@ -132,6 +241,10 @@ pub const WORKING_NORMAL_CONVENTION: NormalConvention = NormalConvention::Opengl
 /// Runs `preset` against `set`, writing outputs under `out_dir`.
 /// Returns the written paths in output order.
 ///
+/// Filenames expand every §6 token from `sources` (per-output `$srcMap`
+/// / `$colorSpace` derived by the driver); unknown or empty-valued
+/// tokens pass through verbatim per the template engine's contract.
+///
 /// # Errors
 ///
 /// [`ExportError::MissingMap`] when an output needs a map the set
@@ -140,7 +253,7 @@ pub const WORKING_NORMAL_CONVENTION: NormalConvention = NormalConvention::Opengl
 pub fn run_preset(
     preset: &ExportPreset,
     set: &MapSet,
-    texture_set: &str,
+    sources: &TokenSources<'_>,
     out_dir: &Path,
 ) -> Result<Vec<PathBuf>, ExportError> {
     std::fs::create_dir_all(out_dir).map_err(|e| ExportError::Write(e.to_string()))?;
@@ -200,10 +313,11 @@ pub fn run_preset(
             packed[t * 4..t * 4 + 4].copy_from_slice(&out);
         }
 
-        // Expand the filename's $textureSet token (the only token the
-        // driver owns; other tokens pass through verbatim per the
-        // template engine's contract).
-        let filename = crate::expand_template(&output.filename, &[("textureSet", texture_set)]);
+        // Expand the filename's §6 tokens from the driver-side
+        // sources (per-output $srcMap/$colorSpace derived here; empty
+        // sources pass through verbatim per the template engine's
+        // contract).
+        let filename = sources.expand_output(output);
         let path = out_dir.join(filename);
 
         // Per-output transfer: color-managed maps (baseColor/emissive)
@@ -270,7 +384,13 @@ mod tests {
 
         let out = std::env::temp_dir().join(format!("umber-export-drv-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
-        let written = run_preset(&ExportPreset::gltf_metal_rough(), &set, "Sword", &out).unwrap();
+        let written = run_preset(
+            &ExportPreset::gltf_metal_rough(),
+            &set,
+            &TokenSources::new("Sword"),
+            &out,
+        )
+        .unwrap();
         assert_eq!(written.len(), 3);
         assert!(written[0].ends_with("Sword_baseColor.png"));
         assert!(written[1].ends_with("Sword_metallicRoughness.png"));
@@ -296,7 +416,13 @@ mod tests {
 
         let out = std::env::temp_dir().join(format!("umber-export-drv-dx-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
-        let written = run_preset(&ExportPreset::unreal_orm(), &set, "Hull", &out).unwrap();
+        let written = run_preset(
+            &ExportPreset::unreal_orm(),
+            &set,
+            &TokenSources::new("Hull"),
+            &out,
+        )
+        .unwrap();
         // The normal output is third; decode and check green = 55.
         let normal_path = written
             .iter()
@@ -337,7 +463,13 @@ mod tests {
         let out =
             std::env::temp_dir().join(format!("umber-export-drv-miss-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
-        let err = run_preset(&ExportPreset::gltf_metal_rough(), &set, "X", &out).unwrap_err();
+        let err = run_preset(
+            &ExportPreset::gltf_metal_rough(),
+            &set,
+            &TokenSources::new("X"),
+            &out,
+        )
+        .unwrap_err();
         assert!(matches!(err, ExportError::MissingMap { .. }));
         // No OUTPUT FILES may exist (the directory itself is created
         // up front — checking files, not the dir).
@@ -354,7 +486,13 @@ mod tests {
         let out =
             std::env::temp_dir().join(format!("umber-export-drv-size-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
-        let err = run_preset(&ExportPreset::gltf_metal_rough(), &set, "X", &out).unwrap_err();
+        let err = run_preset(
+            &ExportPreset::gltf_metal_rough(),
+            &set,
+            &TokenSources::new("X"),
+            &out,
+        )
+        .unwrap_err();
         assert!(matches!(err, ExportError::SizeMismatch { .. }));
     }
 
@@ -384,7 +522,7 @@ mod tests {
         let out =
             std::env::temp_dir().join(format!("umber-export-drv-wire-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
-        run_preset(&preset, &set, "W", &out).unwrap();
+        run_preset(&preset, &set, &TokenSources::new("W"), &out).unwrap();
         let path = out.join("W_wiring.png");
         let decoder = ::png::Decoder::new(std::fs::File::open(&path).unwrap());
         let mut reader = decoder.read_info().unwrap();
@@ -395,5 +533,193 @@ mod tests {
         assert_eq!(bytes[2], 20, "B = metallic gray");
         assert_eq!(bytes[3], 255, "A = roughness alpha");
         std::fs::remove_dir_all(&out).unwrap();
+    }
+
+    fn passthrough_output(filename: &str, kind: MapKind) -> crate::presets::OutputSpec {
+        crate::presets::OutputSpec {
+            filename: filename.into(),
+            maps: vec![(kind, vec![])],
+            channels: [
+                crate::presets::ChannelWiring::new(0, ChannelSlot::R),
+                crate::presets::ChannelWiring::new(0, ChannelSlot::G),
+                crate::presets::ChannelWiring::new(0, ChannelSlot::B),
+                crate::presets::ChannelWiring::new(0, ChannelSlot::A),
+            ],
+            normal_convention: NormalConvention::Opengl,
+            format: OutputFormat::Png8,
+        }
+    }
+
+    #[test]
+    fn every_token_expands_to_its_source_exactly() {
+        // Populated case for ALL six tokens: one BaseColor passthrough
+        // whose filename names each token once.
+        let size = 2;
+        let mut set = MapSet::new(size);
+        set.set(MapKind::BaseColor, solid(size, 200));
+        let preset = ExportPreset {
+            name: "token probe".into(),
+            outputs: vec![passthrough_output(
+                "$mesh_$textureSet_$srcMap_$colorSpace_$layerName_$udim.png",
+                MapKind::BaseColor,
+            )],
+        };
+        let sources = TokenSources {
+            texture_set: "Blade",
+            mesh: "Sword",
+            layer_name: "Paint 1",
+            udim: SINGLE_TILE_UDIM,
+        };
+        let out = std::env::temp_dir().join(format!("umber-export-drv-tok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let written = run_preset(&preset, &set, &sources, &out).unwrap();
+        assert_eq!(written.len(), 1);
+        assert!(
+            written[0].ends_with("Sword_Blade_baseColor_sRGB_Paint 1_1001.png"),
+            "every token expanded, got {}",
+            written[0].display()
+        );
+        std::fs::remove_dir_all(&out).unwrap();
+    }
+
+    #[test]
+    fn empty_sources_leave_their_placeholders_literal() {
+        // Empty-source case for $mesh/$layerName (the engine's
+        // pass-through contract); driver-known tokens ($srcMap,
+        // $colorSpace, $udim, $textureSet) still expand.
+        let size = 2;
+        let mut set = MapSet::new(size);
+        set.set(MapKind::BaseColor, solid(size, 200));
+        let preset = ExportPreset {
+            name: "token probe".into(),
+            outputs: vec![passthrough_output(
+                "$mesh_$textureSet_$srcMap_$colorSpace_$layerName_$udim.png",
+                MapKind::BaseColor,
+            )],
+        };
+        let out =
+            std::env::temp_dir().join(format!("umber-export-drv-tokempty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let written = run_preset(&preset, &set, &TokenSources::new("Blade"), &out).unwrap();
+        assert_eq!(written.len(), 1);
+        assert!(
+            written[0].ends_with("$mesh_Blade_baseColor_sRGB_$layerName_1001.png"),
+            "empty sources stay literal, got {}",
+            written[0].display()
+        );
+        std::fs::remove_dir_all(&out).unwrap();
+    }
+
+    #[test]
+    fn packed_output_joins_src_map_tokens_and_reports_linear() {
+        // Multi-map $srcMap joins wiring-order tokens; a pure-data
+        // output's $colorSpace is linear.
+        let size = 1;
+        let mut set = MapSet::new(size);
+        set.set(MapKind::AmbientOcclusion, vec![230, 230, 230, 255]);
+        set.set(MapKind::Roughness, vec![128, 128, 128, 255]);
+        set.set(MapKind::Metallic, vec![64, 64, 64, 255]);
+        let preset = ExportPreset {
+            name: "orm probe".into(),
+            outputs: vec![crate::presets::OutputSpec {
+                filename: "$textureSet_$srcMap_$colorSpace.png".into(),
+                maps: vec![
+                    (MapKind::AmbientOcclusion, vec![]),
+                    (MapKind::Roughness, vec![]),
+                    (MapKind::Metallic, vec![]),
+                ],
+                channels: [
+                    crate::presets::ChannelWiring::new(0, ChannelSlot::Gray),
+                    crate::presets::ChannelWiring::new(1, ChannelSlot::Gray),
+                    crate::presets::ChannelWiring::new(2, ChannelSlot::Gray),
+                    crate::presets::ChannelWiring::new(0, ChannelSlot::A),
+                ],
+                normal_convention: NormalConvention::Opengl,
+                format: OutputFormat::Png8,
+            }],
+        };
+        let out =
+            std::env::temp_dir().join(format!("umber-export-drv-tokorm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let written = run_preset(&preset, &set, &TokenSources::new("Hull"), &out).unwrap();
+        assert_eq!(written.len(), 1);
+        assert!(
+            written[0].ends_with("Hull_ambient_occlusion_roughness_metallic_linear.png"),
+            "got {}",
+            written[0].display()
+        );
+        std::fs::remove_dir_all(&out).unwrap();
+    }
+
+    #[test]
+    fn populated_sources_dont_rename_texture_set_only_templates() {
+        // CLI regression: today's built-in filenames name only
+        // $textureSet, so a fully-populated source set must write
+        // byte-identical names to the minimal one.
+        let size = 2;
+        let mut set = MapSet::new(size);
+        set.set(MapKind::BaseColor, solid(size, 200));
+        set.set(MapKind::Metallic, solid(size, 255));
+        set.set(MapKind::Roughness, solid(size, 64));
+        set.set(MapKind::Normal, solid(size, 128));
+        let preset = ExportPreset::gltf_metal_rough();
+        let full = TokenSources {
+            texture_set: "Sword",
+            mesh: "sword",
+            layer_name: "Paint 1",
+            udim: SINGLE_TILE_UDIM,
+        };
+        let minimal = TokenSources::new("Sword");
+        for (tag, sources) in [("full", full), ("minimal", minimal)] {
+            let out = std::env::temp_dir().join(format!(
+                "umber-export-drv-tokcompat-{tag}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&out);
+            let written = run_preset(&preset, &set, &sources, &out).unwrap();
+            let names: Vec<String> = written
+                .iter()
+                .map(|p| {
+                    p.file_name()
+                        .expect("written file has a name")
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect();
+            assert_eq!(
+                names,
+                vec![
+                    "Sword_baseColor.png",
+                    "Sword_metallicRoughness.png",
+                    "Sword_normal.png",
+                ],
+                "{tag} sources renamed a textureSet-only template"
+            );
+            std::fs::remove_dir_all(&out).unwrap();
+        }
+    }
+
+    #[test]
+    fn mesh_stem_takes_the_file_stem() {
+        assert_eq!(mesh_stem(std::path::Path::new("/m/sword.obj")), "sword");
+        assert_eq!(mesh_stem(std::path::Path::new("blade.glb")), "blade");
+        assert_eq!(
+            mesh_stem(std::path::Path::new("/m/my.set.v2.fbx")),
+            "my.set.v2"
+        );
+    }
+
+    #[test]
+    fn expand_static_leaves_per_output_tokens_for_expand_output() {
+        let sources = TokenSources {
+            texture_set: "Blade",
+            mesh: "Sword",
+            layer_name: "Paint 1",
+            udim: SINGLE_TILE_UDIM,
+        };
+        assert_eq!(
+            sources.expand_static("$mesh/$textureSet_$layerName_$udim_$srcMap"),
+            "Sword/Blade_Paint 1_1001_$srcMap"
+        );
     }
 }

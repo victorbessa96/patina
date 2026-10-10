@@ -547,8 +547,17 @@ fn export_cmd(args: &[String]) -> Result<()> {
         ));
     }
 
-    let written =
-        umber_export::run_preset(&preset, &map_set, &set_name, std::path::Path::new(out_dir))?;
+    let written = umber_export::run_preset(
+        &preset,
+        &map_set,
+        &umber_export::TokenSources {
+            texture_set: &set_name,
+            mesh: umber_export::mesh_stem(mesh_path),
+            layer_name: "",
+            udim: umber_export::SINGLE_TILE_UDIM,
+        },
+        std::path::Path::new(out_dir),
+    )?;
     for path in &written {
         println!("wrote {}", path.display());
     }

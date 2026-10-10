@@ -1,15 +1,24 @@
 //! The Export panel: drives `umber-export`'s preset engine from the
 //! egui shell.
 //!
-//! Wave 3 scope: a synchronous Export button that bakes today's
-//! available source maps (AO via [`crate::bake_sources::bake_ao`] plus
-//! a flat-normal placeholder — no painted maps feed export yet), filters
-//! the chosen engine preset down to the outputs those maps can satisfy
+//! Wave 5 scope (painted-maps bridge, audit remainder #1): a
+//! synchronous Export button that bakes today's available source maps
+//! (AO via [`crate::bake_sources::bake_ao`], a flat-normal placeholder,
+//! and — when a paint session is live — the LIVE paint target as Base
+//! Color via [`crate::bake_sources::painted_base_color`]), filters the
+//! chosen engine preset down to the outputs those maps can satisfy
 //! (mirroring `umber-cli export`'s "export what we can, name what's
-//! missing" behavior), and runs [`umber_export::run_preset`] to write
-//! the files. See `LANDING_NOTES_EXPORT_DIALOG.md` for the
-//! baked-maps-today vs. painted-maps-later story and why every built-in
-//! preset collapses to its normal output alone right now.
+//! missing" behavior), and runs [`umber_export::run_preset`] with the
+//! full driver-side token sources (`$mesh`/`$textureSet`/`$udim`/
+//! `$colorSpace`/`$srcMap`/`$layerName`) to write the files. See
+//! `LANDING_NOTES_EXPORT_DIALOG.md` for the baked-maps-today vs.
+//! painted-maps story.
+//!
+//! V1 painted scope is Base Color ONLY (paint-per-channel compositing
+//! is a later slice): normal/AO keep their baked sources, and the
+//! dialog always shows which source feeds Base Color (the
+//! painted-source badge) so a flat-placeholder export never masquerades
+//! as painted.
 //!
 //! Synchronous for the same reason as the Bakes panel (`bakes_panel.rs`
 //! module docs): no async job system exists yet, and one AO bake + a
@@ -23,8 +32,10 @@ use std::time::Instant;
 
 use anyhow::Context as _;
 
-use crate::bake_sources;
+use crate::bake_sources::{self, BaseColorSource};
 use crate::bakes_panel;
+use crate::document::Document;
+use crate::paint_state::PaintState;
 
 /// The four built-in engine presets the dialog can drive
 /// ([`umber_export::ExportPreset`]'s constructors).
@@ -131,6 +142,22 @@ pub struct ExportContext<'a> {
     /// The mesh's source path (for the texture-set name); `None` falls
     /// back to [`bakes_panel::FALLBACK_TEXTURE_SET`].
     pub mesh_path: Option<&'a Path>,
+    /// The live paint session (`None` = no paint target: Base Color
+    /// exports the flat placeholder — see the dialog's source badge).
+    pub paint: Option<&'a PaintState>,
+    /// The open document (for the `$layerName` token; `None` behaves
+    /// like an empty document).
+    pub doc: Option<&'a Document>,
+}
+
+/// V1 `$layerName` source: the topmost layer's display name (stack order
+/// is bottom-to-top, so the last layer is what the user sees on top).
+/// `""` when there is no document or it holds no layers — the token
+/// then stays literal per the template engine's empty-value contract.
+pub fn layer_token(doc: Option<&Document>) -> &str {
+    doc.and_then(|d| d.layers().last())
+        .map(|layer| layer.name.as_str())
+        .unwrap_or("")
 }
 
 /// One finished export's outcome: what was written, what was skipped,
@@ -139,6 +166,7 @@ struct ExportOutcome {
     written: Vec<PathBuf>,
     skipped: Vec<SkippedOutput>,
     texture_set: String,
+    base_source: BaseColorSource,
     bake_ms: u128,
     write_ms: u128,
 }
@@ -242,13 +270,29 @@ impl ExportDialog {
             }
         });
 
+        // Painted-source badge: the user must SEE which source feeds the
+        // Base Color output — honesty in UI (v1: Base Color only;
+        // normal/AO stay baked; paint-per-channel is a later slice).
+        if ctx.paint.is_some() {
+            ui.label("Base Color source: painted — what you painted is what exports.");
+        } else {
+            ui.label("Base Color source: flat placeholder — no paint session live.");
+        }
+
         let enabled = self.can_export(mesh_loaded, gpu_ready);
         if ui
             .add_enabled(enabled, egui::Button::new("Export"))
             .clicked()
         {
             if let (Some(gpu), Some(mesh)) = (ctx.gpu, ctx.mesh) {
-                self.export_now(&gpu.device, &gpu.queue, mesh, ctx.mesh_path);
+                self.export_now(
+                    &gpu.device,
+                    &gpu.queue,
+                    mesh,
+                    ctx.mesh_path,
+                    ctx.paint,
+                    ctx.doc,
+                );
             }
         }
 
@@ -265,8 +309,10 @@ impl ExportDialog {
         queue: &umber_gpu::WgpuQueue,
         mesh: &umber_mesh::MeshData,
         mesh_path: Option<&Path>,
+        paint: Option<&PaintState>,
+        doc: Option<&Document>,
     ) {
-        match self.run(device, queue, mesh, mesh_path) {
+        match self.run(device, queue, mesh, mesh_path, paint, doc) {
             Ok(outcome) => {
                 let names: Vec<String> = outcome
                     .written
@@ -277,22 +323,24 @@ impl ExportDialog {
                             .unwrap_or_else(|| p.display().to_string())
                     })
                     .collect();
+                let base_note = match outcome.base_source {
+                    BaseColorSource::Painted => "Base Color: painted",
+                    BaseColorSource::FlatPlaceholder => "Base Color: flat placeholder",
+                };
                 let mut status = format!(
-                    "Exported {} outputs (bake {} ms, write {} ms): {}",
+                    "Exported {} outputs ({base_note}; bake {} ms, write {} ms): {}",
                     outcome.written.len(),
                     outcome.bake_ms,
                     outcome.write_ms,
                     names.join(", ")
                 );
                 if !outcome.skipped.is_empty() {
+                    let sources = skipped_display_sources(&outcome.texture_set);
                     let parts: Vec<String> = outcome
                         .skipped
                         .iter()
                         .map(|s| {
-                            let filename = umber_export::expand_template(
-                                &s.filename,
-                                &[("textureSet", &outcome.texture_set)],
-                            );
+                            let filename = sources.expand_static(&s.filename);
                             format!("{filename} (missing {})", s.missing.join(", "))
                         })
                         .collect();
@@ -309,24 +357,33 @@ impl ExportDialog {
         }
     }
 
-    /// The synchronous export driver: bakes the source `MapSet`, filters
-    /// the selected preset to its satisfiable outputs, and runs it.
-    /// `Result`-typed so failures carry context instead of unwrapping.
+    /// The synchronous export driver: bakes the source `MapSet` (AO +
+    /// flat normal + painted-or-flat Base Color), filters the selected
+    /// preset to its satisfiable outputs, and runs it with the full
+    /// driver-side token sources. `Result`-typed so failures carry
+    /// context instead of unwrapping.
     fn run(
         &self,
         device: &umber_gpu::WgpuDevice,
         queue: &umber_gpu::WgpuQueue,
         mesh: &umber_mesh::MeshData,
         mesh_path: Option<&Path>,
+        paint: Option<&PaintState>,
+        doc: Option<&Document>,
     ) -> anyhow::Result<ExportOutcome> {
         let fallback = PathBuf::from(bakes_panel::FALLBACK_TEXTURE_SET);
         let texture_set = umber_mesh::texture_set_name(mesh_path.unwrap_or(&fallback), mesh);
         let size = bakes_panel::DEFAULT_RESOLUTION;
 
         let bake_started = Instant::now();
-        let map_set =
+        let mut map_set =
             bake_sources::bake_export_map_set(device, queue, mesh, size, bakes_panel::DEFAULT_RAYS)
                 .context("building export map set")?;
+        // Painted bridge: Base Color reads the live target when a
+        // session exists, else the flat placeholder (never silent — the
+        // source rides the outcome into the status line).
+        let painted = bake_sources::painted_base_color(paint, device, queue);
+        let base_source = bake_sources::apply_base_color(&mut map_set, size, painted);
         let bake_ms = bake_started.elapsed().as_millis();
 
         let available: Vec<umber_export::MapKind> = map_set.maps_iter().collect();
@@ -334,13 +391,29 @@ impl ExportDialog {
         let (filtered, skipped) = filter_satisfiable(&full_preset, &available);
         if filtered.outputs.is_empty() {
             anyhow::bail!(
-                "preset '{}' has no outputs satisfiable from today's baked maps (AO + flat normal)",
+                "preset '{}' has no outputs satisfiable from today's maps (AO + flat normal + Base Color)",
                 full_preset.name
             );
         }
 
+        // Full driver-side token sources: $mesh from the loaded path,
+        // $layerName v1 from the document's top layer, $udim the
+        // single-tile constant; $srcMap/$colorSpace derived per output
+        // by the driver.
+        let mesh_stem = mesh_path
+            .map(umber_export::mesh_stem)
+            .unwrap_or("")
+            .to_string();
+        let layer_name = layer_token(doc).to_string();
+        let sources = umber_export::TokenSources {
+            texture_set: &texture_set,
+            mesh: &mesh_stem,
+            layer_name: &layer_name,
+            udim: umber_export::SINGLE_TILE_UDIM,
+        };
+
         let write_started = Instant::now();
-        let written = umber_export::run_preset(&filtered, &map_set, &texture_set, &self.output_dir)
+        let written = umber_export::run_preset(&filtered, &map_set, &sources, &self.output_dir)
             .context("run_preset")?;
         let write_ms = write_started.elapsed().as_millis();
 
@@ -348,10 +421,17 @@ impl ExportDialog {
             written,
             skipped,
             texture_set,
+            base_source,
             bake_ms,
             write_ms,
         })
     }
+}
+
+/// Minimal sources for the skipped-output display line (texture set
+/// only — the mesh/layer context is not retained on the outcome).
+fn skipped_display_sources(texture_set: &str) -> umber_export::TokenSources<'_> {
+    umber_export::TokenSources::new(texture_set)
 }
 
 impl Default for ExportDialog {
@@ -488,10 +568,73 @@ mod tests {
                 std::process::id()
             ));
             let _ = std::fs::remove_dir_all(&out);
-            let written = umber_export::run_preset(&filtered, &map_set, "Probe", &out)
-                .unwrap_or_else(|e| panic!("{choice:?}: filtered preset should validate: {e:#}"));
+            let written = umber_export::run_preset(
+                &filtered,
+                &map_set,
+                &umber_export::TokenSources::new("Probe"),
+                &out,
+            )
+            .unwrap_or_else(|e| panic!("{choice:?}: filtered preset should validate: {e:#}"));
             assert_eq!(written.len(), filtered.outputs.len(), "{choice:?}");
             std::fs::remove_dir_all(&out).ok();
         }
+    }
+
+    #[test]
+    fn painted_base_color_keeps_the_base_color_output() {
+        // Post-bridge map set: AO + flat normal + painted Base Color.
+        // Every built-in preset must now keep its baseColor output ALONGSIDE
+        // normal (pre-bridge: normal alone).
+        let size = 2;
+        let ao = vec![9u8; (size * size * 4) as usize];
+        let mut set = bake_sources::map_set_from(ao, size);
+        let source = bake_sources::apply_base_color(
+            &mut set,
+            size,
+            Some(vec![7u8; (size * size * 4) as usize]),
+        );
+        assert_eq!(source, bake_sources::BaseColorSource::Painted);
+        let available: Vec<umber_export::MapKind> = set.maps_iter().collect();
+        assert!(available.contains(&umber_export::MapKind::BaseColor));
+        for choice in PresetChoice::ALL {
+            let preset = choice.build();
+            let (kept, _) = filter_satisfiable(&preset, &available);
+            assert!(
+                kept.outputs.iter().any(|o| o
+                    .maps
+                    .iter()
+                    .any(|(k, _)| *k == umber_export::MapKind::BaseColor)),
+                "{choice:?}: painted Base Color must keep the baseColor output"
+            );
+            assert!(
+                kept.outputs.iter().any(|o| o
+                    .maps
+                    .iter()
+                    .any(|(k, _)| *k == umber_export::MapKind::Normal)),
+                "{choice:?}: normal output must survive too"
+            );
+        }
+    }
+
+    #[test]
+    fn layer_token_is_empty_without_layers_and_top_with_them() {
+        use umber_core::layers::{LayerCommand, LayerKind};
+        assert_eq!(layer_token(None), "");
+        let mut doc = Document::default();
+        assert_eq!(layer_token(Some(&doc)), "");
+        doc.run(LayerCommand::add("Paint 1", LayerKind::Paint));
+        assert_eq!(layer_token(Some(&doc)), "Paint 1");
+        // Stack order is bottom-to-top: the LAST layer is the top.
+        doc.run(LayerCommand::add("Paint 2", LayerKind::Paint));
+        assert_eq!(layer_token(Some(&doc)), "Paint 2");
+    }
+
+    #[test]
+    fn skipped_display_expands_the_texture_set_token() {
+        let sources = skipped_display_sources("Blade");
+        assert_eq!(
+            sources.expand_static("$textureSet_baseColor.png"),
+            "Blade_baseColor.png"
+        );
     }
 }

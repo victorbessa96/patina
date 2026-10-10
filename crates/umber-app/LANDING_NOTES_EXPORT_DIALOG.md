@@ -1,4 +1,4 @@
-# Export dialog (Wave 3) — landing notes
+# Export dialog (Wave 3; painted bridge Wave 5) — landing notes
 
 Headless-driven Export dialog for the egui shell: `crates/umber-app/src/export_dialog.rs`
 (new) + `crates/umber-app/src/bake_sources.rs` (new, shared with the Bakes panel) +
@@ -58,8 +58,19 @@ dock wiring in `crates/umber-app/src/main.rs`. `umber-cli`, `umber-export`, and
 
 ## The baked-maps-today vs. painted-maps-later story (read before filing "export is useless")
 
-**With the two maps this dialog can build today — AO and a flat normal — every
-built-in preset collapses to exactly one surviving output: the normal passthrough.**
+**Wave-5 painted bridge (audit remainder #1):** with a live paint session, the
+dialog's `MapSet` is AO + flat normal + PAINTED Base Color
+(`bake_sources::painted_base_color` + `apply_base_color`), so every built-in
+preset now keeps its baseColor output alongside normal. Without a session, Base
+Color falls back to the flat-white placeholder (`flat_base_color_rgba8`) and the
+dialog's source badge + status line say so. V1 is Base Color ONLY
+(paint-per-channel later). The driver call now passes full
+`TokenSources` (`$mesh` = mesh file stem, `$layerName` = top layer name,
+`$udim` = `1001`, `$srcMap`/`$colorSpace` per output).
+
+**Pre-bridge (Wave 3): with the two maps this dialog could build then — AO and
+a flat normal — every built-in preset collapsed to exactly one surviving
+output: the normal passthrough.**
 This is not a bug in `filter_satisfiable`; it is the honest consequence of what the
 app can bake headless right now:
 

@@ -90,8 +90,10 @@ impl TabViewer for PanelViewer<'_> {
 
     fn ui(&mut self, ui: &mut Ui, tab: &mut Self::Tab) {
         match tab {
-            Panel::Viewport => self.viewport.ui(ui, self.gpu, self.paint.take()),
-            Panel::UvView => self.uv_view.ui(ui, self.mesh, self.gpu, self.paint.take()),
+            Panel::Viewport => self.viewport.ui(ui, self.gpu, self.paint.as_deref_mut()),
+            Panel::UvView => self
+                .uv_view
+                .ui(ui, self.mesh, self.gpu, self.paint.as_deref_mut()),
             Panel::LayerStack => document::layers_ui(ui, self.doc),
             Panel::Properties => {
                 self.brush.show(ui);
@@ -116,6 +118,11 @@ impl TabViewer for PanelViewer<'_> {
                     gpu: Some(self.gpu),
                     mesh: self.mesh,
                     mesh_path: self.mesh_path,
+                    // Shared reborrow (not `take()`): the Export panel
+                    // reads the live target for the painted bridge while
+                    // the center views keep staging strokes into it.
+                    paint: self.paint.as_deref(),
+                    doc: Some(&*self.doc),
                 };
                 self.export.show(ui, ctx);
             }
