@@ -3831,6 +3831,8 @@ name = "umber-brush"
 version = "0.1.0"
 dependencies = [
  "glam",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "umber-gpu",
 ]

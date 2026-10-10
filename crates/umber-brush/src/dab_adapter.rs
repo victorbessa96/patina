@@ -12,10 +12,11 @@
 //! the adapter neither knows nor scales by texture size.
 
 use crate::DabPlan;
+use serde::{Deserialize, Serialize};
 use umber_gpu::paint::Dab;
 
 /// Static brush parameters for one stroke segment.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BrushParams {
     /// Premultiplied RGBA stroke color, 0..=1 per channel.
     pub color: [f32; 4],

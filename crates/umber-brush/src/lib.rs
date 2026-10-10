@@ -8,6 +8,8 @@
 //! Wave 1 scope: the input-event vocabulary every layer agrees on, so the
 //! stylus crate and the paint scheduler can compile against it.
 
+use serde::{Deserialize, Serialize};
+
 /// A normalized stylus event, backend-agnostic.
 /// Produced by the `stylus` crate; consumed by the stroke conditioner.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -29,6 +31,7 @@ pub struct StrokeEvent {
 pub mod dab_adapter;
 pub mod lazy_mouse;
 pub mod one_euro;
+pub mod preset;
 pub mod spacing;
 pub mod wiring;
 
@@ -39,7 +42,7 @@ pub use spacing::{DabPlan, SpacingAccumulator, SpacingError};
 pub use wiring::{ConditionerError, StrokeConditioner};
 
 /// One-euro filter parameters (Casiez CHI'12 — docs/research/05 §4).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct OneEuroParams {
     pub min_cutoff: f32,
     pub beta: f32,
