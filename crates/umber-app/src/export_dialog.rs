@@ -14,6 +14,14 @@
 //! `LANDING_NOTES_EXPORT_DIALOG.md` for the baked-maps-today vs.
 //! painted-maps story.
 //!
+//! UDIM (wave-5 slice 5): with a multi-tile paint session the export
+//! runs once per present tile ([`PaintState::tiles_present`]) through
+//! [`umber_export::run_preset_tiled`] — each tile's AO baked over its own
+//! UV window, its Base Color read from THAT tile's target
+//! ([`crate::bake_sources::painted_base_color_tile`]), and `$udim`
+//! expanding to the tile's number. No session (or one tile) is the
+//! single-tile `[1001]` path, byte-identical to before.
+//!
 //! V1 painted scope is Base Color ONLY (paint-per-channel compositing
 //! is a later slice): normal/AO keep their baked sources, and the
 //! dialog always shows which source feeds Base Color (the
@@ -174,6 +182,61 @@ pub fn prospective_base_source(
     bake_sources::pick_base_color_source(painted_live, probe)
 }
 
+/// Which UDIM tiles an export writes, and which it skips: the paint
+/// session's present tiles (`None` — no session — means the single-tile
+/// `[1001]` path, unchanged). A single tile is always exported (the
+/// pre-UDIM whole-mesh bake, byte-identical); in a multi-tile export a
+/// tile owning no mesh triangles (`mesh_tiles` = the mesh's
+/// `tile_of_triangle`) is skipped — its AO bake has nothing to rasterize
+/// — and reported, never aborting the other tiles. Pure logic.
+pub fn plan_export_tiles(
+    paint_tiles: Option<Vec<u16>>,
+    mesh_tiles: &[u16],
+) -> (Vec<u16>, Vec<u16>) {
+    let tiles = paint_tiles.unwrap_or_else(|| vec![umber_mesh::FIRST_TILE]);
+    if tiles.len() <= 1 {
+        return (tiles, Vec::new());
+    }
+    tiles
+        .into_iter()
+        .partition(|tile| mesh_tiles.contains(tile))
+}
+
+/// The badge's tile note beside the Base Color source: `Some("2 tiles")`
+/// for a multi-tile session, `None` for the single-tile case (the badge
+/// reads exactly as before).
+pub fn tile_badge(tile_count: usize) -> Option<String> {
+    (tile_count > 1).then(|| format!("{tile_count} tiles"))
+}
+
+/// The status line's Base Color note over every exported tile: one
+/// source named once when all tiles agree (plus the tile count when
+/// several), else each tile's source listed. Pure logic.
+pub fn base_note(sources: &[(u16, BaseColorSource)]) -> String {
+    fn name(source: BaseColorSource) -> String {
+        match source {
+            BaseColorSource::Painted => "painted".to_string(),
+            BaseColorSource::Graph(node) => format!("graph node {node}"),
+            BaseColorSource::FlatPlaceholder => "flat placeholder".to_string(),
+        }
+    }
+    let Some((_, first)) = sources.first() else {
+        return "Base Color: none".to_string();
+    };
+    if sources.iter().all(|(_, s)| s == first) {
+        match tile_badge(sources.len()) {
+            Some(tiles) => format!("Base Color: {} ({tiles})", name(*first)),
+            None => format!("Base Color: {}", name(*first)),
+        }
+    } else {
+        let parts: Vec<String> = sources
+            .iter()
+            .map(|(tile, s)| format!("{tile} {}", name(*s)))
+            .collect();
+        format!("Base Color: {}", parts.join(", "))
+    }
+}
+
 /// V1 `$layerName` source: the topmost layer's display name (stack order
 /// is bottom-to-top, so the last layer is what the user sees on top).
 /// `""` when there is no document or it holds no layers — the token
@@ -190,7 +253,10 @@ struct ExportOutcome {
     written: Vec<PathBuf>,
     skipped: Vec<SkippedOutput>,
     texture_set: String,
-    base_source: BaseColorSource,
+    /// Each exported tile's Base Color source, in export order.
+    base_sources: Vec<(u16, BaseColorSource)>,
+    /// Present tiles skipped for owning no mesh geometry.
+    skipped_tiles: Vec<u16>,
     bake_ms: u128,
     write_ms: u128,
 }
@@ -299,17 +365,26 @@ impl ExportDialog {
         // flat; normal/AO stay baked; paint-per-channel is a later
         // slice). The badge mirrors the driver's priority exactly via
         // the shared pick fn (painted live session wins over graph).
+        // The tile note rides beside the source (UDIM: one file set per
+        // painted tile; single-tile sessions read exactly as before).
+        let tiles_note = ctx
+            .paint
+            .and_then(|p| tile_badge(p.tiles_present().len()))
+            .map(|tiles| format!(" [{tiles}]"))
+            .unwrap_or_default();
         match prospective_base_source(
             ctx.paint.is_some(),
             ctx.graph,
             bakes_panel::DEFAULT_RESOLUTION,
         ) {
             BaseColorSource::Painted => {
-                ui.label("Base Color source: painted — what you painted is what exports.");
+                ui.label(format!(
+                    "Base Color source: painted{tiles_note} — what you painted is what exports."
+                ));
             }
             BaseColorSource::Graph(node) => {
                 ui.label(format!(
-                    "Base Color source: graph node {node} — the panel's evaluated output."
+                    "Base Color source: graph node {node}{tiles_note} — the panel's evaluated output."
                 ));
             }
             BaseColorSource::FlatPlaceholder => {
@@ -346,15 +421,9 @@ impl ExportDialog {
                             .unwrap_or_else(|| p.display().to_string())
                     })
                     .collect();
-                let base_note = match outcome.base_source {
-                    BaseColorSource::Painted => "Base Color: painted".to_string(),
-                    BaseColorSource::Graph(node) => {
-                        format!("Base Color: graph node {node}")
-                    }
-                    BaseColorSource::FlatPlaceholder => "Base Color: flat placeholder".to_string(),
-                };
+                let base_line = base_note(&outcome.base_sources);
                 let mut status = format!(
-                    "Exported {} outputs ({base_note}; bake {} ms, write {} ms): {}",
+                    "Exported {} outputs ({base_line}; bake {} ms, write {} ms): {}",
                     outcome.written.len(),
                     outcome.bake_ms,
                     outcome.write_ms,
@@ -372,6 +441,14 @@ impl ExportDialog {
                         .collect();
                     status.push_str(&format!(" — skipped: {}", parts.join("; ")));
                 }
+                if !outcome.skipped_tiles.is_empty() {
+                    let tiles: Vec<String> =
+                        outcome.skipped_tiles.iter().map(u16::to_string).collect();
+                    status.push_str(&format!(
+                        " — tiles skipped (no mesh geometry): {}",
+                        tiles.join(", ")
+                    ));
+                }
                 self.status = status;
                 self.last_written = outcome.written;
                 self.last_skipped = outcome.skipped;
@@ -383,11 +460,11 @@ impl ExportDialog {
         }
     }
 
-    /// The synchronous export driver: bakes the source `MapSet` (AO +
-    /// flat normal + painted-or-graph-or-flat Base Color), filters the selected
-    /// preset to its satisfiable outputs, and runs it with the full
-    /// driver-side token sources. `Result`-typed so failures carry
-    /// context instead of unwrapping.
+    /// The synchronous export driver: bakes one source `MapSet` per
+    /// exported tile (AO + flat normal + painted-or-graph-or-flat Base
+    /// Color), filters the selected preset to its satisfiable outputs,
+    /// and runs it per tile with the full driver-side token sources.
+    /// `Result`-typed so failures carry context instead of unwrapping.
     fn run(&self, ctx: &ExportContext<'_>) -> anyhow::Result<ExportOutcome> {
         let (Some(gpu), Some(mesh)) = (ctx.gpu, ctx.mesh) else {
             anyhow::bail!("export needs a loaded mesh and a GPU device");
@@ -401,21 +478,58 @@ impl ExportDialog {
         let texture_set = umber_mesh::texture_set_name(mesh_path.unwrap_or(&fallback), mesh);
         let size = bakes_panel::DEFAULT_RESOLUTION;
 
-        let bake_started = Instant::now();
-        let mut map_set =
-            bake_sources::bake_export_map_set(device, queue, mesh, size, bakes_panel::DEFAULT_RAYS)
-                .context("building export map set")?;
-        // Painted bridge, then the graph bridge: Base Color reads the
-        // live target when a session exists, else the panel's evaluated
-        // graph output, else the flat placeholder (never silent — the
-        // source rides the outcome into the status line).
-        let painted = bake_sources::painted_base_color(paint, device, queue);
-        let graphed = graph.and_then(|g| g.output_node().zip(g.export_base_color()));
-        let base_source =
-            bake_sources::apply_base_color_with_graph(&mut map_set, size, painted, graphed);
-        let bake_ms = bake_started.elapsed().as_millis();
+        // UDIM (slice 5): one map set per present paint tile. No session,
+        // or a single-tile one, is the pre-UDIM `[1001]` path unchanged.
+        let (tiles, skipped_tiles) = plan_export_tiles(
+            paint.map(PaintState::tiles_present),
+            &umber_mesh::tile_of_triangle(mesh),
+        );
+        // Only the lone-1001 export keeps the whole-mesh bake (whose
+        // rasterized window IS tile 1001); any other tile bakes its own.
+        let per_tile_bake = tiles != [umber_mesh::FIRST_TILE];
 
-        let available: Vec<umber_export::MapKind> = map_set.maps_iter().collect();
+        let bake_started = Instant::now();
+        // Per tile: the baked half (whole-mesh AO for the lone 1001 —
+        // byte-identical to before; the tile's own UV window otherwise),
+        // then the painted bridge (THAT tile's target), then the graph
+        // bridge (tile 1001 only), else the flat placeholder (never
+        // silent — each tile's source rides the outcome into the status).
+        let graphed = graph.and_then(|g| g.output_node().zip(g.export_base_color()));
+        let tile_sets = bake_sources::assemble_tile_map_sets(
+            &tiles,
+            size,
+            |tile| {
+                let baked = if per_tile_bake {
+                    bake_sources::bake_export_map_set_tile(
+                        device,
+                        queue,
+                        mesh,
+                        size,
+                        bakes_panel::DEFAULT_RAYS,
+                        tile,
+                    )
+                } else {
+                    bake_sources::bake_export_map_set(
+                        device,
+                        queue,
+                        mesh,
+                        size,
+                        bakes_panel::DEFAULT_RAYS,
+                    )
+                };
+                baked.context("building export map set")
+            },
+            |tile| bake_sources::painted_base_color_tile(paint, tile, device, queue),
+            graphed,
+        )?;
+        let bake_ms = bake_started.elapsed().as_millis();
+        let Some(first) = tile_sets.first() else {
+            anyhow::bail!("no tile has mesh geometry to export");
+        };
+
+        // Every tile's set carries the same kinds (AO + normal + Base
+        // Color), so one filter serves all tiles.
+        let available: Vec<umber_export::MapKind> = first.set.maps_iter().collect();
         let full_preset = self.preset.build();
         let (filtered, skipped) = filter_satisfiable(&full_preset, &available);
         if filtered.outputs.is_empty() {
@@ -426,9 +540,9 @@ impl ExportDialog {
         }
 
         // Full driver-side token sources: $mesh from the loaded path,
-        // $layerName v1 from the document's top layer, $udim the
-        // single-tile constant; $srcMap/$colorSpace derived per output
-        // by the driver.
+        // $layerName v1 from the document's top layer; $udim is each
+        // tile's own number (set per tile by the tiled driver);
+        // $srcMap/$colorSpace derived per output by the driver.
         let mesh_stem = mesh_path
             .map(umber_export::mesh_stem)
             .unwrap_or("")
@@ -442,15 +556,18 @@ impl ExportDialog {
         };
 
         let write_started = Instant::now();
-        let written = umber_export::run_preset(&filtered, &map_set, &sources, &self.output_dir)
-            .context("run_preset")?;
+        let pairs: Vec<(u16, &umber_export::MapSet)> =
+            tile_sets.iter().map(|t| (t.tile, &t.set)).collect();
+        let written = umber_export::run_preset_tiled(&filtered, &pairs, &sources, &self.output_dir)
+            .context("run_preset_tiled")?;
         let write_ms = write_started.elapsed().as_millis();
 
         Ok(ExportOutcome {
             written,
             skipped,
             texture_set,
-            base_source,
+            base_sources: tile_sets.iter().map(|t| (t.tile, t.base_source)).collect(),
+            skipped_tiles,
             bake_ms,
             write_ms,
         })
@@ -691,6 +808,64 @@ mod tests {
         // Stack order is bottom-to-top: the LAST layer is the top.
         doc.run(LayerCommand::add("Paint 2", LayerKind::Paint));
         assert_eq!(layer_token(Some(&doc)), "Paint 2");
+    }
+
+    #[test]
+    fn plan_export_tiles_single_path_and_geometry_skip() {
+        // No session: the single-tile path, whatever the mesh spans.
+        assert_eq!(plan_export_tiles(None, &[1002, 1002]), (vec![1001], vec![]));
+        // One present tile: always exported (the whole-mesh bake).
+        assert_eq!(
+            plan_export_tiles(Some(vec![1001]), &[1002]),
+            (vec![1001], vec![])
+        );
+        // Two present tiles over a two-tile mesh: both exported, sorted.
+        assert_eq!(
+            plan_export_tiles(Some(vec![1001, 1002]), &[1001, 1001, 1002, 1002]),
+            (vec![1001, 1002], vec![])
+        );
+        // A mirror-created tile with no geometry is skipped, not fatal.
+        assert_eq!(
+            plan_export_tiles(Some(vec![1001, 1002, 1100]), &[1001, 1002]),
+            (vec![1001, 1002], vec![1100])
+        );
+    }
+
+    #[test]
+    fn tile_badge_names_the_count_only_when_multi_tile() {
+        assert_eq!(tile_badge(0), None);
+        assert_eq!(tile_badge(1), None);
+        assert_eq!(tile_badge(2).as_deref(), Some("2 tiles"));
+    }
+
+    #[test]
+    fn base_note_reports_every_tiles_source_honestly() {
+        // Single tile: the pre-UDIM wording exactly.
+        assert_eq!(
+            base_note(&[(1001, BaseColorSource::Painted)]),
+            "Base Color: painted"
+        );
+        assert_eq!(
+            base_note(&[(1001, BaseColorSource::Graph(4))]),
+            "Base Color: graph node 4"
+        );
+        // Agreeing tiles: one source plus the count.
+        assert_eq!(
+            base_note(&[
+                (1001, BaseColorSource::Painted),
+                (1002, BaseColorSource::Painted)
+            ]),
+            "Base Color: painted (2 tiles)"
+        );
+        // Disagreeing tiles: each named (a flat tile never hides behind
+        // a painted one).
+        assert_eq!(
+            base_note(&[
+                (1001, BaseColorSource::Painted),
+                (1002, BaseColorSource::FlatPlaceholder)
+            ]),
+            "Base Color: 1001 painted, 1002 flat placeholder"
+        );
     }
 
     #[test]

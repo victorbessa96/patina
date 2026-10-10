@@ -25,7 +25,7 @@ fn main() -> Result<()> {
             println!("commands: inspect <mesh-file>");
             println!("          bake-ao <mesh-file> <out.png> [--size N] [--rays N] [--dilate N]");
             println!("          bake-all <mesh-file> <out-dir> [--size N] [--rays N] [--dilate N]");
-            println!("          export <mesh-file> <out-dir> --preset <gltf|unreal|unity|blender> [--size N] [--rays N]");
+            println!("          export <mesh-file> <out-dir> --preset <gltf|unreal|unity|blender> [--size N] [--rays N] [--tile UDIM]...");
             Ok(())
         }
     }
@@ -87,8 +87,8 @@ fn parse_bake_flags(args: &[String], start: usize) -> Result<BakeFlags> {
                     .parse()?;
                 i += 2;
             }
-            // export_cmd parses --preset itself; skip it (value too).
-            "--preset" => i += 2,
+            // export_cmd parses --preset/--tile itself; skip them (value too).
+            "--preset" | "--tile" => i += 2,
             other => return Err(anyhow::anyhow!("unknown flag: {other}")),
         }
     }
@@ -446,16 +446,79 @@ fn bake_ao(ctx: &BakeContext, mesh: &umber_mesh::MeshData, flags: &BakeFlags) ->
     Ok(map)
 }
 
-/// `export <mesh> <out-dir> --preset <name> [--size N] [--rays N]` —
-/// runs the full pipeline headless: bakes the P0 maps, packs them
-/// through the chosen export preset, writes the named outputs.
+/// The UDIM tiles a mesh's geometry occupies, ascending and unique —
+/// `tile_of_triangle`'s distinct values.
+///
+/// A mesh whose UVs all lie in the CLOSED `[0, 1]` square is `[1001]`
+/// outright (the design's single-tile rule): `tile_of_triangle` tags by
+/// the first vertex and `floor(1.0) = 1`, so a unit quad whose triangles
+/// start on its `u = 1` / `v = 1` edge would otherwise read as tile
+/// 1002/1011/1012 and lose the byte-identical whole-mesh export.
+fn present_tiles(mesh: &umber_mesh::MeshData) -> Vec<u16> {
+    let unit = |c: f32| (0.0..=1.0).contains(&c);
+    if mesh.uvs.iter().all(|uv| unit(uv[0]) && unit(uv[1])) {
+        return vec![umber_mesh::FIRST_TILE];
+    }
+    let mut tiles = umber_mesh::tile_of_triangle(mesh);
+    tiles.sort_unstable();
+    tiles.dedup();
+    tiles
+}
+
+/// The tiles an export writes: every present tile when `requested` is
+/// empty (the default), else the requested ones (ascending, unique),
+/// each of which must hold geometry — a tile with no triangles has
+/// nothing to bake.
+fn select_tiles(requested: &[u16], present: &[u16]) -> Result<Vec<u16>> {
+    if requested.is_empty() {
+        return Ok(present.to_vec());
+    }
+    let mut tiles = requested.to_vec();
+    tiles.sort_unstable();
+    tiles.dedup();
+    if let Some(missing) = tiles.iter().find(|t| !present.contains(t)) {
+        return Err(anyhow::anyhow!(
+            "--tile {missing}: the mesh has no geometry there (present tiles: {present:?})"
+        ));
+    }
+    Ok(tiles)
+}
+
+/// Parses one `--tile` value: a UDIM number in the 10x10 grid
+/// (1001..=1100).
+fn parse_tile(value: &str) -> Result<u16> {
+    let tile: u16 = value
+        .parse()
+        .map_err(|_| anyhow::anyhow!("--tile {value}: not a UDIM number"))?;
+    if !(1001..=1100).contains(&tile) {
+        return Err(anyhow::anyhow!(
+            "--tile {tile}: outside the UDIM grid 1001..=1100"
+        ));
+    }
+    Ok(tile)
+}
+
+/// `export <mesh> <out-dir> --preset <name> [--size N] [--rays N]
+/// [--tile UDIM]...` — runs the full pipeline headless: bakes the P0
+/// maps, packs them through the chosen export preset, writes the named
+/// outputs.
+///
+/// UDIM (wave-5 slice 5): the export runs once per tile. `--tile` is
+/// repeatable; without it, every tile the mesh's geometry occupies
+/// ([`present_tiles`], from `tile_of_triangle`) is exported. A mesh
+/// living only in tile 1001 bakes exactly as before (whole mesh) and
+/// writes the same file names; otherwise each tile bakes its own
+/// triangles over its own UV window (`filter_mesh_for_tile` + the
+/// unchanged bakers) and `$udim` expands per tile — templates without
+/// `$udim` get `_<tile>` before the extension so tiles never collide.
 fn export_cmd(args: &[String]) -> Result<()> {
     let usage =
-        "usage: umber-cli export <mesh-file> <out-dir> --preset <gltf|unreal|unity|blender> [--size N] [--rays N]";
+        "usage: umber-cli export <mesh-file> <out-dir> --preset <gltf|unreal|unity|blender> [--size N] [--rays N] [--tile UDIM]...";
     let mesh_path = args.first().ok_or_else(|| anyhow::anyhow!("{usage}"))?;
     let out_dir = args.get(1).ok_or_else(|| anyhow::anyhow!("{usage}"))?;
 
     let mut preset_name = String::new();
+    let mut requested_tiles = Vec::new();
     let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
@@ -464,6 +527,13 @@ fn export_cmd(args: &[String]) -> Result<()> {
                     .get(i + 1)
                     .ok_or_else(|| anyhow::anyhow!("--preset needs a value"))?
                     .clone();
+                i += 2;
+            }
+            "--tile" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| anyhow::anyhow!("--tile needs a value"))?;
+                requested_tiles.push(parse_tile(value)?);
                 i += 2;
             }
             "--size" | "--rays" => i += 2, // parsed by BakeFlags below
@@ -488,10 +558,11 @@ fn export_cmd(args: &[String]) -> Result<()> {
     let mesh = umber_mesh::load(mesh_path)?;
     let ctx = bake_context()?;
     let set_name = umber_mesh::texture_set_name(mesh_path, &mesh);
+    let present = present_tiles(&mesh);
+    let tiles = select_tiles(&requested_tiles, &present)?;
+    // The pre-UDIM path: a mesh living only in tile 1001 bakes whole.
+    let whole_mesh = present == [umber_mesh::FIRST_TILE];
 
-    // Bake the union of the preset's map kinds (data maps as linear
-    // RGBA8 sources for the driver).
-    let ao = bake_ao(&ctx, &mesh, &flags)?;
     let position_params = umber_bake::position::PositionMapParams {
         width: flags.size,
         height: flags.size,
@@ -499,6 +570,7 @@ fn export_cmd(args: &[String]) -> Result<()> {
     let position_f32 =
         umber_bake::position::bake_position_map(&ctx.device, &ctx.queue, &mesh, &position_params)?;
     let position = encode_position_rgba8(&position_f32);
+    let _ = position; // position joins when a preset references it
 
     // The driver validates ALL outputs up front. For headless export
     // with baked-only sources (AO + baked tangent normal today), a
@@ -506,22 +578,41 @@ fn export_cmd(args: &[String]) -> Result<()> {
     // honest behavior is exporting the outputs we CAN fill and
     // warning about the rest. Strategy: filter the preset to outputs
     // whose maps we hold.
-    let mut map_set = umber_export::MapSet::new(flags.size);
-    map_set.set(umber_export::MapKind::AmbientOcclusion, ao);
-    // The REAL baked tangent-space normal (OpenGL working convention;
-    // the driver flips green for DirectX presets).
-    let tnormal = umber_bake::normal_map::bake_tangent_normal_mesh(
-        &ctx.device,
-        &ctx.queue,
-        &mesh,
-        flags.size,
-        flags.size,
-        &umber_bake::normal_map::TangentNormalParams::default(),
-    )?;
-    map_set.set(umber_export::MapKind::Normal, tnormal);
-    let _ = position; // position joins when a preset references it
+    let mut tile_sets = Vec::with_capacity(tiles.len());
+    for &tile in &tiles {
+        // Per-tile source: the tile's triangles with UVs rebased onto
+        // [0, 1] (the documented filter + unchanged-core bake pattern).
+        let filtered;
+        let tile_mesh = if whole_mesh {
+            &mesh
+        } else {
+            filtered = umber_bake::ao::filter_mesh_for_tile(&mesh, tile);
+            &filtered
+        };
+        // Bake the union of the preset's map kinds (data maps as linear
+        // RGBA8 sources for the driver).
+        let ao = bake_ao(&ctx, tile_mesh, &flags)?;
+        let mut map_set = umber_export::MapSet::new(flags.size);
+        map_set.set(umber_export::MapKind::AmbientOcclusion, ao);
+        // The REAL baked tangent-space normal (OpenGL working convention;
+        // the driver flips green for DirectX presets).
+        let tnormal = umber_bake::normal_map::bake_tangent_normal_mesh(
+            &ctx.device,
+            &ctx.queue,
+            tile_mesh,
+            flags.size,
+            flags.size,
+            &umber_bake::normal_map::TangentNormalParams::default(),
+        )?;
+        map_set.set(umber_export::MapKind::Normal, tnormal);
+        tile_sets.push((tile, map_set));
+    }
 
-    let available: Vec<umber_export::MapKind> = map_set.maps_iter().collect();
+    // Every tile's set holds the same kinds, so one filter serves all.
+    let available: Vec<umber_export::MapKind> = tile_sets
+        .first()
+        .map(|(_, set)| set.maps_iter().collect())
+        .unwrap_or_default();
     let full_preset = preset;
     let filtered_outputs: Vec<_> = full_preset
         .outputs
@@ -547,13 +638,16 @@ fn export_cmd(args: &[String]) -> Result<()> {
         ));
     }
 
-    let written = umber_export::run_preset(
+    let pairs: Vec<(u16, &umber_export::MapSet)> =
+        tile_sets.iter().map(|(tile, set)| (*tile, set)).collect();
+    let written = umber_export::run_preset_tiled(
         &preset,
-        &map_set,
+        &pairs,
         &umber_export::TokenSources {
             texture_set: &set_name,
             mesh: umber_export::mesh_stem(mesh_path),
             layer_name: "",
+            // Overridden per tile by the tiled driver.
             udim: umber_export::SINGLE_TILE_UDIM,
         },
         std::path::Path::new(out_dir),
@@ -562,8 +656,105 @@ fn export_cmd(args: &[String]) -> Result<()> {
         println!("wrote {}", path.display());
     }
     println!(
-        "export complete: preset '{preset_name}', {} outputs",
+        "export complete: preset '{preset_name}', {} outputs across tiles {tiles:?}",
         written.len()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Seam-free 2x1 strip spanning UV [0,2]x[0,1]: two triangles in
+    /// tile 1001 (first vertex at u=0), two in 1002 (first vertex u=1).
+    fn two_tile_strip() -> umber_mesh::MeshData {
+        let uvs = vec![
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [2.0, 0.0],
+            [0.0, 1.0],
+            [1.0, 1.0],
+            [2.0, 1.0],
+        ];
+        umber_mesh::MeshData {
+            positions: uvs
+                .iter()
+                .map(|uv: &[f32; 2]| [uv[0], uv[1], 0.0])
+                .collect(),
+            normals: vec![[0.0, 0.0, 1.0]; 6],
+            uvs,
+            indices: vec![0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4],
+            material_names: vec![],
+        }
+    }
+
+    #[test]
+    fn present_tiles_of_a_two_tile_mesh() {
+        // tile_of_triangle = [1001, 1001, 1002, 1002] → distinct, sorted.
+        assert_eq!(present_tiles(&two_tile_strip()), vec![1001, 1002]);
+        // Reversed triangle order: still ascending.
+        let mut mesh = two_tile_strip();
+        mesh.indices = vec![1, 2, 5, 1, 5, 4, 0, 1, 4, 0, 4, 3];
+        assert_eq!(present_tiles(&mesh), vec![1001, 1002]);
+    }
+
+    #[test]
+    fn present_tiles_of_a_unit_square_mesh_is_1001() {
+        let mut mesh = two_tile_strip();
+        mesh.indices = vec![0, 1, 4, 0, 4, 3];
+        assert_eq!(present_tiles(&mesh), vec![1001]);
+    }
+
+    #[test]
+    fn unit_quad_starting_on_its_far_corner_is_still_1001() {
+        // Both triangles start at UV (1,1): tile_of_triangle tags them
+        // 1012 (floor(1.0) = 1 on both axes), but every UV is in the
+        // closed [0,1] square, so the mesh is single-tile 1001.
+        let mesh = umber_mesh::MeshData {
+            positions: vec![[0.0; 3]; 4],
+            normals: vec![[0.0, 0.0, 1.0]; 4],
+            uvs: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            indices: vec![2, 3, 0, 2, 0, 1],
+            material_names: vec![],
+        };
+        assert_eq!(umber_mesh::tile_of_triangle(&mesh), vec![1012, 1012]);
+        assert_eq!(present_tiles(&mesh), vec![1001]);
+    }
+
+    #[test]
+    fn select_tiles_defaults_to_present_and_validates_requests() {
+        let present = [1001, 1002];
+        assert_eq!(select_tiles(&[], &present).unwrap(), vec![1001, 1002]);
+        // Repeated/unsorted flags: ascending, unique.
+        assert_eq!(
+            select_tiles(&[1002, 1001, 1002], &present).unwrap(),
+            vec![1001, 1002]
+        );
+        assert_eq!(select_tiles(&[1002], &present).unwrap(), vec![1002]);
+        // A tile with no geometry is an error naming the tile.
+        let err = select_tiles(&[1003], &present).unwrap_err();
+        assert!(err.to_string().contains("1003"), "{err}");
+    }
+
+    #[test]
+    fn parse_tile_accepts_the_grid_only() {
+        assert_eq!(parse_tile("1001").unwrap(), 1001);
+        assert_eq!(parse_tile("1100").unwrap(), 1100);
+        assert!(parse_tile("1000").is_err());
+        assert!(parse_tile("1101").is_err());
+        assert!(parse_tile("abc").is_err());
+    }
+
+    #[test]
+    fn bake_flag_parser_skips_the_tile_flag() {
+        // export_cmd hands its whole arg list to parse_bake_flags, which
+        // must not reject --tile as unknown.
+        let args: Vec<String> = ["mesh.obj", "out", "--tile", "1002", "--size", "64"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let flags = parse_bake_flags(&args, 2).expect("--tile is skipped");
+        assert_eq!(flags.size, 64);
+    }
 }

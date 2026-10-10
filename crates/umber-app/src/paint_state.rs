@@ -94,6 +94,9 @@ pub struct PaintState {
     /// [`FIRST_TILE`] (an edge click at `u == 1.0` must not spawn a blank
     /// tile 1002 on a single-tile mesh).
     multi_tile: bool,
+    /// Dab parameters every staged stroke uses (v1: the default brush;
+    /// tests override the color to tell tiles' paint apart).
+    brush: BrushParams,
     conditioner: StrokeConditioner,
     /// Set on pointer-down inside the UV square; cleared on pointer-up.
     stroking: bool,
@@ -147,6 +150,7 @@ impl PaintState {
             active_tile: FIRST_TILE,
             target_size: (TARGET_SIZE, TARGET_SIZE),
             multi_tile: false,
+            brush: BrushParams::default(),
             conditioner: StrokeConditioner::new(
                 umber_brush::OneEuroParams::default(),
                 umber_brush::OneEuroParams::default(),
@@ -254,13 +258,25 @@ impl PaintState {
     }
 
     /// Read-only access to `tile`'s paint target, or `None` when nothing
-    /// has routed to that tile yet (for the multi-tile consumers).
-    ///
-    /// No app caller yet: the per-tile export (slice 5) and tile-picker UI
-    /// (slice 6) consume it; covered by the routing tests meanwhile.
-    #[allow(dead_code)]
+    /// has routed to that tile yet (the per-tile export reads each
+    /// present tile through this).
     pub fn tile_target(&self, tile: u16) -> Option<&umber_gpu::paint::PaintTarget> {
         self.targets.get(&tile).map(PaintThread::paint_target)
+    }
+
+    /// The tiles this session holds a paint target for, ascending —
+    /// tile 1001 always, plus every tile an event (or seam mirror) has
+    /// routed to. The per-tile export iterates exactly these.
+    pub fn tiles_present(&self) -> Vec<u16> {
+        // BTreeMap keys iterate sorted.
+        self.targets.keys().copied().collect()
+    }
+
+    /// Overrides the stroke color (test hook: the per-tile export test
+    /// paints each tile a different color).
+    #[cfg(test)]
+    pub(crate) fn set_brush_color(&mut self, color: [f32; 4]) {
+        self.brush.color = color;
     }
 
     /// The tile the last original pointer event routed to (v1: the tile
@@ -403,8 +419,7 @@ impl PaintState {
         if stamps.is_empty() {
             return;
         }
-        let dabs =
-            DabAdapter::stamps_to_dabs(&stamps, BRUSH_RADIUS_TEXELS, &BrushParams::default());
+        let dabs = DabAdapter::stamps_to_dabs(&stamps, BRUSH_RADIUS_TEXELS, &self.brush);
         if dabs.is_empty() {
             return;
         }
@@ -532,6 +547,33 @@ pub fn uv_from_pointer(rect: egui::Rect, pos: Pos2) -> Option<Pos2> {
         (pos.x - rect.left()) / rect.width(),
         1.0 - (pos.y - rect.top()) / rect.height(),
     ))
+}
+
+/// Seam-free 2x1 strip with continuous UVs spanning [0,2]x[0,1]
+/// (position == UV): the left quad's triangles start at u=0 (tile 1001),
+/// the right quad's at u=1 (tile 1002). Shared vertices, so no seam
+/// edges — tile routing is the only thing under test. Shared by the
+/// routing tests here and the per-tile export test in `bake_sources`.
+#[cfg(test)]
+pub(crate) fn two_tile_strip() -> umber_mesh::MeshData {
+    let uvs = vec![
+        [0.0, 0.0], // 0
+        [1.0, 0.0], // 1
+        [2.0, 0.0], // 2
+        [0.0, 1.0], // 3
+        [1.0, 1.0], // 4
+        [2.0, 1.0], // 5
+    ];
+    umber_mesh::MeshData {
+        positions: uvs
+            .iter()
+            .map(|uv: &[f32; 2]| [uv[0], uv[1], 0.0])
+            .collect(),
+        normals: vec![[0.0, 0.0, 1.0]; 6],
+        uvs,
+        indices: vec![0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4],
+        material_names: vec![],
+    }
 }
 
 #[cfg(test)]
@@ -837,29 +879,24 @@ mod tests {
 
     // --- Per-tile routing tests (UDIM slice 4) ---
 
-    /// Seam-free 2x1 strip with continuous UVs spanning [0,2]x[0,1]
-    /// (position == UV): the left quad's triangles start at u=0 (tile
-    /// 1001), the right quad's at u=1 (tile 1002). Shared vertices, so no
-    /// seam edges — routing is the only thing under test.
-    fn two_tile_strip() -> umber_mesh::MeshData {
-        let uvs = vec![
-            [0.0, 0.0], // 0
-            [1.0, 0.0], // 1
-            [2.0, 0.0], // 2
-            [0.0, 1.0], // 3
-            [1.0, 1.0], // 4
-            [2.0, 1.0], // 5
-        ];
-        umber_mesh::MeshData {
-            positions: uvs
-                .iter()
-                .map(|uv: &[f32; 2]| [uv[0], uv[1], 0.0])
-                .collect(),
-            normals: vec![[0.0, 0.0, 1.0]; 6],
-            uvs,
-            indices: vec![0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4],
-            material_names: vec![],
-        }
+    #[test]
+    fn tiles_present_lists_routed_tiles_sorted() {
+        let Some((device, queue)) = try_request_device() else {
+            return;
+        };
+        // Unrouted session: tile 1001 only.
+        let mut state = PaintState::new(device, queue).expect("paint state builds");
+        state.set_mesh(&two_tile_strip());
+        assert_eq!(state.tiles_present(), vec![1001]);
+        // A routed 1002 event adds 1002; listing is ascending (1002 was
+        // created after 1001 but the order is by tile, not creation).
+        state.begin_stroke(egui::pos2(1.2, 0.5));
+        state.end_stroke();
+        assert_eq!(state.tiles_present(), vec![1001, 1002]);
+        // Re-routing to an existing tile adds nothing.
+        state.begin_stroke(egui::pos2(0.5, 0.5));
+        state.end_stroke();
+        assert_eq!(state.tiles_present(), vec![1001, 1002]);
     }
 
     #[test]

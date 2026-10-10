@@ -68,12 +68,40 @@ pub fn pick_base_color_source(painted_len_ok: bool, graph: Option<(u64, bool)>) 
 /// Returns `None` when there is no session (`paint` is `None`) or the
 /// GPU readback fails (logged) — the caller falls back to
 /// [`flat_base_color_rgba8`] via [`apply_base_color`].
+///
+/// Reads the ACTIVE tile (source-compat with the single-target callers);
+/// the Export dialog now drives the per-tile [`painted_base_color_tile`],
+/// so this entry point is retained for its tests and future
+/// single-target callers.
+#[allow(dead_code)]
 pub fn painted_base_color(
     paint: Option<&PaintState>,
     device: &umber_gpu::WgpuDevice,
     queue: &umber_gpu::WgpuQueue,
 ) -> Option<Vec<u8>> {
-    let target = paint?.paint_target();
+    read_back(paint?.paint_target(), device, queue)
+}
+
+/// The per-tile painted source (UDIM slice 5): `tile`'s paint target
+/// read back as RGBA8, via [`PaintState::tile_target`]. `None` when there
+/// is no session, nothing ever routed to `tile`, or the readback fails
+/// (logged) — the caller then falls back to the flat placeholder.
+/// Same-thread reasoning as [`painted_base_color`].
+pub fn painted_base_color_tile(
+    paint: Option<&PaintState>,
+    tile: u16,
+    device: &umber_gpu::WgpuDevice,
+    queue: &umber_gpu::WgpuQueue,
+) -> Option<Vec<u8>> {
+    read_back(paint?.tile_target(tile)?, device, queue)
+}
+
+/// Shared readback for both painted sources.
+fn read_back(
+    target: &umber_gpu::paint::PaintTarget,
+    device: &umber_gpu::WgpuDevice,
+    queue: &umber_gpu::WgpuQueue,
+) -> Option<Vec<u8>> {
     match target.read_back_rgba8(device, queue) {
         Ok(bytes) => Some(bytes),
         Err(err) => {
@@ -214,6 +242,90 @@ pub fn bake_export_map_set(
 ) -> anyhow::Result<umber_export::MapSet> {
     let ao = bake_ao(device, queue, mesh, size, rays)?;
     Ok(map_set_from(ao, size))
+}
+
+/// [`bake_export_map_set`] for one UDIM tile of a multi-tile mesh: AO
+/// baked over the tile's own UV window (`umber_bake::ao::bake_ao_tile` —
+/// the whole-mesh bake only rasterizes `[0, 1]`, i.e. tile 1001) plus
+/// the flat-normal placeholder. Errors when the tile owns no triangles
+/// (the bake core rejects the empty filtered mesh) — callers skip
+/// geometry-less tiles first.
+pub fn bake_export_map_set_tile(
+    device: &umber_gpu::WgpuDevice,
+    queue: &umber_gpu::WgpuQueue,
+    mesh: &umber_mesh::MeshData,
+    size: u32,
+    rays: u32,
+    tile: u16,
+) -> anyhow::Result<umber_export::MapSet> {
+    let mut params = umber_bake::AoBakeParams::new(
+        // Same params as `bake_ao`; `bake_ao_tile` swaps in the tile's
+        // window plane.
+        10.0,
+        0.01,
+        umber_bake::PlaneDesc::new(
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [2.0, 2.0],
+        ),
+    );
+    params.rays = rays;
+    let ao = umber_bake::ao::bake_ao_tile(device, queue, mesh, size, size, &params, tile)
+        .with_context(|| format!("ao bake, tile {tile}"))?;
+    Ok(map_set_from(ao, size))
+}
+
+/// One tile's export-ready maps and which source fed its Base Color.
+#[derive(Debug)]
+pub struct TileMapSet {
+    /// The UDIM tile number (`$udim` for this tile's files).
+    pub tile: u16,
+    /// The tile's maps (baked half + Base Color).
+    pub set: umber_export::MapSet,
+    /// What fed this tile's Base Color.
+    pub base_source: BaseColorSource,
+}
+
+/// The per-tile map-set assembly (UDIM slice 5), the painted bridge's
+/// per-tile variant: for each tile, `baked(tile)` supplies the baked half
+/// (AO + normal) and `painted(tile)` that tile's paint readback, attached
+/// as Base Color through [`apply_base_color_with_graph`]. The graph output
+/// is a single `[0, 1]` image, so it only reaches tile 1001
+/// ([`umber_mesh::FIRST_TILE`]); other tiles fall back to flat when their
+/// readback is missing. With `tiles == [1001]` this is exactly the
+/// pre-UDIM single-set assembly.
+///
+/// Injected sources keep the loop GPU-free and testable; the Export
+/// dialog passes the real bakes and [`painted_base_color_tile`].
+///
+/// # Errors
+///
+/// The first `baked` failure (tile named in its context).
+pub fn assemble_tile_map_sets(
+    tiles: &[u16],
+    size: u32,
+    mut baked: impl FnMut(u16) -> anyhow::Result<umber_export::MapSet>,
+    mut painted: impl FnMut(u16) -> Option<Vec<u8>>,
+    graph: Option<(u64, Vec<u8>)>,
+) -> anyhow::Result<Vec<TileMapSet>> {
+    let mut graph = graph;
+    let mut out = Vec::with_capacity(tiles.len());
+    for &tile in tiles {
+        let mut set = baked(tile)?;
+        let tile_graph = if tile == umber_mesh::FIRST_TILE {
+            graph.take()
+        } else {
+            None
+        };
+        let base_source = apply_base_color_with_graph(&mut set, size, painted(tile), tile_graph);
+        out.push(TileMapSet {
+            tile,
+            set,
+            base_source,
+        });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -525,6 +637,204 @@ mod tests {
         assert!(
             decoded.chunks_exact(4).any(|px| px[0] > 200 && px[1] < 150),
             "exported PNG must contain the painted red"
+        );
+        std::fs::remove_dir_all(&out).ok();
+    }
+
+    // --- Per-tile export (UDIM slice 5) ---
+
+    #[test]
+    fn assemble_routes_each_tiles_paint_and_keeps_graph_on_1001() {
+        // Headless probe of the per-tile loop: each tile's Base Color is
+        // ITS painted bytes; a tile with no readback falls back to flat,
+        // never to the graph (the graph image is the [0,1] tile's).
+        let size = 1;
+        let texel = |v: u8| vec![v, v, v, 255];
+        let sets = assemble_tile_map_sets(
+            &[1001, 1002, 1003],
+            size,
+            |_| Ok(map_set_from(texel(9), size)),
+            |tile| match tile {
+                1001 => Some(texel(11)),
+                1002 => Some(texel(22)),
+                _ => None,
+            },
+            Some((5, texel(77))),
+        )
+        .expect("assembly succeeds");
+        let tiles: Vec<u16> = sets.iter().map(|t| t.tile).collect();
+        assert_eq!(tiles, vec![1001, 1002, 1003]);
+        assert_eq!(sets[0].base_source, BaseColorSource::Painted);
+        assert_eq!(sets[1].base_source, BaseColorSource::Painted);
+        assert_eq!(sets[2].base_source, BaseColorSource::FlatPlaceholder);
+
+        // Decode each set's Base Color through the driver to see the bytes.
+        let preset = umber_export::ExportPreset {
+            name: "base probe".into(),
+            outputs: vec![umber_export::presets::OutputSpec {
+                filename: "$textureSet_base.png".into(),
+                maps: vec![(umber_export::MapKind::BaseColor, vec![])],
+                channels: [
+                    umber_export::presets::ChannelWiring::new(0, umber_export::ChannelSlot::R),
+                    umber_export::presets::ChannelWiring::new(0, umber_export::ChannelSlot::G),
+                    umber_export::presets::ChannelWiring::new(0, umber_export::ChannelSlot::B),
+                    umber_export::presets::ChannelWiring::new(0, umber_export::ChannelSlot::A),
+                ],
+                normal_convention: umber_export::presets::NormalConvention::Opengl,
+                format: umber_export::presets::OutputFormat::Png8,
+            }],
+        };
+        let out = std::env::temp_dir().join(format!(
+            "umber-bake-sources-assemble-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out);
+        let pairs: Vec<(u16, &umber_export::MapSet)> =
+            sets.iter().map(|t| (t.tile, &t.set)).collect();
+        let written = umber_export::run_preset_tiled(
+            &preset,
+            &pairs,
+            &umber_export::TokenSources::new("T"),
+            &out,
+        )
+        .expect("assembled sets satisfy the driver");
+        let reds: Vec<u8> = written
+            .iter()
+            .map(|p| umber_export::png::read_png_rgba8(p).expect("decodes").2[0])
+            .collect();
+        assert_eq!(reds, vec![srgb_u8(11), srgb_u8(22), 255]);
+
+        // Without paint, the graph reaches tile 1001 only.
+        let sets = assemble_tile_map_sets(
+            &[1001, 1002],
+            size,
+            |_| Ok(map_set_from(texel(9), size)),
+            |_| None,
+            Some((5, texel(77))),
+        )
+        .expect("assembly succeeds");
+        assert_eq!(sets[0].base_source, BaseColorSource::Graph(5));
+        assert_eq!(sets[1].base_source, BaseColorSource::FlatPlaceholder);
+        std::fs::remove_dir_all(&out).ok();
+    }
+
+    #[test]
+    fn assemble_propagates_a_bake_failure() {
+        let err = assemble_tile_map_sets(
+            &[1001, 1002],
+            1,
+            |tile| {
+                if tile == 1002 {
+                    anyhow::bail!("tile {tile} has no geometry")
+                }
+                Ok(map_set_from(vec![9, 9, 9, 255], 1))
+            },
+            |_| None,
+            None,
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("1002"));
+    }
+
+    /// Paints a horizontal run at UV height `v` from `u0` (60 events, the
+    /// painted-bridge test's convergence regime), then drains.
+    fn paint_run(paint: &mut PaintState, u0: f32, v: f32) {
+        paint.begin_stroke(egui::pos2(u0, v));
+        for i in 1..=60u32 {
+            paint.extend_stroke(egui::pos2(u0 + 0.005 * i as f32, v));
+        }
+        paint.end_stroke();
+        let stats = paint.process_pending().expect("drain succeeds");
+        assert!(stats.dabs_composited > 0, "stroke must composite dabs");
+    }
+
+    fn is_reddish(px: &[u8]) -> bool {
+        px[3] > 150 && px[0] > 150 && px[2] < 100
+    }
+
+    fn is_bluish(px: &[u8]) -> bool {
+        px[3] > 150 && px[2] > 150 && px[0] < 100
+    }
+
+    #[test]
+    fn each_tiles_paint_exports_to_its_own_file() {
+        // THE CAN-FAIL CORE (GPU-gated): red in tile 1001, blue in tile
+        // 1002, assembled per tile, exported, decoded. A bridge that
+        // reads the active tile for every tile (both files blue), or
+        // tile 1001 for every tile (both red), or one target for both
+        // FAILS here: each PNG must hold ITS color and not the other's.
+        let Some((device, queue)) = try_request_device() else {
+            return;
+        };
+        let mut paint = PaintState::new(device.clone(), queue.clone()).expect("paint state builds");
+        paint.set_mesh(&crate::paint_state::two_tile_strip());
+        paint.set_brush_color([0.85, 0.2, 0.1, 1.0]);
+        paint_run(&mut paint, 0.35, 0.5); // tile 1001
+        paint.set_brush_color([0.1, 0.2, 0.85, 1.0]);
+        paint_run(&mut paint, 1.35, 0.5); // tile 1002
+        assert_eq!(paint.tiles_present(), vec![1001, 1002]);
+
+        let (w, h) = paint.paint_target().dimensions();
+        let size = w;
+        assert_eq!(w, h);
+        let sets = assemble_tile_map_sets(
+            &paint.tiles_present(),
+            size,
+            |_| Ok(map_set_from(vec![200u8; (size * size * 4) as usize], size)),
+            |tile| painted_base_color_tile(Some(&paint), tile, &device, &queue),
+            None,
+        )
+        .expect("assembly succeeds");
+        assert!(sets
+            .iter()
+            .all(|t| t.base_source == BaseColorSource::Painted));
+
+        let available: Vec<umber_export::MapKind> = sets[0].set.maps_iter().collect();
+        let (filtered, _) = crate::export_dialog::filter_satisfiable(
+            &umber_export::ExportPreset::gltf_metal_rough(),
+            &available,
+        );
+        let out = std::env::temp_dir().join(format!(
+            "umber-bake-sources-per-tile-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out);
+        let pairs: Vec<(u16, &umber_export::MapSet)> =
+            sets.iter().map(|t| (t.tile, &t.set)).collect();
+        let written = umber_export::run_preset_tiled(
+            &filtered,
+            &pairs,
+            &umber_export::TokenSources::new("Strip"),
+            &out,
+        )
+        .expect("per-tile sets satisfy the filtered preset");
+
+        let decode = |name: &str| {
+            let path = written
+                .iter()
+                .find(|p| p.file_name().and_then(|n| n.to_str()) == Some(name))
+                .unwrap_or_else(|| panic!("{name} was not written: {written:?}"));
+            umber_export::png::read_png_rgba8(path)
+                .expect("exported PNG decodes")
+                .2
+        };
+        let tile_1001 = decode("Strip_baseColor_1001.png");
+        let tile_1002 = decode("Strip_baseColor_1002.png");
+        assert!(
+            tile_1001.chunks_exact(4).any(is_reddish),
+            "tile 1001 must carry its red paint"
+        );
+        assert!(
+            !tile_1001.chunks_exact(4).any(is_bluish),
+            "tile 1001 must not carry tile 1002's blue"
+        );
+        assert!(
+            tile_1002.chunks_exact(4).any(is_bluish),
+            "tile 1002 must carry its blue paint"
+        );
+        assert!(
+            !tile_1002.chunks_exact(4).any(is_reddish),
+            "tile 1002 must not carry tile 1001's red"
         );
         std::fs::remove_dir_all(&out).ok();
     }

@@ -21,8 +21,9 @@ pub mod presets;
 pub use dither::dither_quantize_rgba8;
 
 pub use driver::{
-    mesh_stem, output_color_space, run_preset, src_map_token, ExportError, MapSet, TokenSources,
-    DEFAULT_JPEG_QUALITY, SINGLE_TILE_UDIM, WORKING_NORMAL_CONVENTION,
+    mesh_stem, output_color_space, run_preset, run_preset_tiled, src_map_token, tiled_template,
+    ExportError, MapSet, TokenSources, DEFAULT_JPEG_QUALITY, SINGLE_TILE_UDIM,
+    WORKING_NORMAL_CONVENTION,
 };
 pub use formats::{write_jpeg_rgba8, write_tiff_rgba8, JpegError, TiffError};
 pub use icc::{embed_iccp, embed_srgb_iccp, SRGB_ICC_PROFILE};

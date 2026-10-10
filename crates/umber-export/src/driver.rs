@@ -53,6 +53,10 @@ pub enum ExportError {
     /// The underlying format writer failed.
     #[error("write failed: {0}")]
     Write(String),
+    /// A tiled run listed the same UDIM tile twice (its outputs would
+    /// overwrite each other).
+    #[error("tile {0} appears more than once in the tiled export")]
+    DuplicateTile(u16),
 }
 
 impl From<crate::png::PngError> for ExportError {
@@ -121,11 +125,41 @@ impl MapSet {
     }
 }
 
-/// Single-tile UDIM code: every export lands on tile 1001 until the
-/// wave-5 multi-tile texture sets arrive (requirements §2: UDIM is a
-/// wave-4/5 item; the token must still expand today, so it expands to
-/// the only tile that exists).
+/// The single-tile `$udim` value: tile 1001, the default every
+/// [`TokenSources::new`] / [`run_preset`] run carries. Retired as THE
+/// `$udim` source by wave-5's UDIM slice 5 — multi-tile runs go through
+/// [`run_preset_tiled`], which expands `$udim` to each output tile's own
+/// number — and kept as the single-tile default (byte-identical names).
 pub const SINGLE_TILE_UDIM: &str = "1001";
+
+/// The `$udim` placeholder as it appears in filename templates.
+const UDIM_PLACEHOLDER: &str = "$udim";
+
+/// The filename template one tile's output is expanded from in a tiled
+/// run (several tiles, or a lone tile other than 1001): the template verbatim when it already names `$udim`,
+/// else `_$udim` inserted before the extension (`$textureSet_baseColor.png`
+/// → `$textureSet_baseColor_$udim.png`; no extension → appended). Without
+/// this every built-in preset (none name `$udim`) would write each tile
+/// to the same path, the last tile silently overwriting the rest.
+///
+/// Single-tile (lone 1001) runs never call this: their templates expand
+/// unchanged.
+pub fn tiled_template(template: &str) -> String {
+    if template.contains(UDIM_PLACEHOLDER) {
+        return template.to_string();
+    }
+    // The extension dot must live in the final path component ('/' makes
+    // subfolders per `template_to_path`), and a leading dot is a hidden
+    // file name, not an extension.
+    let name_start = template.rfind('/').map_or(0, |i| i + 1);
+    match template[name_start..].rfind('.') {
+        Some(dot) if dot > 0 => {
+            let at = name_start + dot;
+            format!("{}_{UDIM_PLACEHOLDER}{}", &template[..at], &template[at..])
+        }
+        _ => format!("{template}_{UDIM_PLACEHOLDER}"),
+    }
+}
 
 /// Driver-side sources for the §6 naming tokens, carried per export run.
 ///
@@ -145,7 +179,10 @@ pub struct TokenSources<'a> {
     /// the document has no layers; single-layer painting until the
     /// layer-compositor export lands).
     pub layer_name: &'a str,
-    /// `$udim` — v1: always [`SINGLE_TILE_UDIM`].
+    /// `$udim` — the tile number of the output being written.
+    /// [`run_preset`] uses this value as-is (single-tile runs:
+    /// [`SINGLE_TILE_UDIM`]); [`run_preset_tiled`] overrides it per
+    /// output tile with that tile's number.
     pub udim: &'a str,
 }
 
@@ -182,10 +219,16 @@ impl<'a> TokenSources<'a> {
     /// sources plus that output's `$srcMap` ([`src_map_token`]) and
     /// `$colorSpace` ([`output_color_space`]).
     pub fn expand_output(&self, output: &crate::presets::OutputSpec) -> String {
+        self.expand_output_from(output, &output.filename)
+    }
+
+    /// [`Self::expand_output`] over an explicit `template` (the tiled
+    /// driver passes [`tiled_template`]'s form of `output.filename`).
+    fn expand_output_from(&self, output: &crate::presets::OutputSpec, template: &str) -> String {
         let src_map = src_map_token(output);
         let color_space = output_color_space(output);
         crate::expand_template(
-            &output.filename,
+            template,
             &[
                 ("textureSet", self.texture_set),
                 ("mesh", self.mesh),
@@ -257,12 +300,77 @@ pub fn run_preset(
     out_dir: &Path,
 ) -> Result<Vec<PathBuf>, ExportError> {
     std::fs::create_dir_all(out_dir).map_err(|e| ExportError::Write(e.to_string()))?;
+    validate_set(preset, set)?;
+    let mut written = Vec::new();
+    write_outputs(preset, set, sources, out_dir, false, &mut written)?;
+    Ok(written)
+}
+
+/// Runs `preset` once per UDIM tile — the multi-tile export (wave-5
+/// UDIM slice 5). `tiles` pairs each tile number with ITS map set (each
+/// tile's own bytes and resolution); outputs are written tile by tile in
+/// list order, each tile in preset output order.
+///
+/// `$udim` expands to the CURRENT tile's number for every output
+/// (`sources.udim` is overridden per tile). With more than one tile — or
+/// a lone tile other than 1001 — templates that don't name `$udim` get
+/// `_$udim` before the extension ([`tiled_template`]) so tiles never
+/// overwrite each other and a tile's files always say which tile they
+/// are; the lone-1001 run expands templates unchanged, so
+/// `[(1001, set)]` writes exactly the files [`run_preset`] writes
+/// (pinned by test). An empty `tiles` writes nothing.
+///
+/// # Errors
+///
+/// As [`run_preset`] — validated across EVERY tile before any file is
+/// written (a tiled export is whole or nothing) — plus
+/// [`ExportError::DuplicateTile`] when a tile is listed twice.
+pub fn run_preset_tiled(
+    preset: &ExportPreset,
+    tiles: &[(u16, &MapSet)],
+    sources: &TokenSources<'_>,
+    out_dir: &Path,
+) -> Result<Vec<PathBuf>, ExportError> {
+    for (i, (tile, _)) in tiles.iter().enumerate() {
+        if tiles[..i].iter().any(|(seen, _)| seen == tile) {
+            return Err(ExportError::DuplicateTile(*tile));
+        }
+    }
+    std::fs::create_dir_all(out_dir).map_err(|e| ExportError::Write(e.to_string()))?;
+    for (_, set) in tiles {
+        validate_set(preset, set)?;
+    }
+    let tile_names = tiles.len() > 1 || tiles.iter().any(|(tile, _)| *tile != FIRST_TILE);
+    let mut written = Vec::new();
+    for (tile, set) in tiles {
+        let udim = tile.to_string();
+        let tile_sources = TokenSources {
+            udim: &udim,
+            ..*sources
+        };
+        write_outputs(
+            preset,
+            set,
+            &tile_sources,
+            out_dir,
+            tile_names,
+            &mut written,
+        )?;
+    }
+    Ok(written)
+}
+
+/// Tile 1001 as a number — the single tile whose lone export keeps
+/// pre-UDIM names (mirrors `umber_mesh::udim::FIRST_TILE`; this crate
+/// stays mesh-free).
+const FIRST_TILE: u16 = 1001;
+
+/// Pass 1 — validates EVERY output's maps (presence + size) before a
+/// single byte is written: a preset either exports whole or leaves the
+/// output dir untouched (no partial exports).
+fn validate_set(preset: &ExportPreset, set: &MapSet) -> Result<(), ExportError> {
     let size = set.size;
     let texels = size as usize * size as usize;
-
-    // Pass 1 — validate EVERY output's maps (presence + size) before
-    // a single byte is written: a preset either exports whole or
-    // leaves the output dir untouched (no partial exports).
     for output in &preset.outputs {
         for (kind, _) in &output.maps {
             let bytes = set.get(*kind).ok_or(ExportError::MissingMap {
@@ -279,8 +387,23 @@ pub fn run_preset(
             }
         }
     }
+    Ok(())
+}
 
-    let mut written = Vec::new();
+/// Pass 2 — packs and writes every output of `preset` from `set`
+/// (already validated by [`validate_set`]), appending the paths to
+/// `written`. `tile_names` routes each filename through
+/// [`tiled_template`] before token expansion.
+fn write_outputs(
+    preset: &ExportPreset,
+    set: &MapSet,
+    sources: &TokenSources<'_>,
+    out_dir: &Path,
+    tile_names: bool,
+    written: &mut Vec<PathBuf>,
+) -> Result<(), ExportError> {
+    let size = set.size;
+    let texels = size as usize * size as usize;
     for output in &preset.outputs {
         // Validation happened in pass 1 — this loop only packs + writes.
         let map_slices: Vec<&[u8]> = output
@@ -316,8 +439,12 @@ pub fn run_preset(
         // Expand the filename's §6 tokens from the driver-side
         // sources (per-output $srcMap/$colorSpace derived here; empty
         // sources pass through verbatim per the template engine's
-        // contract).
-        let filename = sources.expand_output(output);
+        // contract). Tiled runs first make the template tile-unique.
+        let filename = if tile_names {
+            sources.expand_output_from(output, &tiled_template(&output.filename))
+        } else {
+            sources.expand_output(output)
+        };
         let path = out_dir.join(filename);
 
         // Per-output transfer: color-managed maps (baseColor/emissive)
@@ -361,7 +488,7 @@ pub fn run_preset(
         }
         written.push(path);
     }
-    Ok(written)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -721,5 +848,237 @@ mod tests {
             sources.expand_static("$mesh/$textureSet_$layerName_$udim_$srcMap"),
             "Sword/Blade_Paint 1_1001_$srcMap"
         );
+    }
+
+    // --- Per-tile export (UDIM slice 5) ---
+
+    fn file_names(written: &[PathBuf]) -> Vec<String> {
+        written
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .expect("written file has a name")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect()
+    }
+
+    fn gltf_ready_set(size: u32, base: u8) -> MapSet {
+        let mut set = MapSet::new(size);
+        set.set(MapKind::BaseColor, solid(size, base));
+        set.set(MapKind::Metallic, solid(size, 255));
+        set.set(MapKind::Roughness, solid(size, 64));
+        set.set(MapKind::Normal, solid(size, 128));
+        set
+    }
+
+    #[test]
+    fn udim_token_expands_each_tiles_number() {
+        // Test core 5: a two-tile run over a `$udim` template writes one
+        // file per tile, each named with ITS tile's number (exact names).
+        let size = 2;
+        let mut set_a = MapSet::new(size);
+        set_a.set(MapKind::BaseColor, solid(size, 10));
+        let mut set_b = MapSet::new(size);
+        set_b.set(MapKind::BaseColor, solid(size, 20));
+        let preset = ExportPreset {
+            name: "udim probe".into(),
+            outputs: vec![passthrough_output(
+                "$textureSet_$srcMap_$udim.png",
+                MapKind::BaseColor,
+            )],
+        };
+        let out =
+            std::env::temp_dir().join(format!("umber-export-drv-udim2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let written = run_preset_tiled(
+            &preset,
+            &[(1001, &set_a), (1002, &set_b)],
+            &TokenSources::new("Blade"),
+            &out,
+        )
+        .unwrap();
+        assert_eq!(
+            file_names(&written),
+            vec!["Blade_baseColor_1001.png", "Blade_baseColor_1002.png"]
+        );
+        // Each file carries ITS tile's bytes (10 vs 20 linear → distinct
+        // after the sRGB curve): no tile wrote the other's map.
+        let (_, _, a) = crate::png::read_png_rgba8(&written[0]).unwrap();
+        let (_, _, b) = crate::png::read_png_rgba8(&written[1]).unwrap();
+        assert_ne!(a[0], b[0], "per-tile bytes must differ");
+        std::fs::remove_dir_all(&out).unwrap();
+    }
+
+    #[test]
+    fn tiled_run_without_udim_token_never_overwrites() {
+        // Every built-in preset names only $textureSet: a two-tile run
+        // must still write tile-unique paths (`_$udim` before the
+        // extension), never one tile over the other.
+        let size = 2;
+        let set_a = gltf_ready_set(size, 10);
+        let set_b = gltf_ready_set(size, 20);
+        let out =
+            std::env::temp_dir().join(format!("umber-export-drv-udimgltf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let written = run_preset_tiled(
+            &ExportPreset::gltf_metal_rough(),
+            &[(1001, &set_a), (1002, &set_b)],
+            &TokenSources::new("Sword"),
+            &out,
+        )
+        .unwrap();
+        assert_eq!(
+            file_names(&written),
+            vec![
+                "Sword_baseColor_1001.png",
+                "Sword_metallicRoughness_1001.png",
+                "Sword_normal_1001.png",
+                "Sword_baseColor_1002.png",
+                "Sword_metallicRoughness_1002.png",
+                "Sword_normal_1002.png",
+            ]
+        );
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 6);
+        std::fs::remove_dir_all(&out).unwrap();
+
+        // A lone non-1001 tile (the CLI's `--tile 1002`) still names its
+        // tile; only the lone-1001 run keeps pre-UDIM names.
+        let written = run_preset_tiled(
+            &ExportPreset::gltf_metal_rough(),
+            &[(1002, &set_b)],
+            &TokenSources::new("Sword"),
+            &out,
+        )
+        .unwrap();
+        assert_eq!(
+            file_names(&written),
+            vec![
+                "Sword_baseColor_1002.png",
+                "Sword_metallicRoughness_1002.png",
+                "Sword_normal_1002.png",
+            ]
+        );
+        std::fs::remove_dir_all(&out).unwrap();
+    }
+
+    #[test]
+    fn single_tile_tiled_run_matches_run_preset_byte_for_byte() {
+        // Single-tile regression: tiles = [1001] writes the same names
+        // (the token suite's fixture names) AND the same bytes as today's
+        // run_preset — for a $textureSet-only preset and a $udim one.
+        let size = 2;
+        let set = gltf_ready_set(size, 200);
+        let udim_preset = ExportPreset {
+            name: "token probe".into(),
+            outputs: vec![passthrough_output(
+                "$mesh_$textureSet_$srcMap_$colorSpace_$layerName_$udim.png",
+                MapKind::BaseColor,
+            )],
+        };
+        let sources = TokenSources {
+            texture_set: "Blade",
+            mesh: "Sword",
+            layer_name: "Paint 1",
+            udim: SINGLE_TILE_UDIM,
+        };
+        for (tag, preset, expected) in [
+            (
+                "gltf",
+                ExportPreset::gltf_metal_rough(),
+                vec![
+                    "Blade_baseColor.png",
+                    "Blade_metallicRoughness.png",
+                    "Blade_normal.png",
+                ],
+            ),
+            (
+                "udim",
+                udim_preset,
+                vec!["Sword_Blade_baseColor_sRGB_Paint 1_1001.png"],
+            ),
+        ] {
+            let base = std::env::temp_dir().join(format!(
+                "umber-export-drv-single-{tag}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&base);
+            let old = run_preset(&preset, &set, &sources, &base.join("old")).unwrap();
+            let new =
+                run_preset_tiled(&preset, &[(1001, &set)], &sources, &base.join("new")).unwrap();
+            assert_eq!(file_names(&old), expected, "{tag}: run_preset names");
+            assert_eq!(file_names(&new), expected, "{tag}: tiled names");
+            for (o, n) in old.iter().zip(&new) {
+                assert_eq!(
+                    std::fs::read(o).unwrap(),
+                    std::fs::read(n).unwrap(),
+                    "{tag}: {} differs byte-wise",
+                    o.display()
+                );
+            }
+            std::fs::remove_dir_all(&base).unwrap();
+        }
+    }
+
+    #[test]
+    fn tiled_run_validates_every_tile_before_writing() {
+        // Tile 1002's set lacks Metallic: the run fails MissingMap and
+        // tile 1001 (valid, listed first) wrote nothing either.
+        let size = 2;
+        let good = gltf_ready_set(size, 10);
+        let mut bad = MapSet::new(size);
+        bad.set(MapKind::BaseColor, solid(size, 20));
+        let out =
+            std::env::temp_dir().join(format!("umber-export-drv-udimval-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let err = run_preset_tiled(
+            &ExportPreset::gltf_metal_rough(),
+            &[(1001, &good), (1002, &bad)],
+            &TokenSources::new("X"),
+            &out,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ExportError::MissingMap { .. }));
+        let files = std::fs::read_dir(&out).map(|d| d.count()).unwrap_or(0);
+        assert_eq!(files, 0, "no tile may write when any tile fails");
+        std::fs::remove_dir_all(&out).ok();
+    }
+
+    #[test]
+    fn tiled_run_rejects_a_duplicate_tile() {
+        let set = gltf_ready_set(1, 10);
+        let out =
+            std::env::temp_dir().join(format!("umber-export-drv-udimdup-{}", std::process::id()));
+        let err = run_preset_tiled(
+            &ExportPreset::gltf_metal_rough(),
+            &[(1002, &set), (1002, &set)],
+            &TokenSources::new("X"),
+            &out,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ExportError::DuplicateTile(1002)));
+        std::fs::remove_dir_all(&out).ok();
+    }
+
+    #[test]
+    fn tiled_template_inserts_udim_before_the_extension() {
+        assert_eq!(
+            tiled_template("$textureSet_baseColor.png"),
+            "$textureSet_baseColor_$udim.png"
+        );
+        // Already tile-aware: untouched.
+        assert_eq!(
+            tiled_template("$textureSet.$udim.png"),
+            "$textureSet.$udim.png"
+        );
+        // The extension is the LAST dot of the final path component.
+        assert_eq!(
+            tiled_template("out.v2/$textureSet_n.tar.gz"),
+            "out.v2/$textureSet_n.tar_$udim.gz"
+        );
+        // No extension (or a dotted folder only): appended.
+        assert_eq!(tiled_template("v1.0/$textureSet"), "v1.0/$textureSet_$udim");
+        assert_eq!(tiled_template(".hidden"), ".hidden_$udim");
     }
 }
