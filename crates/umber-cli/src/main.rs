@@ -5,9 +5,16 @@
 //! testable command that exercises umber-mesh end to end headless.
 //! Wave 3: `bake-ao` (single-map headless bake) and `bake-all` (every
 //! implemented baker, written with the `TextureSetName_map`
-//! convention — the automation path over the bake engine).
+//! convention — the automation path over the bake engine). Wave 6:
+//! `batch` — a JSON recipe scripting the commands above (see
+//! [`batch`]).
+
+mod batch;
+
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use serde::Deserialize;
 
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
@@ -17,15 +24,17 @@ fn main() -> Result<()> {
         Some("bake-ao") => bake_ao_cmd(&args[1..]),
         Some("bake-all") => bake_all_cmd(&args[1..]),
         Some("export") => export_cmd(&args[1..]),
+        Some("batch") => batch::batch_cmd(&args[1..]),
         Some(other) => Err(anyhow::anyhow!(
-            "unknown command: {other}\nusage: umber-cli <inspect|bake-ao|bake-all> ..."
+            "unknown command: {other}\nusage: umber-cli <inspect|bake-ao|bake-all|export|batch> ..."
         )),
         None => {
-            println!("umber-cli v{} (wave-3)", env!("CARGO_PKG_VERSION"));
+            println!("umber-cli v{} (wave-6)", env!("CARGO_PKG_VERSION"));
             println!("commands: inspect <mesh-file>");
             println!("          bake-ao <mesh-file> <out.png> [--size N] [--rays N] [--dilate N]");
             println!("          bake-all <mesh-file> <out-dir> [--size N] [--rays N] [--dilate N]");
             println!("          export <mesh-file> <out-dir> --preset <gltf|unreal|unity|blender> [--size N] [--rays N] [--tile UDIM]...");
+            println!("          batch <recipe.json>");
             Ok(())
         }
     }
@@ -36,8 +45,15 @@ fn inspect_cmd(args: &[String]) -> Result<()> {
     let path = args
         .first()
         .ok_or_else(|| anyhow::anyhow!("usage: umber-cli inspect <mesh-file>"))?;
-    let mesh = umber_mesh::load(std::path::Path::new(path))?;
-    println!("file:            {}", path);
+    inspect_mesh(Path::new(path))?;
+    Ok(())
+}
+
+/// Loads `path` and prints its summary (inspect + the batch `inspect`
+/// step); returns the mesh for callers that report on it.
+fn inspect_mesh(path: &Path) -> Result<umber_mesh::MeshData> {
+    let mesh = umber_mesh::load(path)?;
+    println!("file:            {}", path.display());
     println!("vertices:         {}", mesh.vertex_count());
     println!("triangles:        {}", mesh.triangle_count());
     println!("uv set entries:   {}", mesh.uvs.len());
@@ -46,7 +62,7 @@ fn inspect_cmd(args: &[String]) -> Result<()> {
         println!("bounds min:       {:?}", min);
         println!("bounds max:       {:?}", max);
     }
-    Ok(())
+    Ok(mesh)
 }
 
 /// Size/ray/dilate flag parsing shared by the bake commands.
@@ -57,12 +73,20 @@ struct BakeFlags {
     dilate: u32,
 }
 
+impl Default for BakeFlags {
+    /// The CLI defaults (`--size 512 --rays 16`, no dilation) — also the
+    /// batch recipe's defaults for omitted fields.
+    fn default() -> Self {
+        Self {
+            size: 512,
+            rays: 16,
+            dilate: 0,
+        }
+    }
+}
+
 fn parse_bake_flags(args: &[String], start: usize) -> Result<BakeFlags> {
-    let mut flags = BakeFlags {
-        size: 512,
-        rays: 16,
-        dilate: 0,
-    };
+    let mut flags = BakeFlags::default();
     let mut i = start;
     while i < args.len() {
         match args[i].as_str() {
@@ -170,215 +194,291 @@ fn bake_all_cmd(args: &[String]) -> Result<()> {
     let out_dir = args.get(1).ok_or_else(|| anyhow::anyhow!("{usage}"))?;
     let flags = parse_bake_flags(args, 2)?;
 
-    let mesh_path = std::path::Path::new(mesh_path);
+    let (set, written) = run_bake(
+        Path::new(mesh_path),
+        Path::new(out_dir),
+        &flags,
+        &BakeMap::ALL,
+    )?;
+    for path in &written {
+        if flags.dilate > 0 {
+            println!("wrote {} (dilated {} steps)", path.display(), flags.dilate);
+        } else {
+            println!("wrote {}", path.display());
+        }
+    }
+    println!("bake-all complete for texture set '{set}'");
+    Ok(())
+}
+
+/// The mesh-map bakers `bake-all` runs, in its write order — the ONE
+/// list of bakeable map names (the batch `bake` step's `maps` filter
+/// selects from it; an unknown name is a recipe validation error).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum BakeMap {
+    Ao,
+    Curvature,
+    Position,
+    WorldNormal,
+    TangentNormal,
+    Thickness,
+}
+
+impl BakeMap {
+    /// Every baker, in `bake-all` order.
+    const ALL: [BakeMap; 6] = [
+        BakeMap::Ao,
+        BakeMap::Curvature,
+        BakeMap::Position,
+        BakeMap::WorldNormal,
+        BakeMap::TangentNormal,
+        BakeMap::Thickness,
+    ];
+
+    /// The `TextureSetName_map` naming slot. World-space normal is the
+    /// WorldSpaceNormal slot, NOT the tangent-space Normal map; the baked
+    /// tangent normal is `normal_base` (Substance-style naming: distinct
+    /// from a user-painted normal map).
+    fn kind(self) -> umber_mesh::MeshMapKind {
+        match self {
+            BakeMap::Ao => umber_mesh::MeshMapKind::AmbientOcclusion,
+            BakeMap::Curvature => umber_mesh::MeshMapKind::Curvature,
+            BakeMap::Position => umber_mesh::MeshMapKind::Position,
+            BakeMap::WorldNormal => umber_mesh::MeshMapKind::WorldSpaceNormal,
+            BakeMap::TangentNormal => umber_mesh::MeshMapKind::NormalBase,
+            BakeMap::Thickness => umber_mesh::MeshMapKind::Thickness,
+        }
+    }
+
+    /// The PNG transfer the map is written with. Unit-vector maps
+    /// (world/tangent normals) stay Linear — an Srgb write would decode a
+    /// flat tangent normal (128,128,255) as (188,188,255) (≈ +0.474/+0.474
+    /// in tangent xy). Dilated maps use the same transfer, so a dilated
+    /// file equals the undilated one except at seams.
+    fn transfer(self) -> umber_export::png::Transfer {
+        match self {
+            BakeMap::WorldNormal | BakeMap::TangentNormal => umber_export::png::Transfer::Linear,
+            _ => umber_export::png::Transfer::Srgb,
+        }
+    }
+}
+
+/// Bakes `maps` for the mesh at `mesh_path` into `out_dir` (created if
+/// absent) with the `TextureSetName_map` convention — the shared body of
+/// `bake-all` and the batch `bake` step. With `flags.dilate > 0` every
+/// map is seam-filled before its write. Returns the texture-set name and
+/// the written paths, in `maps` order.
+fn run_bake(
+    mesh_path: &Path,
+    out_dir: &Path,
+    flags: &BakeFlags,
+    maps: &[BakeMap],
+) -> Result<(String, Vec<PathBuf>)> {
     let mesh = umber_mesh::load(mesh_path)?;
     let ctx = bake_context()?;
     let set = umber_mesh::texture_set_name(mesh_path, &mesh);
-    let out_dir = std::path::Path::new(out_dir);
     std::fs::create_dir_all(out_dir)?;
 
-    // AO map: <set>_ambient_occlusion.png.
-    let ao = bake_ao(&ctx, &mesh, &flags)?;
-    let ao_path = umber_mesh::format_mesh_map(
-        out_dir,
-        &set,
-        umber_mesh::MeshMapKind::AmbientOcclusion,
-        "png",
-    );
-    umber_export::png::write_png(
-        &ao_path,
-        flags.size,
-        flags.size,
-        &ao,
-        umber_export::png::Transfer::Srgb,
-    )?;
-    println!("wrote {}", ao_path.display());
+    let mut written = Vec::with_capacity(maps.len());
+    for &map in maps {
+        let data = bake_map(&ctx, &mesh, map, flags)?;
+        let data = if flags.dilate > 0 {
+            umber_bake::dilation::dilate_map(
+                &ctx.device,
+                &ctx.queue,
+                &data,
+                flags.size,
+                flags.size,
+                &umber_bake::dilation::DilateParams {
+                    iterations: flags.dilate,
+                },
+            )?
+        } else {
+            data
+        };
+        let path = umber_mesh::format_mesh_map(out_dir, &set, map.kind(), "png");
+        umber_export::png::write_png(&path, flags.size, flags.size, &data, map.transfer())?;
+        written.push(path);
+    }
+    Ok((set, written))
+}
 
-    // Curvature map: <set>_curvature.png (already grayscale RGB + alpha).
-    let curvature = umber_bake::curvature::bake_curvature_mesh(
-        &ctx.device,
-        &ctx.queue,
-        &mesh,
-        flags.size,
-        flags.size,
-        &umber_bake::CurvatureParams::default(),
-    )?;
-    let curv_path =
-        umber_mesh::format_mesh_map(out_dir, &set, umber_mesh::MeshMapKind::Curvature, "png");
-    umber_export::png::write_png(
-        &curv_path,
-        flags.size,
-        flags.size,
-        &curvature,
-        umber_export::png::Transfer::Srgb,
-    )?;
-    println!("wrote {}", curv_path.display());
-
-    // Position map: <set>_position.png — the f32 position data
-    // re-encoded to 8-bit (each axis mapped [min,max] -> [0,255] over
-    // the mesh bounds; w = coverage as alpha).
+/// Bakes one map as RGBA8 (`flags.size` square; alpha = coverage).
+fn bake_map(
+    ctx: &BakeContext,
+    mesh: &umber_mesh::MeshData,
+    map: BakeMap,
+    flags: &BakeFlags,
+) -> Result<Vec<u8>> {
     let position_params = umber_bake::position::PositionMapParams {
         width: flags.size,
         height: flags.size,
     };
-    let position_f32 =
-        umber_bake::position::bake_position_map(&ctx.device, &ctx.queue, &mesh, &position_params)?;
-    let position = encode_position_rgba8(&position_f32);
-    let pos_path =
-        umber_mesh::format_mesh_map(out_dir, &set, umber_mesh::MeshMapKind::Position, "png");
-    umber_export::png::write_png(
-        &pos_path,
-        flags.size,
-        flags.size,
-        &position,
-        umber_export::png::Transfer::Srgb,
-    )?;
-    println!("wrote {}", pos_path.display());
-
-    // World-space normal map: <set>_world_space_normal.png — the f32
-    // unit normals re-encoded (each axis [-1,1] -> [0,255]; w =
-    // coverage as alpha). This is the WorldSpaceNormal naming slot,
-    // NOT the tangent-space Normal map (that needs the TBN pass).
-    let wnormal_f32 = umber_bake::position::bake_world_normal_map(
-        &ctx.device,
-        &ctx.queue,
-        &mesh,
-        &position_params,
-    )?;
-    let texels = (flags.size * flags.size) as usize;
-    let mut wnormal = vec![0u8; texels * 4];
-    for t in 0..texels {
-        if wnormal_f32[t * 4 + 3] > 0.5 {
-            for axis in 0..3 {
-                let v = (wnormal_f32[t * 4 + axis] + 1.0) * 0.5;
-                wnormal[t * 4 + axis] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-            }
-            wnormal[t * 4 + 3] = 255;
-        }
-    }
-    let wnormal_path = umber_mesh::format_mesh_map(
-        out_dir,
-        &set,
-        umber_mesh::MeshMapKind::WorldSpaceNormal,
-        "png",
-    );
-    umber_export::png::write_png(
-        &wnormal_path,
-        flags.size,
-        flags.size,
-        &wnormal,
-        umber_export::png::Transfer::Linear,
-    )?;
-    println!("wrote {}", wnormal_path.display());
-
-    // Tangent-space normal map: <set>_normal_base.png — the TBN pass
-    // over the position pair (OpenGL convention; Substance-style
-    // naming: the BAKED normal is normal_base, distinct from a user
-    // painted normal map).
-    let tnormal = umber_bake::normal_map::bake_tangent_normal_mesh(
-        &ctx.device,
-        &ctx.queue,
-        &mesh,
-        flags.size,
-        flags.size,
-        &umber_bake::normal_map::TangentNormalParams::default(),
-    )?;
-    let tnormal_path =
-        umber_mesh::format_mesh_map(out_dir, &set, umber_mesh::MeshMapKind::NormalBase, "png");
-    umber_export::png::write_png(
-        &tnormal_path,
-        flags.size,
-        flags.size,
-        &tnormal,
-        umber_export::png::Transfer::Linear,
-    )?;
-    println!("wrote {}", tnormal_path.display());
-
-    // Thickness map: <set>_thickness.png.
-    let thickness_params = umber_bake::thickness::ThicknessParams {
-        rays: flags.rays,
-        ..umber_bake::thickness::ThicknessParams::default()
-    };
-    let thickness = umber_bake::thickness::bake_thickness_mesh(
-        &ctx.device,
-        &ctx.queue,
-        &mesh,
-        flags.size,
-        flags.size,
-        &thickness_params,
-    )?;
-    let thick_path =
-        umber_mesh::format_mesh_map(out_dir, &set, umber_mesh::MeshMapKind::Thickness, "png");
-    umber_export::png::write_png(
-        &thick_path,
-        flags.size,
-        flags.size,
-        &thickness,
-        umber_export::png::Transfer::Srgb,
-    )?;
-    println!("wrote {}", thick_path.display());
-
-    // Flag-driven dilation post-pass: when --dilate N is given, EVERY
-    // map gets seam-filled in place (the earlier always-on
-    // AO-dilated side file is superseded by the uniform flag).
-    if flags.dilate > 0 {
-        let dilate_params = umber_bake::dilation::DilateParams {
-            iterations: flags.dilate,
-        };
-        // Each map re-written with its base write's transfer: the
-        // dilated file must equal the base file except at seams, so
-        // unit-vector maps (world/tangent normals) stay Linear — an
-        // Srgb write here would decode a flat tangent normal (128,128,255)
-        // as (188,188,255) (≈ +0.474/+0.474 in tangent xy).
-        let to_dilate = [
-            (
-                ao,
-                umber_mesh::MeshMapKind::AmbientOcclusion,
-                umber_export::png::Transfer::Srgb,
-            ),
-            (
-                curvature,
-                umber_mesh::MeshMapKind::Curvature,
-                umber_export::png::Transfer::Srgb,
-            ),
-            (
-                position,
-                umber_mesh::MeshMapKind::Position,
-                umber_export::png::Transfer::Srgb,
-            ),
-            (
-                wnormal,
-                umber_mesh::MeshMapKind::WorldSpaceNormal,
-                umber_export::png::Transfer::Linear,
-            ),
-            (
-                tnormal,
-                umber_mesh::MeshMapKind::NormalBase,
-                umber_export::png::Transfer::Linear,
-            ),
-            (
-                thickness,
-                umber_mesh::MeshMapKind::Thickness,
-                umber_export::png::Transfer::Srgb,
-            ),
-        ];
-        for (map, kind, transfer) in &to_dilate {
-            let dilated = umber_bake::dilation::dilate_map(
+    Ok(match map {
+        BakeMap::Ao => bake_ao(ctx, mesh, flags)?,
+        // Already grayscale RGB + alpha.
+        BakeMap::Curvature => umber_bake::curvature::bake_curvature_mesh(
+            &ctx.device,
+            &ctx.queue,
+            mesh,
+            flags.size,
+            flags.size,
+            &umber_bake::CurvatureParams::default(),
+        )?,
+        // The f32 position data re-encoded to 8-bit (each axis mapped
+        // [min,max] -> [0,255] over the mesh bounds; w = coverage).
+        BakeMap::Position => encode_position_rgba8(&umber_bake::position::bake_position_map(
+            &ctx.device,
+            &ctx.queue,
+            mesh,
+            &position_params,
+        )?),
+        // The f32 unit normals re-encoded (each axis [-1,1] -> [0,255];
+        // w = coverage as alpha).
+        BakeMap::WorldNormal => {
+            let wnormal_f32 = umber_bake::position::bake_world_normal_map(
                 &ctx.device,
                 &ctx.queue,
-                map,
-                flags.size,
-                flags.size,
-                &dilate_params,
+                mesh,
+                &position_params,
             )?;
-            let path = umber_mesh::format_mesh_map(out_dir, &set, *kind, "png");
-            umber_export::png::write_png(&path, flags.size, flags.size, &dilated, *transfer)?;
-            println!("wrote {} (dilated {} steps)", path.display(), flags.dilate);
+            let texels = (flags.size * flags.size) as usize;
+            let mut wnormal = vec![0u8; texels * 4];
+            for t in 0..texels {
+                if wnormal_f32[t * 4 + 3] > 0.5 {
+                    for axis in 0..3 {
+                        let v = (wnormal_f32[t * 4 + axis] + 1.0) * 0.5;
+                        wnormal[t * 4 + axis] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    }
+                    wnormal[t * 4 + 3] = 255;
+                }
+            }
+            wnormal
+        }
+        // The TBN pass over the position pair (OpenGL convention).
+        BakeMap::TangentNormal => umber_bake::normal_map::bake_tangent_normal_mesh(
+            &ctx.device,
+            &ctx.queue,
+            mesh,
+            flags.size,
+            flags.size,
+            &umber_bake::normal_map::TangentNormalParams::default(),
+        )?,
+        BakeMap::Thickness => umber_bake::thickness::bake_thickness_mesh(
+            &ctx.device,
+            &ctx.queue,
+            mesh,
+            flags.size,
+            flags.size,
+            &umber_bake::thickness::ThicknessParams {
+                rays: flags.rays,
+                ..umber_bake::thickness::ThicknessParams::default()
+            },
+        )?,
+    })
+}
+
+/// The high-to-low transfer maps (`bake_transfer_mesh`'s outputs) — the
+/// batch `bake_transfer` step's `maps` names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum TransferMapName {
+    Height,
+    WorldNormal,
+    TangentNormal,
+}
+
+impl TransferMapName {
+    /// Every transfer map.
+    const ALL: [TransferMapName; 3] = [
+        TransferMapName::Height,
+        TransferMapName::WorldNormal,
+        TransferMapName::TangentNormal,
+    ];
+
+    fn map(self) -> umber_bake::TransferMap {
+        match self {
+            TransferMapName::Height => umber_bake::TransferMap::Height,
+            TransferMapName::WorldNormal => umber_bake::TransferMap::WorldNormal,
+            TransferMapName::TangentNormal => umber_bake::TransferMap::TangentNormal,
         }
     }
 
-    println!("bake-all complete for texture set '{set}'");
-    Ok(())
+    /// The naming slot — the same slots `bake-all` writes its world and
+    /// tangent normals to.
+    fn kind(self) -> umber_mesh::MeshMapKind {
+        match self {
+            TransferMapName::Height => umber_mesh::MeshMapKind::Height,
+            TransferMapName::WorldNormal => umber_mesh::MeshMapKind::WorldSpaceNormal,
+            TransferMapName::TangentNormal => umber_mesh::MeshMapKind::NormalBase,
+        }
+    }
+}
+
+/// Ray/target settings for [`run_bake_transfer`].
+struct TransferSettings {
+    size: u32,
+    /// Max hit distance in front of the LOW surface (world units).
+    front: f32,
+    /// Max hit distance behind the LOW surface (world units).
+    back: f32,
+    /// Ray-origin push off the LOW surface along its normal.
+    offset: f32,
+}
+
+impl Default for TransferSettings {
+    /// v1 defaults (no CLI precedent): a symmetric 0.1-unit cage — a
+    /// tight fit for meter-scale props; recipes override per asset.
+    fn default() -> Self {
+        Self {
+            size: BakeFlags::default().size,
+            front: 0.1,
+            back: 0.1,
+            offset: 0.0,
+        }
+    }
+}
+
+/// Bakes HIGH detail onto the LOW mesh's UVs (`bake_transfer_mesh`) for
+/// each of `maps`, written into `out_dir` under the LOW mesh's texture
+/// set. All transfer maps are data, written Linear. Returns the
+/// texture-set name and the written paths, in `maps` order.
+fn run_bake_transfer(
+    low_path: &Path,
+    high_path: &Path,
+    out_dir: &Path,
+    maps: &[TransferMapName],
+    settings: &TransferSettings,
+) -> Result<(String, Vec<PathBuf>)> {
+    let low = umber_mesh::load(low_path)?;
+    let high = umber_mesh::load(high_path)?;
+    let ctx = bake_context()?;
+    let set = umber_mesh::texture_set_name(low_path, &low);
+    std::fs::create_dir_all(out_dir)?;
+
+    let mut written = Vec::with_capacity(maps.len());
+    for &map in maps {
+        let params = umber_bake::TransferParams::new(
+            settings.front,
+            settings.back,
+            settings.offset,
+            settings.size,
+            settings.size,
+        )
+        .with_map(map.map());
+        let data = umber_bake::bake_transfer_mesh(&ctx.device, &ctx.queue, &low, &high, &params)?;
+        let path = umber_mesh::format_mesh_map(out_dir, &set, map.kind(), "png");
+        umber_export::png::write_png(
+            &path,
+            settings.size,
+            settings.size,
+            &data,
+            umber_export::png::Transfer::Linear,
+        )?;
+        written.push(path);
+    }
+    Ok((set, written))
 }
 
 /// Re-encodes the f32 position map (rgba32f: xyz = world pos, w =
@@ -484,13 +584,16 @@ fn select_tiles(requested: &[u16], present: &[u16]) -> Result<Vec<u16>> {
     Ok(tiles)
 }
 
+/// The UDIM 10x10 grid.
+const UDIM_GRID: std::ops::RangeInclusive<u16> = 1001..=1100;
+
 /// Parses one `--tile` value: a UDIM number in the 10x10 grid
 /// (1001..=1100).
 fn parse_tile(value: &str) -> Result<u16> {
     let tile: u16 = value
         .parse()
         .map_err(|_| anyhow::anyhow!("--tile {value}: not a UDIM number"))?;
-    if !(1001..=1100).contains(&tile) {
+    if !UDIM_GRID.contains(&tile) {
         return Err(anyhow::anyhow!(
             "--tile {tile}: outside the UDIM grid 1001..=1100"
         ));
@@ -542,7 +645,26 @@ fn export_cmd(args: &[String]) -> Result<()> {
     }
 
     let flags = parse_bake_flags(args, 2)?;
-    let preset = match preset_name.as_str() {
+    let (written, tiles) = run_export(
+        Path::new(mesh_path),
+        Path::new(out_dir),
+        &preset_name,
+        &flags,
+        &requested_tiles,
+    )?;
+    for path in &written {
+        println!("wrote {}", path.display());
+    }
+    println!(
+        "export complete: preset '{preset_name}', {} outputs across tiles {tiles:?}",
+        written.len()
+    );
+    Ok(())
+}
+
+/// The export preset named `name` (the `--preset` / recipe values).
+fn preset_by_name(name: &str) -> Result<umber_export::ExportPreset> {
+    Ok(match name {
         "gltf" => umber_export::ExportPreset::gltf_metal_rough(),
         "unreal" => umber_export::ExportPreset::unreal_orm(),
         "unity" => umber_export::ExportPreset::unity_hdrp_urp(),
@@ -552,14 +674,26 @@ fn export_cmd(args: &[String]) -> Result<()> {
                 "unknown preset: {other} (gltf|unreal|unity|blender)"
             ))
         }
-    };
+    })
+}
 
-    let mesh_path = std::path::Path::new(mesh_path);
+/// The export pipeline body shared by `export` and the batch `export`
+/// step: bakes the P0 maps per tile, packs them through the preset
+/// named `preset_name`, writes into `out_dir`. `requested_tiles` empty =
+/// every present tile. Returns the written paths and the exported tiles.
+fn run_export(
+    mesh_path: &Path,
+    out_dir: &Path,
+    preset_name: &str,
+    flags: &BakeFlags,
+    requested_tiles: &[u16],
+) -> Result<(Vec<PathBuf>, Vec<u16>)> {
+    let preset = preset_by_name(preset_name)?;
     let mesh = umber_mesh::load(mesh_path)?;
     let ctx = bake_context()?;
     let set_name = umber_mesh::texture_set_name(mesh_path, &mesh);
     let present = present_tiles(&mesh);
-    let tiles = select_tiles(&requested_tiles, &present)?;
+    let tiles = select_tiles(requested_tiles, &present)?;
     // The pre-UDIM path: a mesh living only in tile 1001 bakes whole.
     let whole_mesh = present == [umber_mesh::FIRST_TILE];
 
@@ -591,7 +725,7 @@ fn export_cmd(args: &[String]) -> Result<()> {
         };
         // Bake the union of the preset's map kinds (data maps as linear
         // RGBA8 sources for the driver).
-        let ao = bake_ao(&ctx, tile_mesh, &flags)?;
+        let ao = bake_ao(&ctx, tile_mesh, flags)?;
         let mut map_set = umber_export::MapSet::new(flags.size);
         map_set.set(umber_export::MapKind::AmbientOcclusion, ao);
         // The REAL baked tangent-space normal (OpenGL working convention;
@@ -650,16 +784,9 @@ fn export_cmd(args: &[String]) -> Result<()> {
             // Overridden per tile by the tiled driver.
             udim: umber_export::SINGLE_TILE_UDIM,
         },
-        std::path::Path::new(out_dir),
+        out_dir,
     )?;
-    for path in &written {
-        println!("wrote {}", path.display());
-    }
-    println!(
-        "export complete: preset '{preset_name}', {} outputs across tiles {tiles:?}",
-        written.len()
-    );
-    Ok(())
+    Ok((written, tiles))
 }
 
 #[cfg(test)]
