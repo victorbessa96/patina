@@ -49,6 +49,7 @@ use umber_graph::{
 };
 
 use crate::graph_canvas::CanvasState;
+use crate::i18n::tr;
 use crate::plugins::{self, PluginLoadReport};
 
 /// Default raster resolution (square) for a fresh panel.
@@ -569,7 +570,7 @@ impl GraphPanel {
         ui.add_space(4.0);
         ui.separator();
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Evaluate").clicked() {
+            if ui.button(tr("button.evaluate")).clicked() {
                 self.evaluate();
             }
             ui.label(format!(

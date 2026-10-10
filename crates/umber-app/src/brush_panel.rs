@@ -14,6 +14,8 @@
 
 use std::path::PathBuf;
 
+use crate::i18n::tr;
+
 use umber_brush::preset::{BrushPreset, ControlCurve};
 use umber_brush::preset_library::{user_preset_dir, Library};
 
@@ -232,11 +234,11 @@ impl BrushPanel {
     /// Reset (reload from the source file).
     fn save_row(&mut self, ui: &mut egui::Ui, _idx: usize) {
         ui.horizontal_wrapped(|ui| {
-            let save = ui.add_enabled(self.dirty, egui::Button::new("Save"));
+            let save = ui.add_enabled(self.dirty, egui::Button::new(tr("button.save")));
             if save.clicked() {
                 self.save_active();
             }
-            let reset = ui.add_enabled(self.dirty, egui::Button::new("Reset"));
+            let reset = ui.add_enabled(self.dirty, egui::Button::new(tr("button.reset")));
             if reset.clicked() {
                 self.reset_active();
             }
@@ -248,7 +250,7 @@ impl BrushPanel {
                     .hint_text("New preset name")
                     .desired_width(140.0),
             );
-            if ui.button("Save As…").clicked() {
+            if ui.button(tr("button.save-as")).clicked() {
                 self.save_as();
             }
         });

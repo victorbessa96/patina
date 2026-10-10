@@ -24,6 +24,7 @@ mod env;
 mod export_dialog;
 mod graph_canvas;
 mod graph_panel;
+mod i18n;
 mod paint_state;
 #[cfg(test)]
 mod perf_soak;
@@ -39,6 +40,7 @@ use egui::{CentralPanel, Id, Ui, WidgetText};
 use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
 use export_dialog::{ExportContext, ExportDialog};
 use graph_panel::GraphPanel;
+use i18n::tr;
 use std::path::{Path, PathBuf};
 use umber_gpu::GpuContext;
 use uv_view::UvView;
@@ -88,17 +90,17 @@ impl TabViewer for PanelViewer<'_> {
 
     fn title(&mut self, tab: &mut Self::Tab) -> WidgetText {
         match tab {
-            Panel::Viewport => "Viewport".into(),
-            Panel::UvView => "2D UV".into(),
-            Panel::LayerStack => "Layers".into(),
-            Panel::Properties => "Properties".into(),
-            Panel::Assets => "Assets".into(),
-            Panel::History => "History".into(),
-            Panel::TextureSets => "Texture Sets".into(),
-            Panel::Bakes => "Bakes".into(),
-            Panel::Export => "Export".into(),
-            Panel::Graph => "Graph".into(),
-            Panel::Display => "Display".into(),
+            Panel::Viewport => tr("panel.viewport").into(),
+            Panel::UvView => tr("panel.uv-view").into(),
+            Panel::LayerStack => tr("panel.layers").into(),
+            Panel::Properties => tr("panel.properties").into(),
+            Panel::Assets => tr("panel.assets").into(),
+            Panel::History => tr("panel.history").into(),
+            Panel::TextureSets => tr("panel.texture-sets").into(),
+            Panel::Bakes => tr("panel.bakes").into(),
+            Panel::Export => tr("panel.export").into(),
+            Panel::Graph => tr("panel.graph").into(),
+            Panel::Display => tr("panel.display").into(),
         }
     }
 
@@ -473,8 +475,8 @@ impl eframe::App for UmberApp {
         self.state.viewport.set_show_grid(self.show_grid);
         // Top bar: MenuBar container (egui 0.36 API).
         MenuBar::new().ui(ui, |ui| {
-            MenuButton::new("File").ui(ui, |ui| {
-                if ui.button("Open Mesh…").clicked() {
+            MenuButton::new(tr("menu.file")).ui(ui, |ui| {
+                if ui.button(tr("menu.open-mesh")).clicked() {
                     if let Some(path) = rfd_pick_mesh() {
                         match umber_mesh::load(&path) {
                             Ok(mesh) => {
@@ -492,37 +494,34 @@ impl eframe::App for UmberApp {
                         }
                     }
                 }
-                if ui.button("Open Project…").clicked() {
+                if ui.button(tr("menu.open-project")).clicked() {
                     self.open_project();
                 }
-                if ui.button("Save Project…").clicked() {
+                if ui.button(tr("menu.save-project")).clicked() {
                     self.save_project();
                 }
                 let export_enabled = self.state.paint.is_some();
                 if ui
-                    .add_enabled(
-                        export_enabled,
-                        egui::Button::new("Export Painted Map (PNG)…"),
-                    )
+                    .add_enabled(export_enabled, egui::Button::new(tr("menu.export-png")))
                     .clicked()
                 {
                     self.export_paint_png();
                 }
-                if ui.button("Load Environment…").clicked() {
+                if ui.button(tr("menu.load-environment")).clicked() {
                     self.load_environment();
                 }
             });
-            MenuButton::new("View").ui(ui, |ui| {
+            MenuButton::new(tr("menu.view")).ui(ui, |ui| {
                 #[cfg(feature = "perf")]
-                ui.checkbox(&mut self.show_perf_hud, "Show Perf HUD");
+                ui.checkbox(&mut self.show_perf_hud, tr("menu.perf-hud"));
                 #[cfg(not(feature = "perf"))]
-                ui.label("Perf HUD needs --features perf");
-                ui.checkbox(&mut self.show_wireframe, "Show Wireframe (W)");
-                ui.checkbox(&mut self.show_grid, "Show Grid (G)");
+                ui.label(tr("menu.perf-hud-unavailable"));
+                ui.checkbox(&mut self.show_wireframe, tr("menu.wireframe"));
+                ui.checkbox(&mut self.show_grid, tr("menu.grid"));
             });
-            MenuButton::new("Help").ui(ui, |ui| {
-                if ui.button("About Umber").clicked() {
-                    ui.label("Umber v0.1.0 — Wave 2 in progress");
+            MenuButton::new(tr("menu.help")).ui(ui, |ui| {
+                if ui.button(tr("menu.about")).clicked() {
+                    ui.label(tr("menu.about-text"));
                 }
             });
         });
@@ -606,6 +605,9 @@ fn rfd_pick_mesh() -> Option<PathBuf> {
 fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     log::info!("umber — starting (wave-2: paint core)");
+    // UI strings: catalogs + locale on this (the UI) thread, before any
+    // panel renders (docs/specs/i18n-design.md).
+    i18n::init();
 
     // Paint-compositor requirement (umber-gpu paint claw reviewer checklist
     // item #1): read_write storage textures need the adapter-specific format

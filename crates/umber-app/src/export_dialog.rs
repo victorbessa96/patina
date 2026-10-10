@@ -53,6 +53,7 @@ use crate::bake_sources::{self, BaseColorSource};
 use crate::bakes_panel;
 use crate::document::Document;
 use crate::graph_panel::GraphPanel;
+use crate::i18n::tr;
 use crate::paint_state::PaintState;
 use crate::tile_selection::{MeshTilesCache, TileSelection};
 
@@ -449,7 +450,7 @@ impl ExportDialog {
 
         let enabled = self.can_export(mesh_loaded, gpu_ready) && !self.tiles.nothing_selected();
         if ui
-            .add_enabled(enabled, egui::Button::new("Export"))
+            .add_enabled(enabled, egui::Button::new(tr("button.export")))
             .clicked()
         {
             self.export_now(&ctx);

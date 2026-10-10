@@ -53,8 +53,10 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Instant;
 
+use fluent::FluentValue;
 use umber_mesh::FIRST_TILE;
 
+use crate::i18n::{tr, tr_args};
 use crate::tile_selection::{MeshTilesCache, TileSelection};
 
 /// Bake resolutions offered by the panel (square targets).
@@ -569,7 +571,10 @@ impl BakesPanel {
             ui.label("Select at least one tile to bake.");
         }
         let enabled = self.can_bake(mesh_loaded, gpu_ready) && !self.tiles.nothing_selected();
-        if ui.add_enabled(enabled, egui::Button::new("Bake")).clicked() {
+        if ui
+            .add_enabled(enabled, egui::Button::new(tr("button.bake")))
+            .clicked()
+        {
             if let (Some(gpu), Some(mesh)) = (ctx.gpu, ctx.mesh) {
                 self.bake_now(&gpu.device, &gpu.queue, mesh, ctx.mesh_path);
             }
@@ -645,8 +650,7 @@ impl BakesPanel {
         }
         match BakeJobHandle::spawn(skipped, work) {
             Ok(job) => {
-                let noun = if job_count == 1 { "map" } else { "maps" };
-                self.status = format!("Baking {job_count} {noun}…");
+                self.status = tr_args("status.baking", [("count", FluentValue::from(job_count))]);
                 self.job = Some(job);
                 true
             }

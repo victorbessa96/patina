@@ -30,6 +30,7 @@ where upstream licenses permit relicensing.
 | pollster | 1.x | MIT OR Apache-2.0 | ✅ | adapter blocking in gpu-feature tests (optional dep) |
 | log / env_logger | 0.4 / 0.11 | MIT OR Apache-2.0 | ✅ | logging |
 | rayon / parking_lot / crossbeam | (W2+) | MIT OR Apache-2.0 | ✅ | concurrency |
+| fluent (fluent-bundle, fluent-syntax, intl-memoizer, unic-langid) | 0.17 | Apache-2.0 OR MIT | ✅ | UI string catalogs (umber-app; wave-6 i18n slice) |
 
 ## Reimplementation (not derivative) sources
 

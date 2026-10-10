@@ -30,6 +30,9 @@ thiserror = { workspace = true }
 env_logger = { workspace = true }
 anyhow = { workspace = true }
 rfd = "0.15"
+# UI string catalogs (docs/specs/i18n-design.md): Fluent bundles over
+# assets/i18n/*.ftl. umber-app only — no other crate renders UI text.
+fluent = "0.17"
 profiling = { workspace = true }
 
 [features]

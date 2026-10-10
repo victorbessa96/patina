@@ -16,11 +16,15 @@
 //!   egui swatches — the transform's effect, shown without any GPU;
 //! - the status line names the active chain and says it is preview-only.
 //!
+//! The panel also carries the UI-language row (the locale picker of
+//! `docs/specs/i18n-design.md`) — the app's one settings surface today.
+//!
 //! The GPU display LUT (the chain baked into a LUT the viewport and UV
 //! view shaders sample) is the named follow-up; see
 //! `LANDING_NOTES_DISPLAY_PANEL.md`. Real OCIO configs stay gated behind
 //! `umber-color`'s `ocio` feature.
 
+use crate::i18n;
 use egui::{Color32, Ui};
 use umber_color::{apply_display_chain, DisplaySettings, DisplayTransform};
 
@@ -107,7 +111,10 @@ pub fn show(ui: &mut Ui, settings: &mut DisplaySettings) -> bool {
         .add(egui::Slider::new(&mut settings.gamma, DisplaySettings::GAMMA_RANGE).text("Gamma"))
         .changed();
     if ui
-        .add_enabled(!settings.is_identity(), egui::Button::new("Reset"))
+        .add_enabled(
+            !settings.is_identity(),
+            egui::Button::new(i18n::tr("button.reset")),
+        )
         .clicked()
     {
         *settings = DisplaySettings::default();
@@ -131,7 +138,39 @@ pub fn show(ui: &mut Ui, settings: &mut DisplaySettings) -> bool {
 
     ui.separator();
     ui.label(chain_label(settings));
+
+    ui.separator();
+    language_row(ui);
     changed
+}
+
+/// The picker's label for a locale tag: the language's own name for the
+/// built-in catalogs, the bare tag for discovered ones.
+fn locale_label(tag: &str) -> String {
+    match tag {
+        "en-US" => "English (US)".to_owned(),
+        "pt-BR" => "Português (Brasil)".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+/// The UI-language settings row (an app preference, not a project
+/// setting: [`crate::i18n::set_locale_persisted`] writes the per-user
+/// locale file). Takes effect from the next frame.
+fn language_row(ui: &mut Ui) {
+    let (current, locales) = i18n::with(|i| (i.locale().to_owned(), i.locales()));
+    let mut picked = current.clone();
+    egui::ComboBox::from_label(i18n::tr("settings.language"))
+        .selected_text(locale_label(&current))
+        .show_ui(ui, |ui| {
+            for tag in locales {
+                let label = locale_label(&tag);
+                ui.selectable_value(&mut picked, tag, label);
+            }
+        });
+    if picked != current {
+        i18n::set_locale_persisted(&picked);
+    }
 }
 
 #[cfg(test)]
@@ -209,6 +248,16 @@ mod tests {
             to_color32([-1.0, 2.0, f32::NAN]),
             Color32::from_rgb(0, 255, 0)
         );
+    }
+
+    #[test]
+    fn locale_labels_name_the_builtin_languages() {
+        // Every built-in catalog gets a native name; discovered ones show
+        // their tag.
+        for tag in i18n::I18n::builtin().locales() {
+            assert_ne!(locale_label(&tag), tag, "{tag} has no native name");
+        }
+        assert_eq!(locale_label("de-DE"), "de-DE");
     }
 
     #[test]

@@ -29,9 +29,12 @@
 
 use std::path::{Path, PathBuf};
 
+use fluent::FluentValue;
 use umber_graph::mtlx::NodedefDecl;
 use umber_graph::NodeRegistry;
 use umber_wasm::PluginRuntime;
+
+use crate::i18n::tr_args;
 
 /// The outcome of one [`load_plugins`] scan.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -50,10 +53,12 @@ impl PluginLoadReport {
         if self.loaded.is_empty() && self.failed.is_empty() {
             return None;
         }
-        let mut line = format!(
-            "{} plugin(s) loaded, {} failed",
-            self.loaded.len(),
-            self.failed.len()
+        let mut line = tr_args(
+            "status.plugins",
+            [
+                ("loaded", FluentValue::from(self.loaded.len())),
+                ("failed", FluentValue::from(self.failed.len())),
+            ],
         );
         if !self.failed.is_empty() {
             let names: Vec<String> = self
