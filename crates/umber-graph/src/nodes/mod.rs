@@ -1,12 +1,17 @@
 //! Wave-5 slice 2a generator nodes: noise + gradient + pattern.
 //! Wave-5 slice 2b filter + color-ops nodes: blur/sharpen/levels/curves/
 //! invert ([`filter`]) and mix/color_correct/hsv_adjust ([`color`]).
+//! Wave-5 slice 2c mask ops + spatial: flood_fill/edge_detect/
+//! histogram_match ([`mask`]) and direction_warp/triplanar_blend/
+//! mesh_map_generator ([`spatial`]) — the v1 node set COMPLETE.
 //!
 //! Seven node_defs: `noise_perlin`, `noise_value`, `noise_worley`
 //! ([`noise`]), `gradient` ([`gradient`]), `checkerboard`, `dots`,
 //! `brick_pattern` ([`pattern`]). Eight more: `blur`, `sharpen`,
 //! `levels`, `curves`, `invert` ([`filter`]), `mix`, `color_correct`,
-//! `hsv_adjust` ([`color`]). Every image-producing node renders at
+//! `hsv_adjust` ([`color`]). Six more: `flood_fill`, `edge_detect`,
+//! `histogram_match` ([`mask`]), `direction_warp`, `triplanar_blend`,
+//! `mesh_map_generator` ([`spatial`]). Every image-producing node renders at
 //! [`EvalContext::resolution`](crate::EvalContext::resolution); every
 //! image-CONSUMING node preserves its input's size.
 //!
@@ -19,8 +24,10 @@
 pub mod color;
 pub mod filter;
 pub mod gradient;
+pub mod mask;
 pub mod noise;
 pub mod pattern;
+pub mod spatial;
 
 pub use color::{register_color_nodes, ColorCorrectNode, HsvAdjustNode, MixNode};
 pub use filter::{
@@ -28,9 +35,13 @@ pub use filter::{
 };
 
 pub use gradient::{register_gradient_nodes, GradientNode};
+pub use mask::{register_mask_nodes, EdgeDetectNode, FloodFillNode, HistogramMatchNode};
 pub use noise::{build_perm, register_noise_nodes, PerlinNode, ValueNode, WorleyNode};
 pub use pattern::{
     register_pattern_nodes, BrickNode, CheckerNode, DotsNode, BRICK_FACE, BRICK_MORTAR,
+};
+pub use spatial::{
+    register_spatial_nodes, DirectionWarpNode, MeshMapGeneratorNode, TriplanarBlendNode,
 };
 
 /// Registers all seven slice-2a generator node_defs on `registry`.
@@ -48,6 +59,15 @@ pub fn register_generator_nodes(registry: &mut crate::NodeRegistry) {
 pub fn register_filter_color_nodes(registry: &mut crate::NodeRegistry) {
     filter::register_filter_nodes(registry);
     color::register_color_nodes(registry);
+}
+
+/// Registers all six slice-2c mask-ops + spatial node_defs on `registry`
+/// (`flood_fill`, `edge_detect`, `histogram_match`, `direction_warp`,
+/// `triplanar_blend`, `mesh_map_generator` — lands the design's slice 2c;
+/// the v1 node set is COMPLETE).
+pub fn register_mask_spatial_nodes(registry: &mut crate::NodeRegistry) {
+    mask::register_mask_nodes(registry);
+    spatial::register_spatial_nodes(registry);
 }
 
 #[cfg(test)]
