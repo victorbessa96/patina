@@ -7,13 +7,17 @@
 //! Wave 1 scope: the per-channel CM flag vocabulary.
 //! Wave 2: the CPU display-transform reference path ([`display`]) — the
 //! spec the GPU shader and the exporter validate against.
+//! Wave 5: the viewer chain ([`DisplaySettings`] + [`apply_display_chain`])
+//! the app's Display panel edits and the `.umber` project persists.
 
 pub mod display;
 
 #[cfg(feature = "ocio")]
 pub mod ocio;
 
-pub use display::{apply_display, invert_display, DisplayTransform};
+pub use display::{
+    apply_display, apply_display_chain, invert_display, DisplaySettings, DisplayTransform,
+};
 
 #[cfg(feature = "ocio")]
 pub use ocio::{

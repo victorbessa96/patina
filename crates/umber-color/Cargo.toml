@@ -8,7 +8,13 @@ repository.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+# DisplaySettings persists in the .umber project (already a workspace
+# dep of umber-core — no new crate in the lockfile).
+serde = { workspace = true }
 ocio-rs = { version = "0.2", optional = true, default-features = false }
+
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [features]
 # Real OCIO via the ocio-rs bridge (stub mode — no C++ build, CI-safe;

@@ -102,6 +102,11 @@ pub struct ProjectSettings {
     /// saved, if any. Purely a UI convenience — the document is valid
     /// without it.
     pub active_texture_set: Option<String>,
+    /// The viewer chain (Display panel: view transform, exposure,
+    /// gamma). Additive wave-5 carry: `default` loads pre-display
+    /// files as the identity chain (Raw / 0 EV / gamma 1).
+    #[serde(default)]
+    pub display: umber_color::DisplaySettings,
 }
 
 /// One texture set's layer stack, as stored in a [`ProjectModel`].
@@ -491,6 +496,7 @@ mod tests {
             ],
             ProjectSettings {
                 active_texture_set: Some("Body".into()),
+                ..ProjectSettings::default()
             },
         )
     }
@@ -612,6 +618,75 @@ mod tests {
         assert_eq!(tiled.tile(1001).unwrap().channels.len(), 1);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pre_display_project_json_loads_identity_display() {
+        // Old files have no "display" key in settings: serde(default)
+        // yields the identity chain (Raw / 0 EV / gamma 1) — the
+        // additive rule.
+        let dir = unique_temp_dir("pre-display");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("project.json"),
+            br#"{"version":1,"texture_sets":[{"name":"Body","resolution":2048,"channels":[]}],"layer_sets":[{"texture_set":"Body","layer_ids":[],"next_layer_id":0}],"settings":{"active_texture_set":"Body"}}"#,
+        )
+        .unwrap();
+
+        let loaded = load_from_dir(&dir).expect("pre-display file must load");
+        assert_eq!(loaded.settings.active_texture_set.as_deref(), Some("Body"));
+        assert_eq!(
+            loaded.settings.display,
+            umber_color::DisplaySettings::default()
+        );
+        assert_eq!(
+            loaded.settings.display.view,
+            umber_color::DisplayTransform::None
+        );
+        assert_eq!(loaded.settings.display.exposure, 0.0);
+        assert_eq!(loaded.settings.display.gamma, 1.0);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn display_settings_round_trip_byte_identical() {
+        // Default settings: save -> load -> save is byte-identical, and
+        // the default chain lands on disk under its stable names.
+        let model = fixture_model();
+        let dir_a = unique_temp_dir("display-default-a");
+        let dir_b = unique_temp_dir("display-default-b");
+        save_to_dir(&model, &dir_a).expect("save default");
+        let json = fs::read_to_string(dir_a.join("project.json")).unwrap();
+        assert!(json.contains(r#""view": "Raw""#), "{json}");
+        let loaded = load_from_dir(&dir_a).expect("load default");
+        assert_eq!(loaded, model);
+        save_to_dir(&loaded, &dir_b).expect("resave default");
+        assert_dirs_byte_identical(&dir_a, &dir_b);
+
+        // Modified settings: every field survives exactly.
+        let mut model = fixture_model();
+        model.settings.display = umber_color::DisplaySettings {
+            view: umber_color::DisplayTransform::Rec709,
+            exposure: 1.37,
+            gamma: 2.2,
+        };
+        let dir_c = unique_temp_dir("display-mod-c");
+        let dir_d = unique_temp_dir("display-mod-d");
+        save_to_dir(&model, &dir_c).expect("save modified");
+        let loaded = load_from_dir(&dir_c).expect("load modified");
+        assert_eq!(loaded.settings.display, model.settings.display);
+        assert_eq!(
+            loaded.settings.display.exposure.to_bits(),
+            1.37f32.to_bits()
+        );
+        assert_eq!(loaded, model);
+        save_to_dir(&loaded, &dir_d).expect("resave modified");
+        assert_dirs_byte_identical(&dir_c, &dir_d);
+
+        for dir in [dir_a, dir_b, dir_c, dir_d] {
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

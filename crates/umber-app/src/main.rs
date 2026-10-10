@@ -18,6 +18,7 @@
 mod bake_sources;
 mod bakes_panel;
 mod brush_panel;
+mod display_panel;
 mod document;
 mod env;
 mod export_dialog;
@@ -54,6 +55,7 @@ pub enum Panel {
     Bakes,
     Export,
     Graph,
+    Display,
 }
 
 /// Implements the egui_dock tab interface. Built fresh each frame, borrowing
@@ -72,6 +74,7 @@ struct PanelViewer<'a> {
     paint: Option<&'a mut paint_state::PaintState>,
     doc: &'a mut document::Document,
     brush: &'a mut BrushPanel,
+    display: &'a mut umber_color::DisplaySettings,
 }
 
 impl TabViewer for PanelViewer<'_> {
@@ -93,6 +96,7 @@ impl TabViewer for PanelViewer<'_> {
             Panel::Bakes => "Bakes".into(),
             Panel::Export => "Export".into(),
             Panel::Graph => "Graph".into(),
+            Panel::Display => "Display".into(),
         }
     }
 
@@ -138,6 +142,9 @@ impl TabViewer for PanelViewer<'_> {
             Panel::Graph => {
                 self.graph.show(ui);
             }
+            Panel::Display => {
+                display_panel::show(ui, self.display);
+            }
         }
     }
 }
@@ -160,6 +167,9 @@ pub struct AppState {
     pub export: ExportDialog,
     /// The node-graph panel: procedural graph + cached eval (wave-5).
     pub graph: GraphPanel,
+    /// The viewer chain (Display panel; saved in the project). CPU
+    /// preview only until the GPU display LUT consumes it.
+    pub display: umber_color::DisplaySettings,
 }
 
 /// The eframe app.
@@ -222,6 +232,7 @@ impl UmberApp {
                     Panel::Bakes,
                     Panel::Export,
                     Panel::Graph,
+                    Panel::Display,
                 ],
             );
             let [_top, _bottom] =
@@ -367,6 +378,7 @@ impl UmberApp {
             }],
             umber_core::project::ProjectSettings {
                 active_texture_set: Some(set_name.clone()),
+                display: self.state.display,
             },
         )
         .with_graphs_mtlx(graphs_mtlx);
@@ -400,6 +412,9 @@ impl UmberApp {
                     return;
                 };
                 self.state.doc.load_stack(entry.stack.clone());
+                // Hand-edited files can carry out-of-range values; the
+                // sliders' ranges are the contract.
+                self.state.display = model.settings.display.sanitized();
                 if let Some(doc) = model.graphs_mtlx.first() {
                     if self.state.graph.load_mtlx(doc) {
                         log::info!("project graph restored into the Graph panel");
@@ -519,6 +534,7 @@ impl eframe::App for UmberApp {
                 paint: self.state.paint.as_mut(),
                 doc: &mut self.state.doc,
                 brush: &mut self.brush_panel,
+                display: &mut self.state.display,
             };
             DockArea::new(&mut self.dock)
                 .style(Style::from_egui(ui.style()))
