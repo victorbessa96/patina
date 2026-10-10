@@ -12,11 +12,29 @@
 //! through the [`SeamGraph`](umber_mesh::seam::SeamGraph) edge
 //! correspondence, so a stroke paints every UV image of the same 3D
 //! neighborhood.
+//!
+//! Per-tile paint routing (docs/specs/udim-design.md, slice 4): the
+//! session holds one [`PaintThread`] per UDIM tile, created lazily the
+//! first time an event routes there. A pointer event at UV `(u, v)` lands
+//! in `tile_of_uv([u, v])`'s target at tile-LOCAL texel coordinates (see
+//! [`local_texel`]); the last tile an original (non-mirror) event routed
+//! to is the ACTIVE tile, which [`PaintState::paint_target`] returns so
+//! every existing single-target caller stays source-compatible. Routing
+//! is live only once a multi-tile mesh is handed over via
+//! [`PaintState::set_mesh`]; without a mesh, or with a single-tile mesh,
+//! everything routes to tile 1001 — the pre-UDIM behavior,
+//! byte-identical. V1 boundary (the design's named follow-up): routing is
+//! per-event, so a stroke dragging across a tile seam paints each event
+//! into the tile under the pointer; there is no cross-tile stroke
+//! continuity.
+
+use std::collections::BTreeMap;
 
 use egui::Pos2;
 use umber_brush::{BrushParams, DabAdapter, StrokeConditioner, StrokeEvent};
 use umber_gpu::paint_thread::{FrameStats, PaintThread, PaintThreadCommand};
 use umber_mesh::seam::{build_seam_graph, SeamGraph};
+use umber_mesh::udim::{tile_of_triangle, tile_of_uv, FIRST_TILE};
 
 /// Errors from constructing or driving the paint session.
 #[derive(Debug, thiserror::Error)]
@@ -56,9 +74,26 @@ const EVENT_STEP_NS: u64 = 8_000_000;
 /// opposite island is always expanded; start at 1.5× per the design doc.
 pub const SEAM_MIRROR_MARGIN: f32 = 1.5;
 
-/// The paint session: one GPU target plus the live stroke conditioner.
+/// The paint session: one GPU target per UDIM tile plus the live stroke
+/// conditioner.
 pub struct PaintState {
-    thread: PaintThread,
+    /// Device/queue handles kept for lazy per-tile target creation.
+    device: umber_gpu::WgpuDevice,
+    queue: umber_gpu::WgpuQueue,
+    /// One paint thread per UDIM tile. Tile [`FIRST_TILE`] is created in
+    /// [`Self::new`] and never removed; other tiles appear on first route.
+    targets: BTreeMap<u16, PaintThread>,
+    /// The tile the last original (non-mirror) event routed to; always a
+    /// key of `targets`.
+    active_tile: u16,
+    /// Edge lengths new tile targets are created at (tracks
+    /// [`Self::resize_target`]).
+    target_size: (u32, u32),
+    /// Whether the loaded mesh spans more than one UDIM tile. Routing by
+    /// `tile_of_uv` is live only then; otherwise every event lands in
+    /// [`FIRST_TILE`] (an edge click at `u == 1.0` must not spawn a blank
+    /// tile 1002 on a single-tile mesh).
+    multi_tile: bool,
     conditioner: StrokeConditioner,
     /// Set on pointer-down inside the UV square; cleared on pointer-up.
     stroking: bool,
@@ -80,6 +115,10 @@ pub struct PaintState {
     /// the seam-blind zero-cost contract).
     #[cfg(test)]
     staged_batches: usize,
+    /// Per-tile split of `staged_batches` (test observability for the
+    /// routing contract).
+    #[cfg(test)]
+    staged_batches_per_tile: BTreeMap<u16, usize>,
     /// Staged dabs since construction (test observability for the stroke
     /// soak's zero-drop assert: staged here must equal composited at drain).
     #[cfg(all(test, feature = "perf"))]
@@ -87,8 +126,9 @@ pub struct PaintState {
 }
 
 impl PaintState {
-    /// Creates the paint target on `device`/`queue` (cloned inside
-    /// `PaintThread`).
+    /// Creates the tile-1001 paint target on `device`/`queue` (cloned
+    /// inside `PaintThread`); further tiles are created lazily on first
+    /// route.
     ///
     /// # Errors
     ///
@@ -99,8 +139,14 @@ impl PaintState {
         device: umber_gpu::WgpuDevice,
         queue: umber_gpu::WgpuQueue,
     ) -> Result<Self, PaintStateError> {
+        let first = PaintThread::new(device.clone(), queue.clone(), TARGET_SIZE, TARGET_SIZE)?;
         Ok(Self {
-            thread: PaintThread::new(device, queue, TARGET_SIZE, TARGET_SIZE)?,
+            device,
+            queue,
+            targets: BTreeMap::from([(FIRST_TILE, first)]),
+            active_tile: FIRST_TILE,
+            target_size: (TARGET_SIZE, TARGET_SIZE),
+            multi_tile: false,
             conditioner: StrokeConditioner::new(
                 umber_brush::OneEuroParams::default(),
                 umber_brush::OneEuroParams::default(),
@@ -115,16 +161,21 @@ impl PaintState {
             event_seq: 0,
             #[cfg(test)]
             staged_batches: 0,
+            #[cfg(test)]
+            staged_batches_per_tile: BTreeMap::new(),
             #[cfg(all(test, feature = "perf"))]
             staged_dabs: 0,
         })
     }
 
     /// Hands a mesh over for seam-aware stamping: builds its [`SeamGraph`]
-    /// once (O(triangles)) and stores it for the stroke path. Call once per
-    /// mesh load, alongside the existing mesh handoff.
+    /// once (O(triangles)) and stores it for the stroke path, and arms
+    /// per-tile routing when the mesh's triangles span more than one UDIM
+    /// tile. Call once per mesh load, alongside the existing mesh handoff.
     pub fn set_mesh(&mut self, mesh: &umber_mesh::MeshData) {
         self.seam_graph = Some(build_seam_graph(mesh));
+        let tiles = tile_of_triangle(mesh);
+        self.multi_tile = tiles.windows(2).any(|w| w[0] != w[1]);
         self.stroke_near_seam = false;
     }
 
@@ -166,13 +217,24 @@ impl PaintState {
         self.stroking = false;
     }
 
-    /// Drains pending paint commands and returns the frame's stats.
+    /// Drains pending paint commands on EVERY tile's thread (mirrors and
+    /// strokes that left a tile may have queued work off the active tile)
+    /// and returns the cumulative stats summed across tiles. With one tile
+    /// this is exactly that thread's stats.
     ///
     /// # Errors
     ///
     /// Propagates GPU-processing failures.
     pub fn process_pending(&mut self) -> Result<FrameStats, umber_gpu::paint::PaintError> {
-        self.last_stats = self.thread.process_pending()?;
+        let mut total = FrameStats::default();
+        for thread in self.targets.values_mut() {
+            let stats = thread.process_pending()?;
+            total.dabs_composited += stats.dabs_composited;
+            total.dispatches += stats.dispatches;
+            total.clears += stats.clears;
+            total.segments += stats.segments;
+        }
+        self.last_stats = total;
         Ok(self.last_stats)
     }
 
@@ -181,19 +243,74 @@ impl PaintState {
         self.last_stats
     }
 
-    /// Read-only access to the paint target (for display callbacks).
+    /// Read-only access to the ACTIVE tile's paint target (for display
+    /// callbacks and the single-target export paths).
     pub fn paint_target(&self) -> &umber_gpu::paint::PaintTarget {
-        self.thread.paint_target()
+        self.targets
+            .get(&self.active_tile)
+            .or_else(|| self.targets.get(&FIRST_TILE))
+            .expect("tile 1001 is created in PaintState::new and never removed")
+            .paint_target()
     }
 
-    /// Switches the paint target to `width`x`height` (contents dropped).
-    /// The stroke-soak test uses this to run against a 4K target; the app
-    /// itself stays on [`TARGET_SIZE`].
+    /// Read-only access to `tile`'s paint target, or `None` when nothing
+    /// has routed to that tile yet (for the multi-tile consumers).
+    ///
+    /// No app caller yet: the per-tile export (slice 5) and tile-picker UI
+    /// (slice 6) consume it; covered by the routing tests meanwhile.
+    #[allow(dead_code)]
+    pub fn tile_target(&self, tile: u16) -> Option<&umber_gpu::paint::PaintTarget> {
+        self.targets.get(&tile).map(PaintThread::paint_target)
+    }
+
+    /// The tile the last original pointer event routed to (v1: the tile
+    /// the UV view displays).
+    #[cfg(test)]
+    pub(crate) fn active_tile(&self) -> u16 {
+        self.active_tile
+    }
+
+    /// Switches every tile's paint target to `width`x`height` (contents
+    /// dropped); tiles created later use the same size. The stroke-soak
+    /// test uses this to run against a 4K target; the app itself stays on
+    /// [`TARGET_SIZE`].
     pub fn resize_target(&mut self, width: u32, height: u32) {
         self.texels_per_uv = width as f32;
-        let _ = self
-            .thread
-            .publish(vec![PaintThreadCommand::Resize { width, height }]);
+        self.target_size = (width, height);
+        for thread in self.targets.values_mut() {
+            let _ = thread.publish(vec![PaintThreadCommand::Resize { width, height }]);
+        }
+    }
+
+    /// The tile an event at `uv` routes to: `tile_of_uv` when the loaded
+    /// mesh spans several tiles, else [`FIRST_TILE`].
+    fn route_tile(&self, uv: Pos2) -> u16 {
+        if self.multi_tile {
+            tile_of_uv([uv.x, uv.y])
+        } else {
+            FIRST_TILE
+        }
+    }
+
+    /// Ensures `tile` has a paint thread, creating it at the current
+    /// target size on first use. Returns `false` (event dropped, logged)
+    /// if creation fails — unreachable in practice, since tile 1001 was
+    /// built on the same device.
+    fn ensure_tile(&mut self, tile: u16) -> bool {
+        if self.targets.contains_key(&tile) {
+            return true;
+        }
+        let (width, height) = self.target_size;
+        match PaintThread::new(self.device.clone(), self.queue.clone(), width, height) {
+            Ok(thread) => {
+                self.targets.insert(tile, thread);
+                true
+            }
+            Err(err) => {
+                log::warn!("paint target for tile {tile} failed: {err:#}");
+                false
+            }
+        }
     }
 
     /// Brush footprint in UV units: the mirror gate distance
@@ -213,6 +330,23 @@ impl PaintState {
 
     fn push_event_inner(&mut self, uv: Pos2, pressure: f32, expand_seams: bool) {
         profiling::scope!("stroke_eval");
+        // Per-tile routing (UDIM slice 4): an ORIGINAL event picks the
+        // active tile; mirrors route by their own UV below but never move
+        // the active tile (the view keeps showing the tile under the
+        // pointer). Crossing into another tile mid-stroke resets the
+        // conditioner: local coordinates jump at the seam, and smoothing
+        // or spacing across that jump would streak the new tile (v1:
+        // per-event routing, no cross-tile continuity).
+        if expand_seams {
+            let tile = self.route_tile(uv);
+            if !self.ensure_tile(tile) {
+                return;
+            }
+            if tile != self.active_tile {
+                self.conditioner.reset();
+                self.active_tile = tile;
+            }
+        }
         // Seam-aware expansion at the UV layer, before texel conversion
         // (design slice 3, item 2): mirror positions become ADDITIONAL
         // `push_event_inner` calls at the mirrored UVs with
@@ -242,7 +376,18 @@ impl PaintState {
                 self.push_event_inner(Pos2::new(mirrored[0], mirrored[1]), pressure, false);
             }
         }
-        let texel = [uv.x * self.texels_per_uv, (1.0 - uv.y) * self.texels_per_uv];
+        // Mirrors across a tile seam land in the other tile: route by the
+        // mirrored UV's own tile.
+        let tile = if expand_seams {
+            self.active_tile
+        } else {
+            let tile = self.route_tile(uv);
+            if !self.ensure_tile(tile) {
+                return;
+            }
+            tile
+        };
+        let texel = local_texel([uv.x, uv.y], tile, self.texels_per_uv);
         // Synthetic event clock (see EVENT_STEP_NS): every event — original
         // or mirror — advances time so the conditioner actually progresses.
         self.event_seq += 1;
@@ -267,9 +412,9 @@ impl PaintState {
         // and overlap-safe dispatches.
         #[cfg(all(test, feature = "perf"))]
         let staged_n = dabs.len() as u64;
-        let _ = self
-            .thread
-            .publish(vec![PaintThreadCommand::Stage { dabs }]);
+        if let Some(thread) = self.targets.get_mut(&tile) {
+            let _ = thread.publish(vec![PaintThreadCommand::Stage { dabs }]);
+        }
         // Test observability: count staged batches for the seam-blind
         // zero-cost contract (a publish here means one more `Stage`
         // command queued, whether or not the channel accepted it — the
@@ -277,6 +422,7 @@ impl PaintState {
         #[cfg(test)]
         {
             self.staged_batches += 1;
+            *self.staged_batches_per_tile.entry(tile).or_default() += 1;
         }
         // Soak observability: total staged dabs for the zero-drop assert.
         #[cfg(all(test, feature = "perf"))]
@@ -292,12 +438,44 @@ impl PaintState {
         self.staged_batches
     }
 
+    /// Staged `Stage`-batch count routed to `tile` since construction
+    /// (test observability for the routing contract).
+    #[cfg(test)]
+    pub(crate) fn staged_batch_count_for(&self, tile: u16) -> usize {
+        self.staged_batches_per_tile
+            .get(&tile)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Number of tile targets created so far (test observability for lazy
+    /// creation).
+    #[cfg(test)]
+    pub(crate) fn tile_count(&self) -> usize {
+        self.targets.len()
+    }
+
     /// Staged dabs since construction (test observability; see the
     /// stroke soak's zero-drop assert in `perf_soak`).
     #[cfg(all(test, feature = "perf"))]
     pub(crate) fn staged_dab_count(&self) -> u64 {
         self.staged_dabs
     }
+}
+
+/// Tile-local texel coordinates of `uv` inside `tile` on a target with
+/// `texels_per_uv` texels per UV unit: the tile's integer UV offsets
+/// (`(tile - 1001) % 10`, `(tile - 1001) / 10`) are subtracted before the
+/// usual V-flipped texel mapping. For tile 1001 the offsets are zero and
+/// the result is bit-identical to the pre-UDIM `[u * tpv, (1 - v) * tpv]`.
+fn local_texel(uv: [f32; 2], tile: u16, texels_per_uv: f32) -> [f32; 2] {
+    let index = tile.saturating_sub(FIRST_TILE);
+    let tile_u = f32::from(index % 10);
+    let tile_v = f32::from(index / 10);
+    [
+        (uv[0] - tile_u) * texels_per_uv,
+        (1.0 - (uv[1] - tile_v)) * texels_per_uv,
+    ]
 }
 
 /// Brush footprint in UV units for a target with `texels_per_uv` texels
@@ -655,5 +833,186 @@ mod tests {
             base_total - base_converged,
             "far-from-seam extend stages exactly what the baseline stages"
         );
+    }
+
+    // --- Per-tile routing tests (UDIM slice 4) ---
+
+    /// Seam-free 2x1 strip with continuous UVs spanning [0,2]x[0,1]
+    /// (position == UV): the left quad's triangles start at u=0 (tile
+    /// 1001), the right quad's at u=1 (tile 1002). Shared vertices, so no
+    /// seam edges — routing is the only thing under test.
+    fn two_tile_strip() -> umber_mesh::MeshData {
+        let uvs = vec![
+            [0.0, 0.0], // 0
+            [1.0, 0.0], // 1
+            [2.0, 0.0], // 2
+            [0.0, 1.0], // 3
+            [1.0, 1.0], // 4
+            [2.0, 1.0], // 5
+        ];
+        umber_mesh::MeshData {
+            positions: uvs
+                .iter()
+                .map(|uv: &[f32; 2]| [uv[0], uv[1], 0.0])
+                .collect(),
+            normals: vec![[0.0, 0.0, 1.0]; 6],
+            uvs,
+            indices: vec![0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4],
+            material_names: vec![],
+        }
+    }
+
+    #[test]
+    fn two_tile_strip_spans_tiles_1001_and_1002() {
+        // Fixture sanity: the routing tests rely on these exact tiles and
+        // on the strip being seam-free.
+        let mesh = two_tile_strip();
+        assert_eq!(tile_of_triangle(&mesh), vec![1001, 1001, 1002, 1002]);
+        assert!(build_seam_graph(&mesh).edges.is_empty());
+    }
+
+    #[test]
+    fn local_texel_subtracts_tile_offsets() {
+        // (1.2, 0.5) in tile 1002 at 512 tpv: tile_u = 1, tile_v = 0, so
+        // x = (1.2 - 1.0) * 512 and y = (1 - 0.5) * 512 = 256 exactly.
+        // NOTE: 1.2_f32 - 1.0 is 0.20000005 in f32 (exact subtraction of
+        // the rounded 1.2), so x is 102.400024, NOT the literal 102.4_f32 —
+        // assert the derived f32 expression exactly.
+        let [x, y] = local_texel([1.2, 0.5], 1002, 512.0);
+        assert_eq!(x, (1.2_f32 - 1.0) * 512.0);
+        assert_ne!(x, 102.4_f32);
+        assert!((x - 102.4).abs() < 1e-3);
+        assert_eq!(y, 256.0);
+
+        // V offset adds tens: (0.5, 1.2) in tile 1011 → tile_v = 1, so
+        // y = (1 - (1.2 - 1.0)) * 512.
+        let [x, y] = local_texel([0.5, 1.2], 1011, 512.0);
+        assert_eq!(x, 256.0);
+        assert_eq!(y, (1.0 - (1.2_f32 - 1.0)) * 512.0);
+
+        // Tile 1001: bit-identical to the pre-UDIM mapping.
+        for uv in [[0.0, 0.0], [0.37, 0.81], [1.0, 1.0], [0.123_456, 0.999]] {
+            let old = [uv[0] * 512.0, (1.0 - uv[1]) * 512.0];
+            let new = local_texel(uv, 1001, 512.0);
+            assert_eq!(new[0].to_bits(), old[0].to_bits(), "x at {uv:?}");
+            assert_eq!(new[1].to_bits(), old[1].to_bits(), "y at {uv:?}");
+        }
+    }
+
+    #[test]
+    fn stroke_at_tile_1002_lands_in_tile_1002_only() {
+        let Some((device, queue)) = try_request_device() else {
+            return;
+        };
+        let mut state = PaintState::new(device, queue).expect("paint state builds");
+        state.set_mesh(&two_tile_strip());
+        assert_eq!(state.staged_batch_count_for(1001), 0);
+        assert_eq!(state.staged_batch_count_for(1002), 0);
+
+        // Stays inside [1,2)x[0,1]: (1.2,0.5) → (1.35,0.5).
+        drive_stroke(&mut state, [1.2, 0.5], [0.01, 0.0], 15);
+        state.end_stroke();
+
+        let in_1002 = state.staged_batch_count_for(1002);
+        assert!(
+            in_1002 > 0,
+            "stroke at UV (1.2,0.5) must stage into tile 1002"
+        );
+        assert_eq!(
+            state.staged_batch_count_for(1001),
+            0,
+            "tile 1001 must stay untouched by a tile-1002 stroke"
+        );
+        assert_eq!(state.staged_batch_count(), in_1002);
+        assert_eq!(state.active_tile(), 1002);
+        assert!(state.tile_target(1002).is_some());
+        assert!(state.tile_target(1003).is_none());
+        // Every tile's queue drains (and the active-tile accessor serves
+        // the routed tile).
+        state.process_pending().expect("drain succeeds");
+        assert!(std::ptr::eq(
+            state.paint_target(),
+            state.tile_target(1002).expect("tile 1002 exists"),
+        ));
+    }
+
+    #[test]
+    fn tile_targets_are_created_lazily_and_reused() {
+        let Some((device, queue)) = try_request_device() else {
+            return;
+        };
+        let mut state = PaintState::new(device, queue).expect("paint state builds");
+        state.set_mesh(&two_tile_strip());
+        assert_eq!(state.tile_count(), 1, "only tile 1001 exists up front");
+
+        state.begin_stroke(egui::pos2(1.2, 0.5));
+        state.end_stroke();
+        assert_eq!(state.tile_count(), 2, "first route to 1002 creates it");
+
+        state.begin_stroke(egui::pos2(1.7, 0.3));
+        state.end_stroke();
+        assert_eq!(state.tile_count(), 2, "re-routing to 1002 reuses it");
+
+        state.begin_stroke(egui::pos2(0.5, 0.5));
+        state.end_stroke();
+        assert_eq!(state.tile_count(), 2, "1001 already existed");
+        assert_eq!(state.active_tile(), 1001);
+    }
+
+    #[test]
+    fn single_tile_meshes_route_everything_to_1001() {
+        let Some((device, queue)) = try_request_device() else {
+            return;
+        };
+        // No mesh: even an out-of-[0,1] UV stays in 1001.
+        let mut bare = PaintState::new(device.clone(), queue.clone()).expect("paint state builds");
+        bare.begin_stroke(egui::pos2(1.5, 0.5));
+        bare.end_stroke();
+        assert_eq!(bare.tile_count(), 1);
+        assert_eq!(bare.active_tile(), 1001);
+
+        // Single-tile mesh: the UV view's u == 1.0 edge (tile_of_uv gives
+        // 1002) must not spawn a blank tile.
+        let mut single = PaintState::new(device, queue).expect("paint state builds");
+        single.set_mesh(&single_island_quad());
+        drive_stroke(&mut single, [0.9, 0.5], [0.01, 0.0], 15);
+        single.end_stroke();
+        assert_eq!(single.tile_count(), 1);
+        assert_eq!(single.active_tile(), 1001);
+        assert!(single.staged_batch_count() > 0);
+        assert_eq!(
+            single.staged_batch_count_for(1001),
+            single.staged_batch_count(),
+            "every batch lands in tile 1001"
+        );
+    }
+
+    #[test]
+    fn mirrors_route_by_their_own_tile_without_moving_active() {
+        let Some((device, queue)) = try_request_device() else {
+            return;
+        };
+        // two_island_quad's second island lives at UV ~10–11, which
+        // tile_of_uv clamps to tile 1100: the mesh is multi-tile, and the
+        // seam mirrors route there while the pointer stays in 1001.
+        let mut state = PaintState::new(device, queue).expect("paint state builds");
+        state.set_mesh(&two_island_quad());
+        drive_stroke(&mut state, NEAR_SEAM_UV, [0.02, 0.02], 16);
+        state.end_stroke();
+        assert!(state.staged_batch_count_for(1001) > 0);
+        assert!(
+            state.staged_batch_count_for(1100) > 0,
+            "mirrors must land in their own tile"
+        );
+        assert_eq!(
+            state.staged_batch_count(),
+            state.staged_batch_count_for(1001) + state.staged_batch_count_for(1100)
+        );
+        assert_eq!(
+            state.active_tile(),
+            1001,
+            "mirrors never move the active tile"
+        );
+        state.process_pending().expect("drain succeeds");
     }
 }
