@@ -7,7 +7,7 @@
 //! behind `umber-gpu`.
 
 use egui::{Color32, PointerButton, Response, Sense, Ui};
-use umber_gpu::{GpuContext, MeshBuffers, OrbitCamera};
+use umber_gpu::{EnvIrradiance, GpuContext, MeshBuffers, OrbitCamera};
 
 /// Background shown when there is no mesh loaded (and behind the mesh
 /// otherwise, since the shared egui render pass has no clear op of its
@@ -29,6 +29,10 @@ pub struct Viewport {
     mesh: Option<MeshBuffers>,
     /// CPU-side copy of the loaded mesh for ray picking (paint mode).
     mesh_data: Option<umber_mesh::MeshData>,
+    /// The bound environment (`None` = procedural fallback). Kept here
+    /// so `load_mesh` (which rebuilds the GPU buffers from scratch)
+    /// re-applies it instead of silently dropping back to procedural.
+    env: Option<EnvIrradiance>,
 }
 
 impl Viewport {
@@ -40,13 +44,26 @@ impl Viewport {
         gpu: &GpuContext,
         mesh: &umber_mesh::MeshData,
     ) -> anyhow::Result<()> {
-        let buffers = MeshBuffers::upload(gpu, mesh)?;
+        let mut buffers = MeshBuffers::upload(gpu, mesh)?;
+        // Fresh buffers default to procedural — re-apply our env.
+        buffers.set_environment(gpu, self.env.as_ref());
         if let Some((min, max)) = mesh.bounds() {
             self.camera = OrbitCamera::framing(min, max, self.camera.yaw, self.camera.pitch);
         }
         self.mesh_data = Some(mesh.clone());
         self.mesh = Some(buffers);
         Ok(())
+    }
+
+    /// Swaps the bound environment: `Some(env)` enables the convolved
+    /// map, `None` restores the procedural fallback. Applies to the
+    /// loaded mesh immediately (and is remembered for the next
+    /// `load_mesh`).
+    pub fn set_environment(&mut self, gpu: &GpuContext, env: Option<EnvIrradiance>) {
+        self.env = env;
+        if let Some(mesh) = self.mesh.as_mut() {
+            mesh.set_environment(gpu, self.env.as_ref());
+        }
     }
 
     /// Draws the viewport and handles orbit/pan/zoom/paint input.

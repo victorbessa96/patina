@@ -32,6 +32,10 @@ pub enum ExrError {
     /// The encoder rejected the stream (wrapped `exr` error text).
     #[error("exr encode failed: {0}")]
     Encode(String),
+    /// The decoder rejected the stream (not an EXR, no RGBA layer,
+    /// truncated file — wrapped `exr` error text).
+    #[error("exr decode failed: {0}")]
+    Decode(String),
     /// The OS refused the write (missing dir, permissions, …).
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
@@ -83,6 +87,57 @@ pub fn write_exr_f32(path: &Path, width: u32, height: u32, rgba: &[f32]) -> Resu
         },
     )?;
     Ok(())
+}
+
+/// Reads an EXR file's first RGBA layer into floats
+/// (width×height×4 f32, row-major) — the inverse direction of
+/// [`write_exr_f32`], for HDR environment maps and float interchange.
+///
+/// # Row order (the environment-map contract)
+///
+/// Output row 0 is the file's row y=0 in the `exr` prelude's bottom-up
+/// indexing — i.e. the image's displayed BOTTOM row. For a
+/// conventionally-authored equirect (zenith/sky at the displayed top)
+/// that bottom row is the -Y nadir row, which is exactly the GPU row
+/// order `umber_gpu::ibl` expects (its `equirect_uv` maps -Y to data
+/// row 0). No flip is applied here, so DCC-authored EXRs load upright.
+///
+/// NOTE: this is the vertical inverse of [`write_exr_f32`]'s slice
+/// convention (whose row 0 is the displayed TOP): a slice written by
+/// `write_exr_f32` and read back here comes back vertically flipped.
+/// The asymmetry is deliberate — the writer serves umber's top-first
+/// bake readbacks, the reader serves bottom-up EXR files — and is
+/// pinned by `read_inverts_write_with_a_vertical_flip` below.
+///
+/// # Errors
+///
+/// [`ExrError::Decode`] for unreadable files or files with no RGBA
+/// layer; [`ExrError::Io`] is folded into decode (the `exr` crate
+/// reports missing files as its own error, not `std::io`).
+pub fn read_exr_rgba_f32(path: &Path) -> Result<(u32, u32, Vec<f32>), ExrError> {
+    let image = exr_prelude::read_first_rgba_layer_from_file(
+        path,
+        |resolution, _| {
+            let (w, h) = (resolution.width(), resolution.height());
+            vec![vec![[0.0f32; 4]; w]; h]
+        },
+        |pixels, position, (r, g, b, a): (f32, f32, f32, f32)| {
+            pixels[position.y()][position.x()] = [r, g, b, a];
+        },
+    )
+    .map_err(|e| ExrError::Decode(e.to_string()))?;
+    let (width, height) = (
+        image.layer_data.size.width() as u32,
+        image.layer_data.size.height() as u32,
+    );
+    let rows = image.layer_data.channel_data.pixels;
+    let mut out = Vec::with_capacity(width as usize * height as usize * 4);
+    for row in &rows {
+        for px in row {
+            out.extend_from_slice(px);
+        }
+    }
+    Ok((width, height, out))
 }
 
 #[cfg(test)]
@@ -178,5 +233,31 @@ mod tests {
         let bottom = layer.channel_data.pixels[0][0];
         assert!((bottom[1] - 1.0).abs() < 1e-6, "bottom must be green");
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn read_inverts_write_with_a_vertical_flip() {
+        // The reader returns file-bottom-up rows while the writer takes
+        // display-top-first slices (see `read_exr_rgba_f32`'s doc
+        // comment): a write→read round trip comes back vertically
+        // flipped. Pinned deliberately — the flip is the contract.
+        let path = tmp_path("read-flip");
+        // 1x2 slice: row 0 = red (writer's display-top), row 1 = green.
+        let rgba: Vec<f32> = vec![1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0];
+        write_exr_f32(&path, 1, 2, &rgba).unwrap();
+
+        let (w, h, out) = read_exr_rgba_f32(&path).expect("read succeeds");
+        assert_eq!((w, h), (1, 2));
+        // Output row 0 = file bottom = the slice's row 1 = green.
+        assert!((out[1] - 1.0).abs() < 1e-6, "row 0 must be green: {out:?}");
+        assert!((out[4] - 1.0).abs() < 1e-6, "row 1 must be red: {out:?}");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn read_rejects_missing_files() {
+        let missing = std::env::temp_dir().join("umber-exr-test-no-such-file.exr");
+        let err = read_exr_rgba_f32(&missing).unwrap_err();
+        assert!(matches!(err, ExrError::Decode(_)), "got {err:?}");
     }
 }

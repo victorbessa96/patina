@@ -18,6 +18,7 @@
 pub mod bake_shaders;
 pub mod camera;
 pub mod golden;
+pub mod ibl;
 pub mod material;
 pub mod paint;
 pub mod paint_thread;
@@ -27,6 +28,7 @@ pub mod texture_display;
 pub mod tile_pool;
 
 pub use camera::OrbitCamera;
+pub use ibl::{EnvFlags, EnvFormat, EnvIrradiance, IblError};
 pub use paint::{Dab, DabBuffer, PaintCompositor, PaintError, PaintTarget};
 pub use paint_thread::{FrameStats, PaintThread, PaintThreadCommand};
 pub use tile_pool::{texel_within_tile, tile_for, TileId, TilePool, TILE_SIZE};

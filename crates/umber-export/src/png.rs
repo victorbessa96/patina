@@ -34,6 +34,10 @@ pub enum PngError {
     /// The encoder rejected the stream.
     #[error("png encode failed: {0}")]
     Encode(String),
+    /// The decoder rejected the stream (not a PNG, unsupported color
+    /// type/bit depth, truncated file).
+    #[error("png decode failed: {0}")]
+    Decode(String),
     /// The OS refused the write (missing dir, permissions, …).
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
@@ -111,6 +115,77 @@ pub fn write_png(
         .write_image_data(&data)
         .map_err(|e| PngError::Encode(e.to_string()))?;
     Ok(())
+}
+
+/// Reads a PNG file into RGBA8 bytes (width×height×4, row-major).
+///
+/// Accepted inputs: 8-bit RGBA (returned as-is) and 8-bit RGB (opaque
+/// alpha is synthesized). Anything else (16-bit, gray, palette,
+/// non-PNG bytes) is a [`PngError::Decode`] — Wave-4 IBL scope is LDR
+/// equirects; 16-bit PNG support rides the bit-depth follow-up.
+///
+/// # Row order (the environment-map contract)
+///
+/// The returned rows are in *GPU row order*: output row 0 is the PNG's
+/// LAST stored row (the displayed bottom), output row H-1 is the PNG's
+/// first stored row (the displayed top). Rationale: umber-gpu's
+/// equirect convention (`equirect_uv(n) = (atan2/2π+0.5,
+/// asin(n.y)/π+0.5)`, sampled with a v=0-first-row sampler) maps +Y to
+/// the last data row, so a viewer-conventional PNG (zenith/sky at the
+/// displayed top) lands on +Y with no further flipping. See
+/// `umber_gpu::ibl`'s convention block. A plain image viewer and the
+/// renderer therefore agree about which end is up.
+///
+/// # Errors
+///
+/// [`PngError::Decode`] for unreadable/unsupported files;
+/// [`PngError::Io`] from the filesystem.
+pub fn read_png_rgba8(path: &Path) -> Result<(u32, u32, Vec<u8>), PngError> {
+    let file = File::open(path)?;
+    let decoder = png::Decoder::new(file);
+    let mut reader = decoder
+        .read_info()
+        .map_err(|e| PngError::Decode(e.to_string()))?;
+    let (width, height) = {
+        let info = reader.info();
+        (info.width, info.height)
+    };
+    let color = reader.info().color_type;
+    let depth = reader.info().bit_depth;
+    let rgb_source = match (color, depth) {
+        (png::ColorType::Rgba, png::BitDepth::Eight) => false,
+        (png::ColorType::Rgb, png::BitDepth::Eight) => true,
+        _ => {
+            return Err(PngError::Decode(format!(
+                "unsupported PNG: {color:?} at {depth:?} (want 8-bit RGB or RGBA)"
+            )));
+        }
+    };
+
+    let mut raw = vec![0u8; reader.output_buffer_size()];
+    reader
+        .next_frame(&mut raw)
+        .map_err(|e| PngError::Decode(e.to_string()))?;
+
+    let rgba: Vec<u8> = if rgb_source {
+        let mut out = Vec::with_capacity(width as usize * height as usize * 4);
+        for px in raw.chunks_exact(3) {
+            out.extend_from_slice(&[px[0], px[1], px[2], 255]);
+        }
+        out
+    } else {
+        raw
+    };
+
+    // Flip to GPU row order (see this function's doc comment): output
+    // row 0 = the file's last stored row.
+    let stride = width as usize * 4;
+    let mut flipped = vec![0u8; rgba.len()];
+    for (dst_row, src_row) in (0..height as usize).zip((0..height as usize).rev()) {
+        flipped[dst_row * stride..(dst_row + 1) * stride]
+            .copy_from_slice(&rgba[src_row * stride..(src_row + 1) * stride]);
+    }
+    Ok((width, height, flipped))
 }
 
 /// Linear (0..255) → sRGB (0..255), the canonical 2.2-gamma-style
@@ -299,5 +374,54 @@ mod tests {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
             std::io::Read::read(&mut self.0, buf)
         }
+    }
+
+    #[test]
+    fn read_returns_gpu_row_order_with_a_vertical_flip() {
+        // 1x2 map, stored top-down: row 0 = red, row 1 = green.
+        // The reader flips to GPU row order: output row 0 = the
+        // file's last stored row (green), output row 1 = red.
+        let path = temp_png("read-flip");
+        let stored: Vec<u8> = vec![255, 0, 0, 255, 0, 255, 0, 255];
+        write_png(&path, 1, 2, &stored, Transfer::Linear).expect("write succeeds");
+        let (w, h, bytes) = read_png_rgba8(&path).expect("read succeeds");
+        assert_eq!((w, h), (1, 2));
+        assert_eq!(&bytes[0..4], &[0, 255, 0, 255], "output row 0 = green");
+        assert_eq!(&bytes[4..8], &[255, 0, 0, 255], "output row 1 = red");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_expands_rgb_with_opaque_alpha() {
+        // 2x1 RGB file: the reader must synthesize alpha 255 per texel
+        // (then flip the single row, a no-op).
+        let path = temp_png("read-rgb");
+        {
+            let file = File::create(&path).unwrap();
+            let mut encoder = png::Encoder::new(file, 2, 1);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[10, 20, 30, 40, 50, 60]).unwrap();
+        }
+        let (w, h, bytes) = read_png_rgba8(&path).expect("read succeeds");
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(bytes, vec![10, 20, 30, 255, 40, 50, 60, 255]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_rejects_missing_and_non_png_files() {
+        let missing = std::env::temp_dir().join("umber-export-test-no-such-file.png");
+        let err = read_png_rgba8(&missing).unwrap_err();
+        // Missing files surface as Decode (the png crate wraps the OS
+        // error) or Io — either is a rejection, never a panic.
+        assert!(matches!(err, PngError::Decode(_) | PngError::Io(_)));
+
+        let path = temp_png("read-garbage");
+        std::fs::write(&path, b"definitely not a png file").unwrap();
+        let err = read_png_rgba8(&path).unwrap_err();
+        assert!(matches!(err, PngError::Decode(_)), "got {err:?}");
+        let _ = std::fs::remove_file(&path);
     }
 }

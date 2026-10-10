@@ -17,6 +17,7 @@ mod bake_sources;
 mod bakes_panel;
 mod brush_panel;
 mod document;
+mod env;
 mod export_dialog;
 mod paint_state;
 #[cfg(test)]
@@ -234,6 +235,32 @@ impl UmberApp {
 
 /// App-level actions (kept out of the App impl to keep that block small).
 impl UmberApp {
+    /// Loads the committed studio default if present (procedural
+    /// otherwise) — called once at startup, after construction, so a
+    /// missing asset degrades to the fallback instead of failing.
+    fn load_default_env(&mut self) {
+        if let Some(env) = env::load_default_environment(&self.gpu) {
+            self.state.viewport.set_environment(&self.gpu, Some(env));
+        }
+    }
+
+    /// File > Load Environment…: file dialog → decode → convolve →
+    /// viewport swap. Failures log; the current environment is kept.
+    fn load_environment(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Environment", &["png", "exr"])
+            .pick_file()
+        else {
+            return;
+        };
+        match env::load_environment_file(&self.gpu, &path) {
+            Ok(ibl) => {
+                self.state.viewport.set_environment(&self.gpu, Some(ibl));
+                log::info!("loaded environment: {}", path.display());
+            }
+            Err(err) => log::error!("environment load failed: {err:#}"),
+        }
+    }
     /// Exports the current paint target as an sRGB PNG via a save dialog.
     ///
     /// Readback is blocking (one full-target copy); acceptable for a
@@ -383,6 +410,9 @@ impl eframe::App for UmberApp {
                 {
                     self.export_paint_png();
                 }
+                if ui.button("Load Environment…").clicked() {
+                    self.load_environment();
+                }
             });
             MenuButton::new("View").ui(ui, |ui| {
                 #[cfg(feature = "perf")]
@@ -506,7 +536,10 @@ fn main() -> eframe::Result<()> {
         "Umber",
         native,
         Box::new(|cc| match UmberApp::new(cc) {
-            Ok(app) => Ok(Box::new(app) as Box<dyn eframe::App>),
+            Ok(mut app) => {
+                app.load_default_env();
+                Ok(Box::new(app) as Box<dyn eframe::App>)
+            }
             Err(err) => Err(format!("{err:#}").into()),
         }),
     )

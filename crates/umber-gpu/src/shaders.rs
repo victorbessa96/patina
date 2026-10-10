@@ -1,11 +1,13 @@
 //! WGSL shader sources for the viewport mesh pass.
 
 /// Normal-shaded mesh pass with a directional light and a hemispherical
-/// environment light (procedural sky/ground irradiance — the Wave-1
-/// "bundled env map"; full HDR-texture IBL lands with Wave-2 image import).
-/// Driven entirely by vertex normals (no textures yet — that lands with
-/// the paint engine). Matches the `Vertex` and `CameraUniform` layouts in
-/// `renderer.rs`.
+/// environment light: the procedural sky/ground irradiance by default,
+/// or a convolved environment map when one is bound (Wave-4 item 6 —
+/// see `crate::ibl`'s convention block for the equirect math shared
+/// with the convolve shader). Driven entirely by vertex normals (no
+/// textures yet — that lands with the paint engine). Matches the
+/// `Vertex` and `CameraUniform` layouts in `renderer.rs`; bindings 1–3
+/// are the IBL set (see `GpuContext`'s bind-group layout).
 pub const MESH_SHADER: &str = r#"
 struct Camera {
     view_proj: mat4x4<f32>,
@@ -20,6 +22,19 @@ struct Camera {
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
+// IBL set (Wave-4 item 6): the convolved 32x16 irradiance map, its
+// sampler, and the procedural/map selector. All three are always bound
+// (the context supplies a 1x1 fallback texture when no environment is
+// loaded) so the pipeline layout never changes at runtime.
+@group(0) @binding(1) var irradiance_tex: texture_2d<f32>;
+@group(0) @binding(2) var irradiance_sampler: sampler;
+struct EnvFlags {
+    flags: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+};
+@group(0) @binding(3) var<uniform> env_flags: EnvFlags;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -44,10 +59,30 @@ const SKY_COLOR: vec3<f32> = vec3<f32>(0.45, 0.55, 0.78);
 const GROUND_COLOR: vec3<f32> = vec3<f32>(0.30, 0.27, 0.24);
 const BASE_COLOR: vec3<f32> = vec3<f32>(0.72, 0.72, 0.75);
 
-/// Hemispherical environment irradiance: the procedural stand-in for an
-/// environment map — sky above the horizon, ground below, blended by the
-/// normal's vertical component.
+/// Hemispherical environment irradiance: the bound convolved map when
+/// `env_flags.flags == 1`, else the procedural stand-in — sky above the
+/// horizon, ground below, blended by the normal's vertical component.
+///
+/// The procedural arm is byte-identical to the pre-IBL shader (the
+/// fallback-regression tests pin this): the flag only *selects*, it
+/// never reshapes the fallback math.
+///
+/// `equirect_uv` shares its formula with the convolve shader's
+/// `ibl_equirect_uv` and the Rust `crate::ibl::equirect_uv_cpu` (see
+/// that module's convention block): +Y is v=1 (last data row), -Y is
+/// v=0. The `OPENPBR_SHADER` copy below is deliberately untouched —
+/// its bind-group layout has no IBL set, and its env integration rides
+/// the wave-5 specular tier, not this slice.
+fn equirect_uv(n: vec3<f32>) -> vec2<f32> {
+    let u = atan2(n.z, n.x) / 6.283185307179586 + 0.5;
+    let v = asin(clamp(n.y, -1.0, 1.0)) / 3.14159265358979 + 0.5;
+    return vec2<f32>(u, v);
+}
+
 fn environment_irradiance(n: vec3<f32>) -> vec3<f32> {
+    if (env_flags.flags == 1u) {
+        return textureSample(irradiance_tex, irradiance_sampler, equirect_uv(n)).rgb;
+    }
     let t = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
     return mix(GROUND_COLOR, SKY_COLOR, t);
 }

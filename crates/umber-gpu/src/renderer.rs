@@ -14,6 +14,7 @@ use std::num::NonZeroU64;
 
 use wgpu::util::DeviceExt as _;
 
+use crate::ibl::{EnvFlags, EnvIrradiance};
 use crate::shaders::MESH_SHADER;
 
 /// Errors raised while preparing GPU-side mesh data.
@@ -104,6 +105,14 @@ pub struct GpuContext {
     pub adapter: wgpu::Adapter,
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
+    /// 1×1 fallback irradiance texture, bound at group 0 binding 1
+    /// whenever no environment is loaded. Never sampled while
+    /// `env_flags == 0` (the shader's procedural arm doesn't touch it),
+    /// but the bind group must always be fully populated.
+    fallback_env_view: wgpu::TextureView,
+    /// Shared irradiance sampler (group 0 binding 2) — bilinear,
+    /// repeat-U/clamp-V (see `crate::ibl::ibl_sampler`).
+    env_sampler: wgpu::Sampler,
     depth_format: Option<wgpu::TextureFormat>,
     /// Textured-quad display pipeline for paint-target presentation
     /// (built once; see `texture_display`).
@@ -245,16 +254,47 @@ impl GpuContext {
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("umber_mesh_camera_bind_group_layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: NonZeroU64::new(size_of::<CameraUniform>() as u64),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: NonZeroU64::new(size_of::<CameraUniform>() as u64),
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                // IBL set (Wave-4 item 6 — see `shaders::MESH_SHADER`):
+                // the convolved irradiance map (always Rgba16Float,
+                // filterable), its sampler, and the selector uniform.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: NonZeroU64::new(size_of::<EnvFlags>() as u64),
+                    },
+                    count: None,
+                },
+            ],
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -394,6 +434,8 @@ impl GpuContext {
             cache: None,
         });
 
+        let (fallback_env_view, env_sampler) = Self::fallback_env_resources(&device);
+
         Self {
             device,
             queue,
@@ -404,17 +446,90 @@ impl GpuContext {
             texture_display,
             openpbr_pipeline,
             openpbr_layout,
+            fallback_env_view,
+            env_sampler,
         }
+    }
+
+    /// Builds the fallback IBL resources for [`Self::new`]: a 1×1
+    /// `Rgba16Float` texture view (never sampled while `env_flags == 0`,
+    /// but the bind group must stay fully populated) and the shared
+    /// irradiance sampler (bilinear, repeat-U/clamp-V).
+    fn fallback_env_resources(device: &wgpu::Device) -> (wgpu::TextureView, wgpu::Sampler) {
+        let fallback = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("umber_mesh_fallback_irradiance"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        (
+            fallback.create_view(&wgpu::TextureViewDescriptor::default()),
+            crate::ibl::ibl_sampler(device),
+        )
+    }
+
+    /// Builds the mesh pass's group-0 bind group: camera + IBL set
+    /// (irradiance view, sampler, flags buffer). Used by
+    /// [`MeshBuffers::upload`] (fallback view/sampler, procedural
+    /// flags) and [`MeshBuffers::set_environment`] (the map's own view
+    /// and sampler, or the fallback pair).
+    pub(crate) fn mesh_bind_group(
+        &self,
+        uniform_buffer: &wgpu::Buffer,
+        flags_buffer: &wgpu::Buffer,
+        env_view: &wgpu::TextureView,
+        env_sampler: &wgpu::Sampler,
+    ) -> wgpu::BindGroup {
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("umber_mesh_camera_bind_group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: uniform_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(env_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(env_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: flags_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
+            ],
+        })
     }
 }
 
 /// GPU-resident mesh data for the viewport: vertex/index buffers plus the
-/// per-mesh camera uniform buffer and its bind group.
+/// per-mesh camera uniform buffer, the environment-flag uniform buffer,
+/// and the combined bind group (camera + IBL set).
 pub struct MeshBuffers {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
     uniform_buffer: wgpu::Buffer,
+    flags_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
 }
 
@@ -468,18 +583,19 @@ impl MeshBuffers {
             )),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("umber_mesh_camera_bind_group"),
-            layout: &gpu.bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &uniform_buffer,
-                    offset: 0,
-                    size: None,
-                }),
-            }],
+        // Procedural fallback by default: no map bound, flags == 0.
+        // `set_environment` flips this when an environment loads.
+        let flags_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("umber_mesh_env_flags_buffer"),
+            contents: bytemuck::bytes_of(&EnvFlags::procedural()),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
+        let bind_group = gpu.mesh_bind_group(
+            &uniform_buffer,
+            &flags_buffer,
+            &gpu.fallback_env_view,
+            &gpu.env_sampler,
+        );
 
         let index_count = u32::try_from(mesh.indices.len())
             .map_err(|_| GpuError::IndexCountOverflow(mesh.indices.len()))?;
@@ -489,8 +605,30 @@ impl MeshBuffers {
             index_buffer,
             index_count,
             uniform_buffer,
+            flags_buffer,
             bind_group,
         })
+    }
+
+    /// Swaps the bound environment: `Some(env)` samples the convolved
+    /// map (`env_flags = 1`), `None` restores the procedural fallback
+    /// (`env_flags = 0`, 1×1 fallback texture bound but never sampled).
+    /// The next [`Self::paint_callback`] picks up the new bind group —
+    /// the viewport builds one per frame, so this takes effect
+    /// immediately with no re-upload.
+    pub fn set_environment(&mut self, gpu: &GpuContext, env: Option<&EnvIrradiance>) {
+        let flags = match env {
+            Some(_) => EnvFlags::from_map(),
+            None => EnvFlags::procedural(),
+        };
+        gpu.queue
+            .write_buffer(&self.flags_buffer, 0, bytemuck::bytes_of(&flags));
+        let (view, sampler) = match env {
+            Some(env) => (env.view(), env.sampler()),
+            None => (&gpu.fallback_env_view, &gpu.env_sampler),
+        };
+        self.bind_group =
+            gpu.mesh_bind_group(&self.uniform_buffer, &self.flags_buffer, view, sampler);
     }
 
     /// Number of indices in this mesh's index buffer (3x the triangle count).
@@ -681,7 +819,12 @@ mod tests {
 
     #[cfg(feature = "gpu")]
     mod gpu {
+        // NOTE: `wgpu::util::DeviceExt` (for `create_buffer_init` below)
+        // arrives via this glob: the parent module imports it and glob
+        // imports carry a module's `use` names to child modules — so no
+        // explicit import here (clippy would flag it unused).
         use super::super::*;
+        use crate::ibl::{EnvFormat, EnvIrradiance};
 
         fn try_request_device() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
             let instance = wgpu::Instance::default();
@@ -905,6 +1048,352 @@ mod tests {
             assert_ne!(
                 dielectric, metallic,
                 "metalness=1 must shade differently from metalness=0"
+            );
+        }
+
+        // --- Wave-4 item 6 (IBL) mesh-pass tests. `golden::RenderTarget`
+        // can't serve here — its `callback_paint` is a documented no-op
+        // stub — so these tests draw for real: same pipeline, same bind
+        // group, same buffers as `MeshPaintCallback::paint`, into a
+        // linear (non-sRGB) Rgba8Unorm target so the expected bytes are
+        // closed-form shader math, not tone-mapped guesses.
+
+        /// Full-screen triangle (the big-triangle trick: covers every
+        /// pixel) with a constant normal, CCW so backface culling keeps
+        /// it (see `compute_vertex_normals`' CCW note).
+        fn fullscreen_mesh(normal: [f32; 3]) -> umber_mesh::MeshData {
+            umber_mesh::MeshData {
+                positions: vec![[-1.0, -1.0, 0.0], [3.0, -1.0, 0.0], [-1.0, 3.0, 0.0]],
+                normals: vec![normal; 3],
+                uvs: vec![],
+                indices: vec![0, 1, 2],
+                material_names: vec![],
+            }
+        }
+
+        /// Renders `buffers` (with its CURRENT bind group — whatever
+        /// `set_environment` last installed) into an 8×8 linear target
+        /// and returns tightly-packed RGBA8 bytes.
+        fn render_mesh_offscreen(gpu: &GpuContext, buffers: &MeshBuffers) -> Vec<u8> {
+            const W: u32 = 8;
+            const H: u32 = 8;
+            let device = &gpu.device;
+            let target = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("umber_ibl_test_target"),
+                size: wgpu::Extent3d {
+                    width: W,
+                    height: H,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+            let uniform = CameraUniform::new(glam::Mat4::IDENTITY, glam::Vec3::NEG_Y);
+            gpu.queue
+                .write_buffer(&buffers.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
+
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("umber_ibl_test_encoder"),
+            });
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("umber_ibl_test_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                // The exact state `MeshPaintCallback::paint` applies.
+                pass.set_pipeline(&gpu.pipeline);
+                pass.set_bind_group(0, &buffers.bind_group, &[]);
+                pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
+                pass.set_index_buffer(buffers.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..buffers.index_count, 0, 0..1);
+            }
+            gpu.queue.submit(Some(encoder.finish()));
+
+            const PADDED_ROW: u32 = 256;
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("umber_ibl_test_readback"),
+                size: PADDED_ROW as u64 * H as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("umber_ibl_test_readback_encoder"),
+            });
+            enc.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &target,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(PADDED_ROW),
+                        rows_per_image: Some(H),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: W,
+                    height: H,
+                    depth_or_array_layers: 1,
+                },
+            );
+            gpu.queue.submit(Some(enc.finish()));
+
+            let (sx, rx) = std::sync::mpsc::channel();
+            readback
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    let _ = sx.send(result);
+                });
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                })
+                .expect("poll succeeds");
+            rx.recv().expect("map callback ran").expect("map ok");
+            let padded = readback
+                .slice(..)
+                .get_mapped_range()
+                .expect("mapped range available")
+                .to_vec();
+            readback.unmap();
+            let mut data = Vec::with_capacity((W * H * 4) as usize);
+            for row in padded.chunks_exact(PADDED_ROW as usize) {
+                data.extend_from_slice(&row[..(W * 4) as usize]);
+            }
+            data
+        }
+
+        /// Closed-form procedural byte for a constant normal under the
+        /// test light (`NEG_Y`, so `to_light = +Y`): the shader's
+        /// `BASE_COLOR * (mix(GROUND, SKY, t) + diffuse * SUN * 0.55)`,
+        /// rounded half-up. The GPU's own unorm rounding (nearest-even
+        /// vs. half-up) can only disagree at an exact .5-in-byte-units
+        /// boundary — the margin note below shows the test normal sits
+        /// ≥0.03 byte-units clear of every boundary (the ao.rs
+        /// `encode_unorm` precedent).
+        fn expected_procedural_byte(normal: [f32; 3]) -> [u8; 4] {
+            const GROUND: [f32; 3] = [0.30, 0.27, 0.24];
+            const SKY: [f32; 3] = [0.45, 0.55, 0.78];
+            const BASE: [f32; 3] = [0.72, 0.72, 0.75];
+            const SUN: [f32; 3] = [1.0, 0.96, 0.90];
+            let t = (normal[1] * 0.5 + 0.5).clamp(0.0, 1.0);
+            let env = [
+                GROUND[0] + (SKY[0] - GROUND[0]) * t,
+                GROUND[1] + (SKY[1] - GROUND[1]) * t,
+                GROUND[2] + (SKY[2] - GROUND[2]) * t,
+            ];
+            // to_light = +Y (light_dir = NEG_Y).
+            let diffuse = normal[1].max(0.0);
+            let px = [
+                BASE[0] * (env[0] + diffuse * SUN[0] * 0.55),
+                BASE[1] * (env[1] + diffuse * SUN[1] * 0.55),
+                BASE[2] * (env[2] + diffuse * SUN[2] * 0.55),
+            ];
+            [
+                (px[0] * 255.0 + 0.5).floor() as u8,
+                (px[1] * 255.0 + 0.5).floor() as u8,
+                (px[2] * 255.0 + 0.5).floor() as u8,
+                255,
+            ]
+        }
+
+        /// FALLBACK REGRESSION (the design's test 3): with `env_flags =
+        /// 0` the mesh pass renders the procedural path byte-identical
+        /// to the closed-form expectation above — the shader change must
+        /// not reshape the fallback by a single LSB beyond unorm
+        /// rounding. Normal +Z, light +Y: diffuse = 0, t = 0.5, expected
+        /// (69, 75, 98, 255); margins to the nearest .5 boundary are
+        /// 0.35/0.22/0.04 byte-units — f32 arithmetic noise is ~1e-5, so
+        /// a ≤1-LSB tolerance only admits genuine rounding, never drift.
+        #[test]
+        fn fallback_procedural_matches_closed_form() {
+            let Some((adapter, device, queue)) = try_request_device() else {
+                eprintln!(
+                    "skipping fallback_procedural_matches_closed_form: no wgpu adapter available"
+                );
+                return;
+            };
+            let gpu = GpuContext::new(
+                adapter,
+                device,
+                queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                None,
+            );
+            let mesh = fullscreen_mesh([0.0, 0.0, 1.0]);
+            let buffers = MeshBuffers::upload(&gpu, &mesh).expect("upload succeeds");
+            let bytes = render_mesh_offscreen(&gpu, &buffers);
+            let want = expected_procedural_byte([0.0, 0.0, 1.0]);
+            assert_eq!(bytes.len(), 8 * 8 * 4);
+            for (i, px) in bytes.chunks_exact(4).enumerate() {
+                for c in 0..4 {
+                    let diff = px[c].abs_diff(want[c]);
+                    assert!(
+                        diff <= 1,
+                        "pixel {i} ch{c}: got {px:?}, want {want:?} (≤1 LSB unorm rounding)"
+                    );
+                }
+            }
+        }
+
+        /// The flag-0 path must be *texture-independent*: the same scene
+        /// with a bright-white map bound but flags forced to 0 renders
+        /// byte-IDENTICAL (not within tolerance — identical) to the
+        /// fallback bind group. An `if` on a uniform is uniform control
+        /// flow, so the unsampled texture cannot leak into the output;
+        /// any difference is a real wiring bug.
+        #[test]
+        fn fallback_ignores_bound_map() {
+            let Some((adapter, device, queue)) = try_request_device() else {
+                eprintln!("skipping fallback_ignores_bound_map: no wgpu adapter available");
+                return;
+            };
+            let gpu = GpuContext::new(
+                adapter,
+                device,
+                queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                None,
+            );
+            let mesh = fullscreen_mesh([0.0, 1.0, 0.0]);
+            let buffers = MeshBuffers::upload(&gpu, &mesh).expect("upload succeeds");
+            let plain = render_mesh_offscreen(&gpu, &buffers);
+
+            // Bright uniform map, but flags forced procedural: build the
+            // bind group by hand (the public `set_environment` couples
+            // map+flag, which is exactly what this test bypasses).
+            let white = vec![4.0f32; 16 * 8 * 4];
+            let env = EnvIrradiance::from_equirect(
+                &gpu.device,
+                &gpu.queue,
+                bytemuck::cast_slice(&white),
+                16,
+                8,
+                EnvFormat::Rgba32Float,
+            )
+            .expect("convolve succeeds");
+            let flags = gpu
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("umber_ibl_test_flags0"),
+                    contents: bytemuck::bytes_of(&crate::ibl::EnvFlags::procedural()),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+            let mut masked = MeshBuffers::upload(&gpu, &mesh).expect("upload succeeds");
+            masked.bind_group =
+                gpu.mesh_bind_group(&masked.uniform_buffer, &flags, env.view(), env.sampler());
+            let masked_bytes = render_mesh_offscreen(&gpu, &masked);
+
+            assert_eq!(
+                plain, masked_bytes,
+                "flags=0 must ignore the bound map byte-for-byte"
+            );
+        }
+
+        /// THE CAN-FAIL END-TO-END (the design's test 4): the same scene
+        /// with the map enabled vs. procedural must DIFFER — an IBL that
+        /// silently no-ops fails this. Synthetic two-tone equirect (red
+        /// +Y cap, green -Y) so the delta is unmistakable at a +Y-facing
+        /// normal; threshold is >50% of pixels differing by >8 LSB in
+        /// any channel — robust across adapters (convolution + unorm
+        /// noise is ~1 LSB, the expected delta is ~100).
+        #[test]
+        fn env_enabled_differs_from_procedural() {
+            let Some((adapter, device, queue)) = try_request_device() else {
+                eprintln!(
+                    "skipping env_enabled_differs_from_procedural: no wgpu adapter available"
+                );
+                return;
+            };
+            let gpu = GpuContext::new(
+                adapter,
+                device,
+                queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                None,
+            );
+            let mesh = fullscreen_mesh([0.0, 1.0, 0.0]);
+            let mut buffers = MeshBuffers::upload(&gpu, &mesh).expect("upload succeeds");
+            let plain = render_mesh_offscreen(&gpu, &buffers);
+
+            // Two-tone equirect in GPU row order (row 0 = -Y = green,
+            // top rows = +Y = red).
+            const W: u32 = 64;
+            const H: u32 = 32;
+            let mut pixels = vec![0.0f32; (W * H * 4) as usize];
+            for y in 0..H {
+                let top = y >= H / 2;
+                for x in 0..W {
+                    let base = ((y * W + x) * 4) as usize;
+                    if top {
+                        pixels[base..base + 4].copy_from_slice(&[3.0, 0.25, 0.2, 1.0]);
+                    } else {
+                        pixels[base..base + 4].copy_from_slice(&[0.2, 1.5, 0.25, 1.0]);
+                    }
+                }
+            }
+            let env = EnvIrradiance::from_equirect(
+                &gpu.device,
+                &gpu.queue,
+                bytemuck::cast_slice(&pixels),
+                W,
+                H,
+                EnvFormat::Rgba32Float,
+            )
+            .expect("convolve succeeds");
+            buffers.set_environment(&gpu, Some(&env));
+            let mapped = render_mesh_offscreen(&gpu, &buffers);
+
+            assert_eq!(plain.len(), mapped.len());
+            let mut differ = 0usize;
+            let (mut sum_r, mut sum_b) = (0u64, 0u64);
+            for (a, b) in plain.chunks_exact(4).zip(mapped.chunks_exact(4)) {
+                if a[0].abs_diff(b[0]) > 8 || a[1].abs_diff(b[1]) > 8 || a[2].abs_diff(b[2]) > 8 {
+                    differ += 1;
+                }
+                sum_r += b[0] as u64;
+                sum_b += b[2] as u64;
+            }
+            let total = plain.len() / 4;
+            assert!(
+                differ > total / 2,
+                "env render must differ from procedural on most pixels (got {differ}/{total})"
+            );
+            // The map actually drove the output: red cap above means
+            // the +Y-facing render skews red over blue.
+            assert!(
+                sum_r > sum_b,
+                "mapped render should skew red (R sum {sum_r} vs B sum {sum_b})"
+            );
+
+            // And unsetting restores the fallback exactly.
+            buffers.set_environment(&gpu, None);
+            let restored = render_mesh_offscreen(&gpu, &buffers);
+            assert_eq!(
+                plain, restored,
+                "unsetting the env must restore fallback bytes"
             );
         }
     }
