@@ -14,7 +14,7 @@ use std::num::NonZeroU64;
 
 use wgpu::util::DeviceExt as _;
 
-use crate::ibl::{EnvFlags, EnvIrradiance};
+use crate::ibl::{EnvFlags, EnvIrradiance, SpecParams};
 use crate::shaders::{GRID_SHADER, MESH_SHADER, WIREFRAME_SHADER};
 
 /// Errors raised while preparing GPU-side mesh data.
@@ -425,6 +425,51 @@ impl GpuContext {
                     },
                     count: None,
                 },
+                // Specular IBL tier (wave-5 v1 — see `shaders::MESH_SHADER`):
+                // the three cone-scaled prefilter levels (filterable, like
+                // the irradiance map) and the roughness/metallic uniform.
+                // Appended AFTER the IBL set — additive bindings, the
+                // classic layout-sync trap avoided by construction.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: NonZeroU64::new(size_of::<SpecParams>() as u64),
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -760,17 +805,21 @@ impl GpuContext {
         )
     }
 
-    /// Builds the mesh pass's group-0 bind group: camera + IBL set
-    /// (irradiance view, sampler, flags buffer). Used by
-    /// [`MeshBuffers::upload`] (fallback view/sampler, procedural
-    /// flags) and [`MeshBuffers::set_environment`] (the map's own view
-    /// and sampler, or the fallback pair).
-    pub(crate) fn mesh_bind_group(
+    /// Builds the mesh pass's group-0 bind group: camera + diffuse IBL
+    /// set (irradiance view, sampler, flags buffer) + specular tier
+    /// (prefilter views at bindings 4–6, spec uniform at 7). Used by
+    /// [`MeshBuffers::upload`] (fallback views/sampler, procedural
+    /// flags, default spec) and [`MeshBuffers`]'s rebuild path
+    /// (`set_environment` / `set_spec_params`: the map's own views and
+    /// sampler, or the fallback pair).
+    pub(crate) fn mesh_bind_group_full(
         &self,
         uniform_buffer: &wgpu::Buffer,
         flags_buffer: &wgpu::Buffer,
         env_view: &wgpu::TextureView,
         env_sampler: &wgpu::Sampler,
+        prefilter_views: [&wgpu::TextureView; 3],
+        spec_buffer: &wgpu::Buffer,
     ) -> wgpu::BindGroup {
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("umber_mesh_camera_bind_group"),
@@ -800,6 +849,26 @@ impl GpuContext {
                         size: None,
                     }),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(prefilter_views[0]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(prefilter_views[1]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(prefilter_views[2]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: spec_buffer,
+                        offset: 0,
+                        size: None,
+                    }),
+                },
             ],
         })
     }
@@ -807,13 +876,21 @@ impl GpuContext {
 
 /// GPU-resident mesh data for the viewport: vertex/index buffers plus the
 /// per-mesh camera uniform buffer, the environment-flag uniform buffer,
-/// and the combined bind group (camera + IBL set).
+/// the specular-tier uniform buffer, and the combined bind group
+/// (camera + IBL set + specular tier).
 pub struct MeshBuffers {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
     uniform_buffer: wgpu::Buffer,
     flags_buffer: wgpu::Buffer,
+    /// Roughness/metallic uniform (mesh-pass binding 7): v1 stand-ins
+    /// (see [`SpecParams`]), written by [`Self::set_spec_params`].
+    spec_buffer: wgpu::Buffer,
+    /// Currently bound environment (if any): retained so
+    /// [`Self::set_spec_params`] can rebuild the bind group without
+    /// dropping the map. Cloned handles — no GPU cost.
+    bound_env: Option<EnvIrradiance>,
     bind_group: wgpu::BindGroup,
     /// Duplicated-vertex wireframe buffer (Wave-4 item 7): 3 verts per
     /// triangle with barycentric corners, built once at upload from the
@@ -891,11 +968,24 @@ impl MeshBuffers {
             contents: bytemuck::bytes_of(&EnvFlags::procedural()),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let bind_group = gpu.mesh_bind_group(
+        // Specular-tier uniform at the v1 stand-in defaults (see
+        // `SpecParams`); `set_spec_params` overwrites it per mesh.
+        let spec_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("umber_mesh_spec_params_buffer"),
+            contents: bytemuck::bytes_of(&SpecParams::default()),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let bind_group = gpu.mesh_bind_group_full(
             &uniform_buffer,
             &flags_buffer,
             &gpu.fallback_env_view,
             &gpu.env_sampler,
+            [
+                &gpu.fallback_env_view,
+                &gpu.fallback_env_view,
+                &gpu.fallback_env_view,
+            ],
+            &spec_buffer,
         );
 
         let index_count = u32::try_from(mesh.indices.len())
@@ -929,10 +1019,43 @@ impl MeshBuffers {
             index_count,
             uniform_buffer,
             flags_buffer,
+            spec_buffer,
+            bound_env: None,
             bind_group,
             wire_buffer,
             wire_count,
         })
+    }
+
+    /// Rebuilds the group-0 bind group from the current flags + bound
+    /// environment + spec buffer. Shared by [`Self::set_environment`]
+    /// and [`Self::set_spec_params`] (disjoint field borrows — no
+    /// borrow of the whole `self`).
+    fn rebuild_bind_group(&mut self, gpu: &GpuContext) {
+        let (view, sampler) = match &self.bound_env {
+            Some(env) => (env.view(), env.sampler()),
+            None => (&gpu.fallback_env_view, &gpu.env_sampler),
+        };
+        let prefilter = match &self.bound_env {
+            Some(env) => [
+                env.prefilter_view(0),
+                env.prefilter_view(1),
+                env.prefilter_view(2),
+            ],
+            None => [
+                &gpu.fallback_env_view,
+                &gpu.fallback_env_view,
+                &gpu.fallback_env_view,
+            ],
+        };
+        self.bind_group = gpu.mesh_bind_group_full(
+            &self.uniform_buffer,
+            &self.flags_buffer,
+            view,
+            sampler,
+            prefilter,
+            &self.spec_buffer,
+        );
     }
 
     /// Swaps the bound environment: `Some(env)` samples the convolved
@@ -948,12 +1071,17 @@ impl MeshBuffers {
         };
         gpu.queue
             .write_buffer(&self.flags_buffer, 0, bytemuck::bytes_of(&flags));
-        let (view, sampler) = match env {
-            Some(env) => (env.view(), env.sampler()),
-            None => (&gpu.fallback_env_view, &gpu.env_sampler),
-        };
-        self.bind_group =
-            gpu.mesh_bind_group(&self.uniform_buffer, &self.flags_buffer, view, sampler);
+        self.bound_env = env.cloned();
+        self.rebuild_bind_group(gpu);
+    }
+
+    /// Sets the specular-tier roughness/metallic (mesh-pass binding 7).
+    /// Takes effect on the next [`Self::paint_callback`], like
+    /// [`Self::set_environment`]; the bound environment is preserved.
+    pub fn set_spec_params(&mut self, gpu: &GpuContext, params: SpecParams) {
+        gpu.queue
+            .write_buffer(&self.spec_buffer, 0, bytemuck::bytes_of(&params));
+        self.rebuild_bind_group(gpu);
     }
 
     /// Number of indices in this mesh's index buffer (3x the triangle count).
@@ -2317,8 +2445,28 @@ mod tests {
                     usage: wgpu::BufferUsages::UNIFORM,
                 });
             let mut masked = MeshBuffers::upload(&gpu, &mesh).expect("upload succeeds");
-            masked.bind_group =
-                gpu.mesh_bind_group(&masked.uniform_buffer, &flags, env.view(), env.sampler());
+            // The specular tier binds through the same full constructor
+            // (flag-gated like the irradiance map — flags=0 keeps it
+            // unsampled too).
+            let spec = gpu
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("umber_ibl_test_spec"),
+                    contents: bytemuck::bytes_of(&crate::ibl::SpecParams::default()),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+            masked.bind_group = gpu.mesh_bind_group_full(
+                &masked.uniform_buffer,
+                &flags,
+                env.view(),
+                env.sampler(),
+                [
+                    env.prefilter_view(0),
+                    env.prefilter_view(1),
+                    env.prefilter_view(2),
+                ],
+                &spec,
+            );
             let masked_bytes = render_mesh_offscreen(&gpu, &masked);
 
             assert_eq!(
@@ -2410,6 +2558,144 @@ mod tests {
                 plain, restored,
                 "unsetting the env must restore fallback bytes"
             );
+        }
+
+        /// Bright-half-space fixture for the specular tests: uniform
+        /// dim gray with radiance 0.3 over the whole +X half-space
+        /// (`d[0] > 0`), 0.05 elsewhere. A half-space (not a narrow
+        /// cap): the mirror direction must land DEEPLY inside
+        /// brightness so no texel-quantization wobble can flip it dim,
+        /// while the diffuse irradiance stays mid-range (this pass has
+        /// no tonemapper — a brighter fixture would saturate and hide
+        /// the specular delta).
+        fn half_space_image(width: u32, height: u32) -> Vec<f32> {
+            let mut pixels = vec![0.0f32; (width * height * 4) as usize];
+            for y in 0..height {
+                for x in 0..width {
+                    let u = (x as f32 + 0.5) / width as f32;
+                    let v = (y as f32 + 0.5) / height as f32;
+                    let d = crate::ibl::equirect_normal_cpu(u, v);
+                    let base = ((y * width + x) * 4) as usize;
+                    if d[0] > 0.0 {
+                        pixels[base..base + 4].copy_from_slice(&[0.3, 0.3, 0.3, 1.0]);
+                    } else {
+                        pixels[base..base + 4].copy_from_slice(&[0.05, 0.05, 0.05, 1.0]);
+                    }
+                }
+            }
+            pixels
+        }
+
+        /// SPECULAR ADDS ENERGY (wave-5 v1 test c): a mirror-ish
+        /// surface (rough 0, metal 1) whose reflection vector hits the
+        /// bright half-space renders BRIGHTER than the same scene with
+        /// specular-minimizing params (rough 1, metal 0).
+        ///
+        /// Setup: normal N=(√½, 0, √½) is sun-free (dot with +Y is 0)
+        /// and, with the v1 uniform view (+Z eye), reflects to exactly
+        /// +X — mid half-space — so the rough-0 prefilter returns the
+        /// 0.3 radiance. The diffuse component is IDENTICAL across
+        /// both renders (same env, same mesh — the spec params never
+        /// touch the diffuse path), so the delta is pure specular.
+        ///
+        /// # The margin (derived, not fudged)
+        ///
+        /// Mirror: 0.3 × (0.72 × 0.985 + 0.015) ≈ 0.217 → measured
+        /// +54 LSB (mirror=207, baseline=153). Baseline: dim prefilter
+        /// (≈0.175) × (0.04 × 0.452 − 0.002) ≈ 0.003 → sub-LSB by
+        /// construction, i.e. the baseline IS the diffuse-only render
+        /// within rounding. Neither render saturates (mirror total
+        /// ≈ 0.81). The ≥20 LSB bound is ~2.7× headroom under the
+        /// measured 54 LSB structural delta.
+        #[test]
+        fn specular_adds_energy_mirror() {
+            let Some((adapter, device, queue)) = try_request_device() else {
+                eprintln!("skipping specular_adds_energy_mirror: no wgpu adapter available");
+                return;
+            };
+            let gpu = GpuContext::new(
+                adapter,
+                device,
+                queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                None,
+            );
+            let s = std::f32::consts::FRAC_1_SQRT_2;
+            let mesh = fullscreen_mesh([s, 0.0, s]);
+            let mut buffers = MeshBuffers::upload(&gpu, &mesh).expect("upload succeeds");
+
+            const W: u32 = 64;
+            const H: u32 = 32;
+            let pixels = half_space_image(W, H);
+            let env = EnvIrradiance::from_equirect(
+                &gpu.device,
+                &gpu.queue,
+                bytemuck::cast_slice(&pixels),
+                W,
+                H,
+                EnvFormat::Rgba32Float,
+            )
+            .expect("convolve succeeds");
+            buffers.set_environment(&gpu, Some(&env));
+
+            buffers.set_spec_params(&gpu, SpecParams::new(0.0, 1.0));
+            let mirror = render_mesh_offscreen(&gpu, &buffers);
+            buffers.set_spec_params(&gpu, SpecParams::new(1.0, 0.0));
+            let baseline = render_mesh_offscreen(&gpu, &buffers);
+
+            // Every pixel shares the normal and the uniform view, so
+            // all 64 agree — read the center one.
+            let px = (4 * 8 + 4) * 4;
+            let (m, b) = (&mirror[px..px + 4], &baseline[px..px + 4]);
+            let delta = m[0] as i16 - b[0] as i16;
+            assert!(
+                delta >= 20,
+                "mirror must beat diffuse-only by ≥20 LSB in red: mirror={m:?} baseline={b:?}"
+            );
+        }
+
+        /// DIFFUSE REGRESSION (wave-5 v1 test d): the specular tier is
+        /// purely additive under the map flag, so with `env_flags = 0`
+        /// the diffuse term must be UNCHANGED at every rough/metal
+        /// setting — each renders the closed-form procedural golden
+        /// within the same ≤1-LSB unorm bound the pre-specular
+        /// fallback test pins. (The env-flag-1 arm's diffuse path is
+        /// textually untouched — the same `env` value flows into the
+        /// same `color` expression, specular is a separate `+` — and
+        /// the pre-existing IBL tests above pass without modification,
+        /// which is the env arm's regression proof.)
+        #[test]
+        fn fallback_diffuse_unchanged_across_spec_params() {
+            let Some((adapter, device, queue)) = try_request_device() else {
+                eprintln!(
+                    "skipping fallback_diffuse_unchanged_across_spec_params: no wgpu adapter available"
+                );
+                return;
+            };
+            let gpu = GpuContext::new(
+                adapter,
+                device,
+                queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                None,
+            );
+            let mesh = fullscreen_mesh([0.0, 0.0, 1.0]);
+            let mut buffers = MeshBuffers::upload(&gpu, &mesh).expect("upload succeeds");
+            let want = expected_procedural_byte([0.0, 0.0, 1.0]);
+            for (rough, metal) in [(0.0, 1.0), (1.0, 0.0), (0.0, 0.0), (1.0, 1.0), (0.5, 0.0)] {
+                buffers.set_spec_params(&gpu, SpecParams::new(rough, metal));
+                let bytes = render_mesh_offscreen(&gpu, &buffers);
+                assert_eq!(bytes.len(), 8 * 8 * 4);
+                for (i, px) in bytes.chunks_exact(4).enumerate() {
+                    for c in 0..4 {
+                        let diff = px[c].abs_diff(want[c]);
+                        assert!(
+                            diff <= 1,
+                            "rough={rough} metal={metal} pixel {i} ch{c}: got {px:?}, want {want:?}"
+                        );
+                    }
+                }
+            }
         }
     }
 }

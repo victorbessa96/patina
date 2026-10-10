@@ -4,10 +4,13 @@
 /// environment light: the procedural sky/ground irradiance by default,
 /// or a convolved environment map when one is bound (Wave-4 item 6 —
 /// see `crate::ibl`'s convention block for the equirect math shared
-/// with the convolve shader). Driven entirely by vertex normals (no
-/// textures yet — that lands with the paint engine). Matches the
-/// `Vertex` and `CameraUniform` layouts in `renderer.rs`; bindings 1–3
-/// are the IBL set (see `GpuContext`'s bind-group layout).
+/// with the convolve shader) plus the v1 specular IBL tier (three
+/// cone-scaled prefiltered levels × the analytic BRDF fit — see
+/// `crate::ibl::IBL_PREFILTER_SHADER`). Driven entirely by vertex
+/// normals (no textures yet — that lands with the paint engine).
+/// Matches the `Vertex` and `CameraUniform` layouts in `renderer.rs`;
+/// bindings 1–3 are the diffuse IBL set, 4–7 the specular tier (see
+/// `GpuContext`'s bind-group layout).
 pub const MESH_SHADER: &str = r#"
 struct Camera {
     view_proj: mat4x4<f32>,
@@ -35,6 +38,22 @@ struct EnvFlags {
     _pad2: u32,
 };
 @group(0) @binding(3) var<uniform> env_flags: EnvFlags;
+// Specular IBL tier (wave-5 v1): the three cone-scaled prefiltered
+// levels (`crate::ibl::PREFILTER_ROUGHNESS`) plus the roughness/
+// metallic uniform. The irradiance sampler (binding 2) is reused —
+// the prefiltered maps share its repeat-U/clamp-V filtering. All four
+// bindings are always populated (1x1 fallbacks when no environment is
+// loaded) so the pipeline layout never changes at runtime.
+@group(0) @binding(4) var prefilter0_tex: texture_2d<f32>;
+@group(0) @binding(5) var prefilter1_tex: texture_2d<f32>;
+@group(0) @binding(6) var prefilter2_tex: texture_2d<f32>;
+struct SpecParams {
+    roughness: f32,
+    metallic: f32,
+    _pad0: f32,
+    _pad1: f32,
+};
+@group(0) @binding(7) var<uniform> spec_params: SpecParams;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -87,6 +106,35 @@ fn environment_irradiance(n: vec3<f32>) -> vec3<f32> {
     return mix(GROUND_COLOR, SKY_COLOR, t);
 }
 
+/// Split-Sum factor two without the LUT: the analytic fit of the
+/// integrated GGX BRDF (Karis, "Real Shading in Unreal Engine 4",
+/// SIGGRAPH 2013 — the `EnvBRDFApprox` closed form mobile pipelines
+/// use in place of the 2D DFGLUT). Returns (scale, bias) with
+/// specular = F0 * scale + bias. Mirrored op-for-op by
+/// `crate::ibl::brdf_approx_cpu` (same literals, same order).
+fn env_brdf_approx(n_dot_v: f32, roughness: f32) -> vec2<f32> {
+    let c0 = vec4<f32>(-1.0, -0.0275, -0.572, 0.022);
+    let c1 = vec4<f32>(1.0, 0.0425, 1.04, -0.04);
+    let r = roughness * c0 + c1;
+    let a004 = min(r.x * r.x, exp2(-9.28 * n_dot_v)) * r.x + r.y;
+    return vec2<f32>(-1.04, 1.04) * a004 + r.zw;
+}
+
+/// Split-Sum factor one: cone-scaled prefiltered radiance at the
+/// reflection vector, linearly blending the three fixed roughness
+/// levels (0.0/0.5/1.0).
+fn prefiltered_env(r: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let uv = equirect_uv(r);
+    let p0 = textureSample(prefilter0_tex, irradiance_sampler, uv).rgb;
+    let p1 = textureSample(prefilter1_tex, irradiance_sampler, uv).rgb;
+    let p2 = textureSample(prefilter2_tex, irradiance_sampler, uv).rgb;
+    let clo = clamp(roughness, 0.0, 1.0);
+    if (clo < 0.5) {
+        return mix(p0, p1, clo * 2.0);
+    }
+    return mix(p1, p2, (clo - 0.5) * 2.0);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
@@ -95,7 +143,22 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let env = environment_irradiance(n);
     // Environment acts as the ambient term; the sun adds directional
     // energy on top, weighted so lit surfaces approach full brightness.
-    let color = BASE_COLOR * (env + diffuse * SUN_COLOR * 0.55);
+    var color = BASE_COLOR * (env + diffuse * SUN_COLOR * 0.55);
+    // Specular IBL tier (wave-5 v1): Split-Sum factor one x factor two,
+    // gated on the map flag — the diffuse term above is byte-untouched.
+    // v1 stand-ins: a uniform view (this pass has no world-pos varying,
+    // so camera.eye is the view source) and the SpecParams uniform
+    // (roughness/metallic until the OpenPBR wiring exposes them).
+    if (env_flags.flags == 1u) {
+        let to_view = normalize(camera.eye.xyz);
+        let reflect_dir = reflect(-to_view, n);
+        let n_dot_v = clamp(dot(n, to_view), 0.0, 1.0);
+        let rough = clamp(spec_params.roughness, 0.0, 1.0);
+        let metal = clamp(spec_params.metallic, 0.0, 1.0);
+        let f0 = mix(vec3<f32>(0.04), BASE_COLOR, metal);
+        let ab = env_brdf_approx(n_dot_v, rough);
+        color = color + prefiltered_env(reflect_dir, rough) * (f0 * ab.x + ab.y);
+    }
     return vec4<f32>(color, 1.0);
 }
 "#;

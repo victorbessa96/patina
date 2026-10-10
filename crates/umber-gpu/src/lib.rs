@@ -28,7 +28,7 @@ pub mod texture_display;
 pub mod tile_pool;
 
 pub use camera::{world_from_ndc, OrbitCamera};
-pub use ibl::{EnvFlags, EnvFormat, EnvIrradiance, IblError};
+pub use ibl::{EnvFlags, EnvFormat, EnvIrradiance, IblError, SpecParams};
 pub use paint::{Dab, DabBuffer, PaintCompositor, PaintError, PaintTarget};
 pub use paint_thread::{FrameStats, PaintThread, PaintThreadCommand};
 pub use tile_pool::{texel_within_tile, tile_for, TileId, TilePool, TILE_SIZE};
