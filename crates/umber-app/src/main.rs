@@ -324,7 +324,7 @@ impl UmberApp {
     /// viewport swap. Failures log; the current environment is kept.
     fn load_environment(&mut self) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter(&tr("shell.filter-environment"), &["png", "exr"])
+            .add_filter(tr("shell.filter-environment"), &["png", "exr"])
             .pick_file()
         else {
             return;
@@ -640,7 +640,7 @@ impl eframe::App for UmberApp {
 fn rfd_pick_mesh() -> Option<PathBuf> {
     rfd::FileDialog::new()
         .add_filter(
-            &tr("shell.filter-meshes"),
+            tr("shell.filter-meshes"),
             &["obj", "gltf", "glb", "fbx", "usda", "usd"],
         )
         .pick_file()
