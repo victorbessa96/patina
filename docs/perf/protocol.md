@@ -31,6 +31,33 @@ painting work so every new perf-relevant change ships with a number.
    `perf/baseline.json` checked in; a regression >10% on any budget
    fails the job.
 
+## The reference-scene bench (viewport row)
+
+`crates/umber-gpu/src/ref_scene.rs`, behind umber-gpu's `perf` feature:
+
+```
+UMBER_REF_SCENE_FRAMES=1000 UMBER_REF_SCENE_JSON=ref-scene.json \
+  cargo test -p umber-gpu --features perf --release ref_scene -- --nocapture
+```
+
+- Scene: 289-subdivision cube grid (1,002,252 tris, generator checked
+  in, deterministic) + four solid 4096² maps, drawn through the
+  viewport's own mesh-pass `draw` into a 1920×1080 sRGB + Depth32Float
+  offscreen target. 3 warm-up frames are not counted; the default is 120
+  measured frames, and recorded baselines use ≥ 1000 (the rule below).
+- The 4K set is **resident, unsampled**: the mesh pass has no texture
+  binding yet. Until it gains one, the number covers the 1M-tri half of
+  the budget plus the set's VRAM pressure, not texture sampling.
+- The test asserts only that the harness is correct: N frames timed, all
+  times non-zero, p50 ≤ p95 ≤ p99, and the mesh covers more than 2% of
+  the target (an empty render covers about 0%). It prints the P95 < 16.7ms verdict without failing on it.
+  The nightly job's >10% regression comparison is the gate.
+- Output: one `ref-scene baseline:` line, plus one `ref-scene json:` line
+  (`frames, mean_ms, p50_ms, p95_ms, p99_ms, tris` + adapter, device
+  type, backend). Set `UMBER_REF_SCENE_JSON` to also write the JSON to a
+  file. Record the adapter with every row, since lavapipe and the dev GPU
+  are separate baselines.
+
 ## Baselines (fill as instrumentation lands)
 
 | Date | Commit | Input→photon P95 | Dab drop @200Hz | Viewport P95 (ref scene) | Undo RAM @100 steps | Notes |

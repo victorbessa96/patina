@@ -20,3 +20,4 @@ profiling = { workspace = true }
 
 [features]
 gpu = ["pollster"]
+perf = ["gpu"]

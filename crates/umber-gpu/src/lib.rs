@@ -25,6 +25,12 @@ pub mod paint_thread;
 pub mod renderer;
 pub mod shaders;
 pub mod texture_display;
+
+/// The §12 reference-scene benchmark — `perf` feature only (the
+/// harness lives here, not the app, because it drives the renderer
+/// directly with no egui surface).
+#[cfg(feature = "perf")]
+pub mod ref_scene;
 pub mod tile_pool;
 
 pub use camera::{world_from_ndc, OrbitCamera};
