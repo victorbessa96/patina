@@ -23,6 +23,7 @@ mod graph_panel;
 mod paint_state;
 #[cfg(test)]
 mod perf_soak;
+mod tile_selection;
 mod uv_view;
 mod viewport;
 

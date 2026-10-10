@@ -190,10 +190,33 @@ pub fn bake_ao(
     size: u32,
     rays: u32,
 ) -> anyhow::Result<Vec<u8>> {
+    umber_bake::ao::bake_ao_mesh(device, queue, mesh, size, size, &ao_params(rays))
+        .context("ao bake")
+}
+
+/// [`bake_ao`] for one UDIM tile of a multi-tile mesh: AO over the
+/// tile's own UV window (`umber_bake::ao::bake_ao_tile` — the whole-mesh
+/// bake only rasterizes `[0, 1]`, i.e. tile 1001). Raw RGBA8, no
+/// dilation, like [`bake_ao`]. Errors when the tile owns no triangles
+/// (the bake core rejects the empty filtered mesh).
+pub fn bake_ao_tile(
+    device: &umber_gpu::WgpuDevice,
+    queue: &umber_gpu::WgpuQueue,
+    mesh: &umber_mesh::MeshData,
+    size: u32,
+    rays: u32,
+    tile: u16,
+) -> anyhow::Result<Vec<u8>> {
+    // `bake_ao_tile` swaps in the tile's window plane.
+    umber_bake::ao::bake_ao_tile(device, queue, mesh, size, size, &ao_params(rays), tile)
+        .with_context(|| format!("ao bake, tile {tile}"))
+}
+
+/// The AO params both entry points share: max_distance/bias per the
+/// bake tests' convention; the plane is unused by the mesh-fed path (the
+/// mesh's position map supplies ray origins).
+fn ao_params(rays: u32) -> umber_bake::AoBakeParams {
     let mut params = umber_bake::AoBakeParams::new(
-        // max_distance/bias per the bake tests' convention; the plane is
-        // unused by the mesh-fed path (the mesh's position map supplies
-        // ray origins).
         10.0,
         0.01,
         umber_bake::PlaneDesc::new(
@@ -204,7 +227,7 @@ pub fn bake_ao(
         ),
     );
     params.rays = rays;
-    umber_bake::ao::bake_ao_mesh(device, queue, mesh, size, size, &params).context("ao bake")
+    params
 }
 
 /// A flat tangent-space-up normal map (`[128, 128, 255, 255]` at every
@@ -245,11 +268,9 @@ pub fn bake_export_map_set(
 }
 
 /// [`bake_export_map_set`] for one UDIM tile of a multi-tile mesh: AO
-/// baked over the tile's own UV window (`umber_bake::ao::bake_ao_tile` —
-/// the whole-mesh bake only rasterizes `[0, 1]`, i.e. tile 1001) plus
-/// the flat-normal placeholder. Errors when the tile owns no triangles
-/// (the bake core rejects the empty filtered mesh) — callers skip
-/// geometry-less tiles first.
+/// baked over the tile's own UV window ([`bake_ao_tile`]) plus the
+/// flat-normal placeholder. Errors when the tile owns no triangles —
+/// callers skip geometry-less tiles first.
 pub fn bake_export_map_set_tile(
     device: &umber_gpu::WgpuDevice,
     queue: &umber_gpu::WgpuQueue,
@@ -258,21 +279,7 @@ pub fn bake_export_map_set_tile(
     rays: u32,
     tile: u16,
 ) -> anyhow::Result<umber_export::MapSet> {
-    let mut params = umber_bake::AoBakeParams::new(
-        // Same params as `bake_ao`; `bake_ao_tile` swaps in the tile's
-        // window plane.
-        10.0,
-        0.01,
-        umber_bake::PlaneDesc::new(
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [2.0, 2.0],
-        ),
-    );
-    params.rays = rays;
-    let ao = umber_bake::ao::bake_ao_tile(device, queue, mesh, size, size, &params, tile)
-        .with_context(|| format!("ao bake, tile {tile}"))?;
+    let ao = bake_ao_tile(device, queue, mesh, size, rays, tile)?;
     Ok(map_set_from(ao, size))
 }
 

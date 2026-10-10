@@ -88,6 +88,18 @@ pub fn triangles_for_tile(mesh: &MeshData, tile: u16) -> Vec<u32> {
         .collect()
 }
 
+/// The tiles `mesh` has geometry in: [`tile_of_triangle`]'s output,
+/// sorted ascending and deduplicated. An all-`[0, 1]` mesh yields
+/// `[1001]`; a mesh with no triangles yields `[]` (callers that need a
+/// tile anyway — the single-tile UI path — fall back to [`FIRST_TILE`]
+/// themselves). The Bakes/Export panels' tile lists are built from this.
+pub fn present_tiles(mesh: &MeshData) -> Vec<u16> {
+    let mut tiles = tile_of_triangle(mesh);
+    tiles.sort_unstable();
+    tiles.dedup();
+    tiles
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +186,45 @@ mod tests {
         assert_eq!(triangles_for_tile(&mesh, 1002), vec![1]);
         // No triangle lives in 1003: empty vec = no geometry (documented).
         assert_eq!(triangles_for_tile(&mesh, 1003), Vec::<u32>::new());
+    }
+
+    #[test]
+    fn present_tiles_is_sorted_unique() {
+        // Two-tile fixture: triangle 0 -> 1001, triangle 1 -> 1002.
+        let two = MeshData {
+            positions: vec![[0.0; 3]; 4],
+            normals: vec![[0.0; 3]; 4],
+            uvs: vec![[0.5, 0.5], [0.7, 0.5], [0.5, 0.7], [1.5, 0.5]],
+            indices: vec![0, 1, 2, 3, 1, 2],
+            material_names: vec!["m".into()],
+        };
+        assert_eq!(present_tiles(&two), vec![1001, 1002]);
+
+        // Out-of-order, repeated tiles: triangles map to 1011, 1001,
+        // 1011 (first-vertex UVs (0.5, 1.5), (0.5, 0.5), (0.5, 1.5)) —
+        // sorted + deduplicated to [1001, 1011].
+        let shuffled = MeshData {
+            positions: vec![[0.0; 3]; 2],
+            normals: vec![[0.0; 3]; 2],
+            uvs: vec![[0.5, 1.5], [0.5, 0.5]],
+            indices: vec![0, 1, 1, 1, 0, 0, 0, 1, 1],
+            material_names: vec!["m".into()],
+        };
+        assert_eq!(tile_of_triangle(&shuffled), vec![1011, 1001, 1011]);
+        assert_eq!(present_tiles(&shuffled), vec![1001, 1011]);
+
+        // Single-tile: every UV in [0, 1].
+        let single = quad_mesh(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        assert_eq!(present_tiles(&single), vec![1001]);
+
+        // No triangles: no tiles (not a defaulted 1001).
+        let empty = MeshData {
+            positions: vec![],
+            normals: vec![],
+            uvs: vec![],
+            indices: vec![],
+            material_names: vec![],
+        };
+        assert_eq!(present_tiles(&empty), Vec::<u16>::new());
     }
 }

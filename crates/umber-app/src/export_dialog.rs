@@ -22,6 +22,14 @@
 //! expanding to the tile's number. No session (or one tile) is the
 //! single-tile `[1001]` path, byte-identical to before.
 //!
+//! Slice 6 makes the tile badge interactive: per-tile checkboxes
+//! ([`TileSelection`], default every exportable tile) filter the planned
+//! tiles before anything bakes ([`selected_export_tiles`]); the badge
+//! counts the selected tiles. Single-tile exports show no checkboxes and
+//! always export `[1001]`. Known v1 wart: narrowing a multi-tile session
+//! to tile 1001 alone takes the lone-1001 path (whole-mesh AO, unsuffixed
+//! names — the driver's own single-tile rule in `umber-export`).
+//!
 //! V1 painted scope is Base Color ONLY (paint-per-channel compositing
 //! is a later slice): normal/AO keep their baked sources, and the
 //! dialog always shows which source feeds Base Color (the
@@ -45,6 +53,7 @@ use crate::bakes_panel;
 use crate::document::Document;
 use crate::graph_panel::GraphPanel;
 use crate::paint_state::PaintState;
+use crate::tile_selection::{MeshTilesCache, TileSelection};
 
 /// The four built-in engine presets the dialog can drive
 /// ([`umber_export::ExportPreset`]'s constructors).
@@ -202,6 +211,21 @@ pub fn plan_export_tiles(
         .partition(|tile| mesh_tiles.contains(tile))
 }
 
+/// The tiles an Export click hands the tiled driver, and the present
+/// tiles skipped for owning no mesh geometry: [`plan_export_tiles`]
+/// narrowed by the dialog's tile checkboxes (`selection`, resolved
+/// against the planned list so an unseen tile defaults to selected).
+/// A single planned tile is exported whatever the selection holds. Pure
+/// logic — the selection -> driver `tiles` mapping, testable headless.
+pub fn selected_export_tiles(
+    paint_tiles: Option<Vec<u16>>,
+    mesh_tiles: &[u16],
+    selection: &TileSelection,
+) -> (Vec<u16>, Vec<u16>) {
+    let (planned, skipped) = plan_export_tiles(paint_tiles, mesh_tiles);
+    (selection.resolve(&planned), skipped)
+}
+
 /// The badge's tile note beside the Base Color source: `Some("2 tiles")`
 /// for a multi-tile session, `None` for the single-tile case (the badge
 /// reads exactly as before).
@@ -273,11 +297,15 @@ pub struct ExportDialog {
     status: String,
     last_written: Vec<PathBuf>,
     last_skipped: Vec<SkippedOutput>,
+    /// Which exportable tiles an Export covers (default: all).
+    tiles: TileSelection,
+    /// The loaded mesh's present tiles, cached across frames.
+    mesh_tiles: MeshTilesCache,
 }
 
 impl ExportDialog {
     /// Creates the dialog writing to `output_dir` with the glTF
-    /// metal-rough preset selected.
+    /// metal-rough preset selected (and every exportable tile).
     pub fn new(output_dir: PathBuf) -> Self {
         Self {
             preset: PresetChoice::GltfMetalRough,
@@ -285,7 +313,16 @@ impl ExportDialog {
             status: String::from("No export yet."),
             last_written: Vec::new(),
             last_skipped: Vec::new(),
+            tiles: TileSelection::new(),
+            mesh_tiles: MeshTilesCache::default(),
         }
+    }
+
+    /// The tile checkboxes' state (test hook: the UI drives the same
+    /// `sync`/`set_selected` calls).
+    #[cfg(test)]
+    pub(crate) fn tiles_mut(&mut self) -> &mut TileSelection {
+        &mut self.tiles
     }
 
     /// The selected preset.
@@ -366,10 +403,25 @@ impl ExportDialog {
         // slice). The badge mirrors the driver's priority exactly via
         // the shared pick fn (painted live session wins over graph).
         // The tile note rides beside the source (UDIM: one file set per
-        // painted tile; single-tile sessions read exactly as before).
+        // selected tile; single-tile sessions read exactly as before).
+        // The checkboxes list the tiles the driver would export (painted
+        // tiles with mesh geometry) — only when there is a choice.
+        if let Some(mesh) = ctx.mesh {
+            let (exportable, _) = plan_export_tiles(
+                ctx.paint.map(PaintState::tiles_present),
+                self.mesh_tiles.get(mesh),
+            );
+            self.tiles.sync(&exportable);
+        }
+        if self.tiles.known_len() > 1 {
+            self.tiles.show(ui);
+            if self.tiles.nothing_selected() {
+                ui.label("Select at least one tile to export.");
+            }
+        }
         let tiles_note = ctx
             .paint
-            .and_then(|p| tile_badge(p.tiles_present().len()))
+            .and_then(|_| tile_badge(self.tiles.tiles().len()))
             .map(|tiles| format!(" [{tiles}]"))
             .unwrap_or_default();
         match prospective_base_source(
@@ -394,7 +446,7 @@ impl ExportDialog {
             }
         }
 
-        let enabled = self.can_export(mesh_loaded, gpu_ready);
+        let enabled = self.can_export(mesh_loaded, gpu_ready) && !self.tiles.nothing_selected();
         if ui
             .add_enabled(enabled, egui::Button::new("Export"))
             .clicked()
@@ -480,9 +532,11 @@ impl ExportDialog {
 
         // UDIM (slice 5): one map set per present paint tile. No session,
         // or a single-tile one, is the pre-UDIM `[1001]` path unchanged.
-        let (tiles, skipped_tiles) = plan_export_tiles(
+        // Slice 6: narrowed to the checked tiles before anything bakes.
+        let (tiles, skipped_tiles) = selected_export_tiles(
             paint.map(PaintState::tiles_present),
-            &umber_mesh::tile_of_triangle(mesh),
+            &umber_mesh::present_tiles(mesh),
+            &self.tiles,
         );
         // Only the lone-1001 export keeps the whole-mesh bake (whose
         // rasterized window IS tile 1001); any other tile bakes its own.
@@ -828,6 +882,85 @@ mod tests {
         assert_eq!(
             plan_export_tiles(Some(vec![1001, 1002, 1100]), &[1001, 1002]),
             (vec![1001, 1002], vec![1100])
+        );
+    }
+
+    #[test]
+    fn checked_tiles_are_the_drivers_tile_list() {
+        let mesh_tiles = [1001, 1002, 1011];
+        let paint = Some(vec![1001, 1002, 1011]);
+        let mut d = dialog();
+        // `show` syncs the checkboxes to the plan's exportable tiles.
+        let (exportable, _) = plan_export_tiles(paint.clone(), &mesh_tiles);
+        d.tiles_mut().sync(&exportable);
+        // Default: every exportable tile checked -> all exported.
+        assert_eq!(
+            selected_export_tiles(paint.clone(), &mesh_tiles, d.tiles_mut()),
+            (vec![1001, 1002, 1011], vec![])
+        );
+        assert_eq!(
+            tile_badge(d.tiles_mut().tiles().len()).as_deref(),
+            Some("3 tiles")
+        );
+        // Uncheck 1002: the driver receives exactly [1001, 1011].
+        d.tiles_mut().set_selected(1002, false);
+        assert_eq!(
+            selected_export_tiles(paint.clone(), &mesh_tiles, d.tiles_mut()),
+            (vec![1001, 1011], vec![])
+        );
+        assert_eq!(
+            tile_badge(d.tiles_mut().tiles().len()).as_deref(),
+            Some("2 tiles")
+        );
+        // A geometry-less painted tile stays reported as skipped and
+        // never appears as a checkbox (it was never exportable).
+        let (tiles, skipped) =
+            selected_export_tiles(Some(vec![1001, 1002, 1100]), &[1001, 1002], d.tiles_mut());
+        assert_eq!((tiles, skipped), (vec![1001], vec![1100]));
+    }
+
+    #[test]
+    fn a_tile_painted_after_the_last_sync_exports_by_default() {
+        let mut d = dialog();
+        d.tiles_mut().sync(&[1001, 1002]);
+        d.tiles_mut().set_selected(1001, false);
+        // 1003 appeared this frame (painted into) before the UI synced:
+        // it defaults to checked; the user's uncheck of 1001 holds.
+        assert_eq!(
+            selected_export_tiles(
+                Some(vec![1001, 1002, 1003]),
+                &[1001, 1002, 1003],
+                d.tiles_mut()
+            ),
+            (vec![1002, 1003], vec![])
+        );
+    }
+
+    #[test]
+    fn single_tile_export_list_is_1001_regardless_of_selection() {
+        // Regression: a single-tile mesh (or no paint session) exports
+        // [1001] with no checkboxes and no badge — exactly as before.
+        let single_mesh_tiles = [1001];
+        let mut d = dialog();
+        let (exportable, _) = plan_export_tiles(Some(vec![1001]), &single_mesh_tiles);
+        d.tiles_mut().sync(&exportable);
+        assert_eq!(d.tiles_mut().known_len(), 1);
+        // The lone tile can't be unchecked away.
+        d.tiles_mut().set_selected(1001, false);
+        assert!(!d.tiles_mut().nothing_selected());
+        assert_eq!(
+            selected_export_tiles(Some(vec![1001]), &single_mesh_tiles, d.tiles_mut()),
+            (vec![1001], vec![])
+        );
+        assert_eq!(
+            selected_export_tiles(None, &single_mesh_tiles, d.tiles_mut()),
+            (vec![1001], vec![])
+        );
+        assert_eq!(tile_badge(d.tiles_mut().tiles().len()), None);
+        // A fresh dialog (no sync yet) is already the single-tile list.
+        assert_eq!(
+            selected_export_tiles(None, &[1001, 1002], dialog().tiles_mut()),
+            (vec![1001], vec![])
         );
     }
 

@@ -19,9 +19,27 @@
 //! The AO bake itself lives in [`crate::bake_sources`], shared with the
 //! Export dialog (`export_dialog.rs`) so the two panels drive one GPU
 //! call instead of two copies of the same params.
+//!
+//! UDIM (wave-5 slice 6): a tile selector ([`TileSelection`]) over the
+//! mesh's present tiles ([`umber_mesh::present_tiles`]) picks which tiles
+//! a Bake covers ([`plan_bake`]). A single-tile (all-`[0, 1]`) mesh keeps
+//! the whole-mesh bakes and `<set>_<suffix>.png` names, byte-identical
+//! to before. A multi-tile mesh bakes AO per selected tile
+//! (`umber_bake::ao::bake_ao_tile`) to `<set>_<suffix>_<tile>.png` (the
+//! export driver's `_$udim` placement; `parse_mesh_map` does not parse
+//! the tile-suffixed stems). V1 has no per-tile entry point for
+//! curvature/thickness/position: their whole-mesh bakes rasterize only
+//! `[0, 1]` — tile 1001's window — so they bake for tile 1001 only and
+//! are reported skipped for every other selected tile, never written
+//! under the wrong tile's name. The per-tile × per-map checklist matrix
+//! and the remaining per-tile bakers are wave-6 work.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+use umber_mesh::FIRST_TILE;
+
+use crate::tile_selection::{MeshTilesCache, TileSelection};
 
 /// Bake resolutions offered by the panel (square targets).
 pub const SUPPORTED_RESOLUTIONS: &[u32] = &[128, 256, 512, 1024, 2048];
@@ -91,6 +109,107 @@ pub struct BakeRecord {
     pub elapsed_ms: u128,
 }
 
+/// Which mesh one bake job rasterizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BakeSource {
+    /// The whole mesh through the map's original entry point (rasterizes
+    /// UV `[0, 1]`, i.e. tile 1001).
+    WholeMesh,
+    /// The job's tile window (`umber_bake::ao::bake_ao_tile`; AO only in v1).
+    Tile,
+}
+
+/// One map bake for one tile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BakeJob {
+    /// Which map.
+    pub selection: BakeSelection,
+    /// Which UDIM tile the output belongs to.
+    pub tile: u16,
+    /// How it is baked.
+    pub source: BakeSource,
+}
+
+/// What a Bake click runs: the jobs in order, whether outputs carry the
+/// tile in their names, and the (tile, map) pairs v1 cannot bake.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BakePlan {
+    /// The bakes to run, tile-major then map order.
+    pub jobs: Vec<BakeJob>,
+    /// Multi-tile mesh: outputs are named `<set>_<suffix>_<tile>.png`.
+    pub tiled: bool,
+    /// Selected (tile, map) pairs with no v1 per-tile baker.
+    pub skipped: Vec<(u16, BakeSelection)>,
+}
+
+/// Plans a Bake over the checked `maps` (pure logic). `present` is the
+/// mesh's present tiles; `tiles` the selected list
+/// ([`TileSelection::resolve`]).
+///
+/// - Single-tile mesh (`present` is `[1001]`, or empty): every map bakes
+///   whole-mesh, untiled names — the pre-UDIM behavior exactly
+///   (`tiles` is necessarily `[1001]` or empty there and is ignored).
+/// - Otherwise, per selected tile: AO bakes over the tile's window; the
+///   other maps bake whole-mesh for tile 1001 (their `[0, 1]` raster IS
+///   tile 1001) and are skipped for any other tile.
+pub fn plan_bake(maps: &[BakeSelection], present: &[u16], tiles: &[u16]) -> BakePlan {
+    let single = present.is_empty() || present == [FIRST_TILE];
+    if single {
+        return BakePlan {
+            jobs: maps
+                .iter()
+                .map(|selection| BakeJob {
+                    selection: *selection,
+                    tile: FIRST_TILE,
+                    source: BakeSource::WholeMesh,
+                })
+                .collect(),
+            tiled: false,
+            skipped: Vec::new(),
+        };
+    }
+    let mut jobs = Vec::new();
+    let mut skipped = Vec::new();
+    for tile in tiles {
+        for selection in maps {
+            let source = match selection {
+                BakeSelection::Ao => BakeSource::Tile,
+                _ if *tile == FIRST_TILE => BakeSource::WholeMesh,
+                _ => {
+                    skipped.push((*tile, *selection));
+                    continue;
+                }
+            };
+            jobs.push(BakeJob {
+                selection: *selection,
+                tile: *tile,
+                source,
+            });
+        }
+    }
+    BakePlan {
+        jobs,
+        tiled: true,
+        skipped,
+    }
+}
+
+/// The status-line note for [`BakePlan::skipped`] (`None` when nothing
+/// was skipped).
+pub fn skipped_note(skipped: &[(u16, BakeSelection)]) -> Option<String> {
+    if skipped.is_empty() {
+        return None;
+    }
+    let parts: Vec<String> = skipped
+        .iter()
+        .map(|(tile, selection)| format!("{} {tile}", selection.label()))
+        .collect();
+    Some(format!(
+        "skipped (v1 bakes only AO per tile; other maps tile 1001 only): {}",
+        parts.join(", ")
+    ))
+}
+
 /// What [`BakesPanel::show`] needs from the app each frame.
 ///
 /// `gpu`/`mesh` are `Option` so the panel can gate itself: `None` mesh
@@ -121,11 +240,16 @@ pub struct BakesPanel {
     output_dir: PathBuf,
     status: String,
     last_records: Vec<BakeRecord>,
+    /// Which present tiles a Bake covers (default: all present).
+    tiles: TileSelection,
+    /// The loaded mesh's present tiles, cached across frames.
+    mesh_tiles: MeshTilesCache,
 }
 
 impl BakesPanel {
     /// Creates the panel writing to `output_dir` with default settings
-    /// (512², all four maps, 16 rays, 16 dilation iterations).
+    /// (512², all four maps, 16 rays, 16 dilation iterations, every
+    /// present tile).
     pub fn new(output_dir: PathBuf) -> Self {
         Self {
             resolution: DEFAULT_RESOLUTION,
@@ -138,7 +262,37 @@ impl BakesPanel {
             output_dir,
             status: String::from("No bake yet."),
             last_records: Vec::new(),
+            tiles: TileSelection::new(),
+            mesh_tiles: MeshTilesCache::default(),
         }
+    }
+
+    /// The tile selector's state (test hook: the UI's checkboxes drive
+    /// the same `sync`/`set_selected` calls).
+    #[cfg(test)]
+    pub(crate) fn tiles_mut(&mut self) -> &mut TileSelection {
+        &mut self.tiles
+    }
+
+    /// What a Bake click would run over a mesh whose present tiles are
+    /// `present`: the checked maps × the selected tiles ([`plan_bake`]).
+    pub fn bake_plan(&self, present: &[u16]) -> BakePlan {
+        plan_bake(&self.selected_maps(), present, &self.tiles.resolve(present))
+    }
+
+    /// The tile-suffixed output path a multi-tile bake writes:
+    /// `<dir>/<set>_<suffix>_<tile>.png` (the export driver's `_$udim`
+    /// placement before the extension).
+    pub fn tiled_output_path_for(
+        &self,
+        texture_set: &str,
+        selection: BakeSelection,
+        tile: u16,
+    ) -> PathBuf {
+        self.output_dir.join(format!(
+            "{texture_set}_{}_{tile}.png",
+            selection.mesh_map_kind().suffix()
+        ))
     }
 
     /// The output directory baked PNGs are written to.
@@ -285,6 +439,13 @@ impl BakesPanel {
         ui.checkbox(&mut self.bake_thickness, BakeSelection::Thickness.label());
         ui.checkbox(&mut self.bake_position, BakeSelection::Position.label());
 
+        // UDIM tile selector: which present tiles the Bake covers (a
+        // single-tile mesh shows `Tile 1001` with nothing to choose).
+        if let Some(mesh) = ctx.mesh {
+            self.tiles.sync(self.mesh_tiles.get(mesh));
+        }
+        self.tiles.show(ui);
+
         ui.add(egui::Slider::new(&mut self.rays, MIN_RAYS..=MAX_RAYS).text("Rays"));
         ui.add(
             egui::Slider::new(&mut self.dilation_iterations, 0..=MAX_DILATION_ITERATIONS)
@@ -303,7 +464,10 @@ impl BakesPanel {
         if !self.any_selected() {
             ui.label("Select at least one map to bake.");
         }
-        let enabled = self.can_bake(mesh_loaded, gpu_ready);
+        if self.tiles.nothing_selected() {
+            ui.label("Select at least one tile to bake.");
+        }
+        let enabled = self.can_bake(mesh_loaded, gpu_ready) && !self.tiles.nothing_selected();
         if ui.add_enabled(enabled, egui::Button::new("Bake")).clicked() {
             if let (Some(gpu), Some(mesh)) = (ctx.gpu, ctx.mesh) {
                 self.bake_now(&gpu.device, &gpu.queue, mesh, ctx.mesh_path);
@@ -314,9 +478,9 @@ impl BakesPanel {
         ui.label(self.status.clone());
     }
 
-    /// Runs every checked bake synchronously and records the outcome in
-    /// `status`/`last_records` (never propagates: the panel reports
-    /// failures as a status line, not a crash).
+    /// Runs every checked bake over the selected tiles synchronously and
+    /// records the outcome in `status`/`last_records` (never propagates:
+    /// the panel reports failures as a status line, not a crash).
     fn bake_now(
         &mut self,
         device: &umber_gpu::WgpuDevice,
@@ -324,7 +488,9 @@ impl BakesPanel {
         mesh: &umber_mesh::MeshData,
         mesh_path: Option<&Path>,
     ) {
-        match self.run_all(device, queue, mesh, mesh_path) {
+        let present = self.mesh_tiles.get(mesh).to_vec();
+        let plan = self.bake_plan(&present);
+        match self.run_all(device, queue, mesh, mesh_path, &plan) {
             Ok(records) => {
                 let total: u128 = records.iter().map(|r| r.elapsed_ms).sum();
                 let parts: Vec<String> = records
@@ -339,11 +505,15 @@ impl BakesPanel {
                     })
                     .collect();
                 let noun = if records.len() == 1 { "map" } else { "maps" };
-                self.status = format!(
+                let mut status = format!(
                     "Baked {} {noun} in {total} ms: {}",
                     records.len(),
                     parts.join(", ")
                 );
+                if let Some(note) = skipped_note(&plan.skipped) {
+                    status.push_str(&format!(" — {note}"));
+                }
+                self.status = status;
                 self.last_records = records;
             }
             Err(err) => {
@@ -353,16 +523,18 @@ impl BakesPanel {
         }
     }
 
-    /// The synchronous bake driver: one mesh-fed bake per checked map,
-    /// each followed by the dilation post-pass, written as PNG via the
-    /// mesh-map convention. Shared with `bake_now`; `Result`-typed so
-    /// failures carry context instead of unwrapping.
+    /// The synchronous bake driver: one mesh-fed bake per planned job
+    /// ([`plan_bake`]), each followed by the dilation post-pass, written
+    /// as PNG via the mesh-map convention (tile-suffixed when the plan is
+    /// tiled). Shared with `bake_now`; `Result`-typed so failures carry
+    /// context instead of unwrapping.
     fn run_all(
         &self,
         device: &umber_gpu::WgpuDevice,
         queue: &umber_gpu::WgpuQueue,
         mesh: &umber_mesh::MeshData,
         mesh_path: Option<&Path>,
+        plan: &BakePlan,
     ) -> anyhow::Result<Vec<BakeRecord>> {
         use anyhow::Context as _;
 
@@ -372,14 +544,24 @@ impl BakesPanel {
         let dilate = umber_bake::DilateParams::new(self.dilation_iterations);
         let mut records = Vec::new();
 
-        for selection in self.selected_maps() {
+        for job in &plan.jobs {
+            let selection = job.selection;
             let started = Instant::now();
+            // `plan_bake` routes only AO to `BakeSource::Tile`; every
+            // other map's job is a whole-mesh bake.
             let bytes: Vec<u8> = match selection {
                 BakeSelection::Ao => {
                     // Shared with the Export dialog (`bake_sources::bake_ao`)
                     // — this panel dilates afterward; the export path uses
                     // the raw bake directly (see `bake_sources` docs).
-                    let raw = crate::bake_sources::bake_ao(device, queue, mesh, size, self.rays)?;
+                    let raw = match job.source {
+                        BakeSource::WholeMesh => {
+                            crate::bake_sources::bake_ao(device, queue, mesh, size, self.rays)?
+                        }
+                        BakeSource::Tile => crate::bake_sources::bake_ao_tile(
+                            device, queue, mesh, size, self.rays, job.tile,
+                        )?,
+                    };
                     umber_bake::dilation::dilate_map(device, queue, &raw, size, size, &dilate)
                         .context("ao dilation")?
                 }
@@ -421,7 +603,11 @@ impl BakesPanel {
                         .context("position dilation")?
                 }
             };
-            let path = self.output_path_for(&set, selection);
+            let path = if plan.tiled {
+                self.tiled_output_path_for(&set, selection, job.tile)
+            } else {
+                self.output_path_for(&set, selection)
+            };
             umber_export::png::write_png(
                 &path,
                 size,
@@ -625,6 +811,155 @@ mod tests {
         assert_eq!(out[3], 255);
         assert_eq!(&out[8..12], &[0, 0, 0, 0]);
         assert_eq!(out[15], 255);
+    }
+
+    /// The udim.rs two-tile fixture: triangle 0 -> 1001, triangle 1 -> 1002.
+    fn two_tile_mesh() -> umber_mesh::MeshData {
+        umber_mesh::MeshData {
+            positions: vec![[0.0; 3]; 4],
+            normals: vec![[0.0; 3]; 4],
+            uvs: vec![[0.5, 0.5], [0.7, 0.5], [0.5, 0.7], [1.5, 0.5]],
+            indices: vec![0, 1, 2, 3, 1, 2],
+            material_names: vec!["m".into()],
+        }
+    }
+
+    fn job(selection: BakeSelection, tile: u16, source: BakeSource) -> BakeJob {
+        BakeJob {
+            selection,
+            tile,
+            source,
+        }
+    }
+
+    #[test]
+    fn fresh_panel_selects_every_present_tile() {
+        let present = umber_mesh::present_tiles(&two_tile_mesh());
+        assert_eq!(present, vec![1001, 1002]);
+        let mut p = panel();
+        // `show` syncs the selector from the mesh each frame.
+        p.tiles_mut().sync(&present);
+        assert_eq!(
+            p.tiles_mut().selected(),
+            &present
+                .iter()
+                .copied()
+                .collect::<std::collections::BTreeSet<u16>>()
+        );
+        let plan = p.bake_plan(&present);
+        let tiles: Vec<u16> = plan.jobs.iter().map(|j| j.tile).collect();
+        // AO covers both tiles; curvature/thickness/position bake whole-
+        // mesh for 1001 and are skipped (named) for 1002.
+        assert_eq!(tiles, vec![1001, 1001, 1001, 1001, 1002]);
+        assert!(plan.tiled);
+    }
+
+    #[test]
+    fn deselecting_a_tile_shrinks_the_bake_list() {
+        let present = [1001, 1002];
+        let mut p = panel();
+        p.tiles_mut().sync(&present);
+        p.tiles_mut().set_selected(1001, false);
+        let plan = p.bake_plan(&present);
+        // Only tile 1002 remains: AO per tile; the three whole-mesh maps
+        // have no 1002 baker in v1 and are reported, not mis-written.
+        assert_eq!(
+            plan.jobs,
+            vec![job(BakeSelection::Ao, 1002, BakeSource::Tile)]
+        );
+        assert_eq!(
+            plan.skipped,
+            vec![
+                (1002, BakeSelection::Curvature),
+                (1002, BakeSelection::Thickness),
+                (1002, BakeSelection::Position),
+            ]
+        );
+        assert!(plan.tiled);
+    }
+
+    #[test]
+    fn multi_tile_plan_is_tile_major_with_ao_per_tile() {
+        let maps = [BakeSelection::Ao, BakeSelection::Curvature];
+        let plan = plan_bake(&maps, &[1001, 1002], &[1001, 1002]);
+        assert_eq!(
+            plan.jobs,
+            vec![
+                // Tile 1001 AO goes through the tile window too (multi-
+                // tile mesh: the whole-mesh AO would also see 1002's
+                // triangles clipped at the [0, 1] edge).
+                job(BakeSelection::Ao, 1001, BakeSource::Tile),
+                job(BakeSelection::Curvature, 1001, BakeSource::WholeMesh),
+                job(BakeSelection::Ao, 1002, BakeSource::Tile),
+            ]
+        );
+        assert_eq!(plan.skipped, vec![(1002, BakeSelection::Curvature)]);
+        // A mesh living only in 1002 is "multi-tile" for naming: its
+        // outputs must never carry the untiled (= 1001) name.
+        let lone = plan_bake(&maps, &[1002], &[1002]);
+        assert!(lone.tiled);
+        assert_eq!(
+            lone.jobs,
+            vec![job(BakeSelection::Ao, 1002, BakeSource::Tile)]
+        );
+        // Nothing selected: nothing baked.
+        assert!(plan_bake(&maps, &[1001, 1002], &[]).jobs.is_empty());
+    }
+
+    #[test]
+    fn single_tile_mesh_plan_is_the_pre_udim_bake() {
+        // Regression: an all-[0, 1] mesh bakes every checked map whole-
+        // mesh with untiled names — exactly the pre-selector behavior.
+        let single = umber_mesh::MeshData {
+            positions: vec![[0.0; 3]; 3],
+            normals: vec![[0.0; 3]; 3],
+            uvs: vec![[0.1, 0.1], [0.9, 0.1], [0.1, 0.9]],
+            indices: vec![0, 1, 2],
+            material_names: vec!["m".into()],
+        };
+        let present = umber_mesh::present_tiles(&single);
+        assert_eq!(present, vec![1001]);
+        let mut p = panel();
+        p.tiles_mut().sync(&present);
+        // The selector renders one tile, and it can't be unchecked away.
+        assert_eq!(p.tiles_mut().known(), &[1001]);
+        p.tiles_mut().set_selected(1001, false);
+        assert!(!p.tiles_mut().nothing_selected());
+        assert_eq!(p.tiles_mut().tiles(), vec![1001]);
+        let plan = p.bake_plan(&present);
+        let expected: Vec<BakeJob> = BakeSelection::ALL
+            .into_iter()
+            .map(|s| job(s, 1001, BakeSource::WholeMesh))
+            .collect();
+        assert_eq!(plan.jobs, expected);
+        assert!(!plan.tiled);
+        assert!(plan.skipped.is_empty());
+        // An empty mesh (no tiles) takes the same path: the bake core
+        // reports the empty mesh, as before.
+        assert_eq!(p.bake_plan(&[]).jobs, expected);
+    }
+
+    #[test]
+    fn tiled_output_paths_suffix_the_tile() {
+        let p = panel();
+        assert_eq!(
+            p.tiled_output_path_for("Sword", BakeSelection::Ao, 1002),
+            Path::new("/tmp/umber-bakes-test").join("Sword_ambient_occlusion_1002.png")
+        );
+        assert_eq!(
+            p.tiled_output_path_for("Sword", BakeSelection::Curvature, 1001),
+            Path::new("/tmp/umber-bakes-test").join("Sword_curvature_1001.png")
+        );
+    }
+
+    #[test]
+    fn skipped_note_names_each_tile_and_map() {
+        assert_eq!(skipped_note(&[]), None);
+        assert_eq!(
+            skipped_note(&[(1002, BakeSelection::Curvature), (1011, BakeSelection::Position)])
+                .as_deref(),
+            Some("skipped (v1 bakes only AO per tile; other maps tile 1001 only): Curvature 1002, Position 1011")
+        );
     }
 
     #[test]

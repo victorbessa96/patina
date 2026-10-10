@@ -25,7 +25,7 @@ pub use mesh_maps::{
 };
 pub use overlay::{wire_vertices_from_indices, WireVertex};
 pub use raycast::{ray_intersect, uv_at, RayHit};
-pub use udim::{tile_of_triangle, tile_of_uv, triangles_for_tile, FIRST_TILE};
+pub use udim::{present_tiles, tile_of_triangle, tile_of_uv, triangles_for_tile, FIRST_TILE};
 
 /// Interleaved mesh data as imported, before any GPU upload.
 #[derive(Debug, Clone, Default, PartialEq)]
