@@ -16,6 +16,7 @@
 //! evaluation, dirty-aware cached re-evaluation).
 
 pub mod eval;
+pub mod mtlx;
 pub mod topo;
 pub mod value;
 
