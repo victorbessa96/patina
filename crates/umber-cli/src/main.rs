@@ -7,14 +7,16 @@
 //! implemented baker, written with the `TextureSetName_map`
 //! convention — the automation path over the bake engine). Wave 6:
 //! `batch` — a JSON recipe scripting the commands above (see
-//! [`batch`]).
+//! [`batch`]). Wave 6 (AI hook): `agent` — a stdin/stdout JSONL
+//! session over the same step vocabulary (see [`agent`]).
 
+mod agent;
 mod batch;
 
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
@@ -25,8 +27,9 @@ fn main() -> Result<()> {
         Some("bake-all") => bake_all_cmd(&args[1..]),
         Some("export") => export_cmd(&args[1..]),
         Some("batch") => batch::batch_cmd(&args[1..]),
+        Some("agent") => agent::agent_cmd(&args[1..]),
         Some(other) => Err(anyhow::anyhow!(
-            "unknown command: {other}\nusage: umber-cli <inspect|bake-ao|bake-all|export|batch> ..."
+            "unknown command: {other}\nusage: umber-cli <inspect|bake-ao|bake-all|export|batch|agent> ..."
         )),
         None => {
             println!("umber-cli v{} (wave-6)", env!("CARGO_PKG_VERSION"));
@@ -35,6 +38,7 @@ fn main() -> Result<()> {
             println!("          bake-all <mesh-file> <out-dir> [--size N] [--rays N] [--dilate N]");
             println!("          export <mesh-file> <out-dir> --preset <gltf|unreal|unity|blender> [--size N] [--rays N] [--tile UDIM]...");
             println!("          batch <recipe.json>");
+            println!("          agent   (JSONL steps on stdin, one JSON result line each on stdout)");
             Ok(())
         }
     }
@@ -63,6 +67,38 @@ fn inspect_mesh(path: &Path) -> Result<umber_mesh::MeshData> {
         println!("bounds max:       {:?}", max);
     }
     Ok(mesh)
+}
+
+/// The structured mesh summary: `inspect`'s fields plus the present
+/// UDIM tiles and the texture-set name. The agent session's `load` /
+/// `state` / `inspect` steps answer with it. It never prints, because
+/// the agent's stdout carries only JSON.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct MeshSummary {
+    file: PathBuf,
+    vertices: usize,
+    triangles: usize,
+    uv_entries: usize,
+    materials: usize,
+    /// `[min, max]`; `null` for a mesh with no positions.
+    bounds: Option<[[f32; 3]; 2]>,
+    texture_set: String,
+    tiles: Vec<u16>,
+}
+
+fn mesh_summary(path: &Path, mesh: &umber_mesh::MeshData) -> MeshSummary {
+    MeshSummary {
+        file: path.to_path_buf(),
+        vertices: mesh.vertex_count(),
+        triangles: mesh.triangle_count(),
+        uv_entries: mesh.uvs.len(),
+        materials: mesh.material_names.len(),
+        bounds: mesh
+            .bounds()
+            .map(|(min, max)| [min.to_array(), max.to_array()]),
+        texture_set: umber_mesh::texture_set_name(path, mesh),
+        tiles: present_tiles(mesh),
+    }
 }
 
 /// Size/ray/dilate flag parsing shared by the bake commands.
@@ -278,11 +314,28 @@ fn run_bake(
     let mesh = umber_mesh::load(mesh_path)?;
     let ctx = bake_context()?;
     let set = umber_mesh::texture_set_name(mesh_path, &mesh);
-    std::fs::create_dir_all(out_dir)?;
+    let written = bake_mesh_maps(&ctx, &mesh, &set, out_dir, flags, maps, None)?;
+    Ok((set, written))
+}
 
+/// [`run_bake`]'s body over an already-loaded mesh (the agent session
+/// bakes the mesh it holds). Writes `maps` into `out_dir`, creating it
+/// if absent. Without `tile` the files are named `<set>_<map>.png`.
+/// With `tile` they are named `<set>_<map>_<tile>.png`, the same tiled
+/// naming export uses, so per-tile bakes never overwrite each other.
+fn bake_mesh_maps(
+    ctx: &BakeContext,
+    mesh: &umber_mesh::MeshData,
+    set: &str,
+    out_dir: &Path,
+    flags: &BakeFlags,
+    maps: &[BakeMap],
+    tile: Option<u16>,
+) -> Result<Vec<PathBuf>> {
+    std::fs::create_dir_all(out_dir)?;
     let mut written = Vec::with_capacity(maps.len());
     for &map in maps {
-        let data = bake_map(&ctx, &mesh, map, flags)?;
+        let data = bake_map(ctx, mesh, map, flags)?;
         let data = if flags.dilate > 0 {
             umber_bake::dilation::dilate_map(
                 &ctx.device,
@@ -297,11 +350,14 @@ fn run_bake(
         } else {
             data
         };
-        let path = umber_mesh::format_mesh_map(out_dir, &set, map.kind(), "png");
+        let path = match tile {
+            None => umber_mesh::format_mesh_map(out_dir, set, map.kind(), "png"),
+            Some(tile) => out_dir.join(format!("{set}_{}_{tile}.png", map.kind().suffix())),
+        };
         umber_export::png::write_png(&path, flags.size, flags.size, &data, map.transfer())?;
         written.push(path);
     }
-    Ok((set, written))
+    Ok(written)
 }
 
 /// Bakes one map as RGBA8 (`flags.size` square; alpha = coverage).
@@ -651,6 +707,7 @@ fn export_cmd(args: &[String]) -> Result<()> {
         &preset_name,
         &flags,
         &requested_tiles,
+        &mut print_skipped,
     )?;
     for path in &written {
         println!("wrote {}", path.display());
@@ -660,6 +717,13 @@ fn export_cmd(args: &[String]) -> Result<()> {
         written.len()
     );
     Ok(())
+}
+
+/// How `export` and the batch `export` step report a preset output that
+/// [`export_mesh`] skipped. These are stdout lines, so the agent session
+/// passes its own collector instead.
+fn print_skipped(filename: &str) {
+    println!("skipped {filename} (needs maps not baked headless)");
 }
 
 /// The export preset named `name` (the `--preset` / recipe values).
@@ -680,19 +744,47 @@ fn preset_by_name(name: &str) -> Result<umber_export::ExportPreset> {
 /// The export pipeline body shared by `export` and the batch `export`
 /// step: bakes the P0 maps per tile, packs them through the preset
 /// named `preset_name`, writes into `out_dir`. `requested_tiles` empty =
-/// every present tile. Returns the written paths and the exported tiles.
+/// every present tile. Every preset output skipped because it needs a
+/// map the headless path doesn't bake is passed to `on_skip` (its
+/// filename template). Returns the written paths and the exported tiles.
 fn run_export(
     mesh_path: &Path,
     out_dir: &Path,
     preset_name: &str,
     flags: &BakeFlags,
     requested_tiles: &[u16],
+    on_skip: &mut dyn FnMut(&str),
+) -> Result<(Vec<PathBuf>, Vec<u16>)> {
+    // Fail fast on a bad preset, before the mesh load.
+    preset_by_name(preset_name)?;
+    let mesh = umber_mesh::load(mesh_path)?;
+    export_mesh(
+        mesh_path,
+        &mesh,
+        out_dir,
+        preset_name,
+        flags,
+        requested_tiles,
+        on_skip,
+    )
+}
+
+/// [`run_export`]'s body over an already-loaded mesh (the agent session
+/// exports the mesh it holds). `mesh_path` supplies the texture-set name
+/// and the `$mesh` token.
+fn export_mesh(
+    mesh_path: &Path,
+    mesh: &umber_mesh::MeshData,
+    out_dir: &Path,
+    preset_name: &str,
+    flags: &BakeFlags,
+    requested_tiles: &[u16],
+    on_skip: &mut dyn FnMut(&str),
 ) -> Result<(Vec<PathBuf>, Vec<u16>)> {
     let preset = preset_by_name(preset_name)?;
-    let mesh = umber_mesh::load(mesh_path)?;
     let ctx = bake_context()?;
-    let set_name = umber_mesh::texture_set_name(mesh_path, &mesh);
-    let present = present_tiles(&mesh);
+    let set_name = umber_mesh::texture_set_name(mesh_path, mesh);
+    let present = present_tiles(mesh);
     let tiles = select_tiles(requested_tiles, &present)?;
     // The pre-UDIM path: a mesh living only in tile 1001 bakes whole.
     let whole_mesh = present == [umber_mesh::FIRST_TILE];
@@ -702,7 +794,7 @@ fn run_export(
         height: flags.size,
     };
     let position_f32 =
-        umber_bake::position::bake_position_map(&ctx.device, &ctx.queue, &mesh, &position_params)?;
+        umber_bake::position::bake_position_map(&ctx.device, &ctx.queue, mesh, &position_params)?;
     let position = encode_position_rgba8(&position_f32);
     let _ = position; // position joins when a preset references it
 
@@ -718,9 +810,9 @@ fn run_export(
         // [0, 1] (the documented filter + unchanged-core bake pattern).
         let filtered;
         let tile_mesh = if whole_mesh {
-            &mesh
+            mesh
         } else {
-            filtered = umber_bake::ao::filter_mesh_for_tile(&mesh, tile);
+            filtered = umber_bake::ao::filter_mesh_for_tile(mesh, tile);
             &filtered
         };
         // Bake the union of the preset's map kinds (data maps as linear
@@ -756,10 +848,7 @@ fn run_export(
         .collect();
     for skipped in &full_preset.outputs {
         if !filtered_outputs.contains(skipped) {
-            println!(
-                "skipped {} (needs maps not baked headless)",
-                skipped.filename
-            );
+            on_skip(&skipped.filename);
         }
     }
     let preset = umber_export::ExportPreset {

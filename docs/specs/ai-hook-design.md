@@ -53,6 +53,25 @@ The async-bake integration reuses the merged worker (7bf6140) —
 the agent polls instead of the panel polling; the SAME job
 machinery, a different poller.
 
+**As built (amended):** the worker lives in umber-app, and umber-cli
+does not and should not depend on it (that would pull egui into the
+headless binary). The session therefore owns a minimal CLI-local
+job: one spawned thread, a `JoinHandle`, and a shared status
+(pending → running → done{texture_set, written} | failed{error}).
+The thread runs the batch `bake` path's own functions
+(`bake_context` + `bake_mesh_maps`), so the bake code is shared but
+the job machinery is not. The panel's worker stays on the app side.
+Replies are `{"ok", "step", "index", ...}`, and a failure carries
+its message in `error` (not `message`); `bake`/`export` act on
+the loaded mesh, so they drop the recipe's `mesh` field. A `bake`
+with no `tiles` (or on a lone-1001 mesh) bakes the whole mesh with
+the batch names; with `tiles` each tile bakes separately to
+`<set>_<map>_<tile>.png`. `quit` replies first (with
+`bake_in_flight`) and then exits 0, abandoning any bake still
+running. Stdout carries only JSON: `export`'s "skipped" notices go
+through an `on_skip` callback, which batch/`export` print and the
+agent returns as a `skipped` array.
+
 ## Tests (headless; the GPU-gated paths follow the adapter rule)
 
 1. The session loop: spawn the binary (std::process in the test),

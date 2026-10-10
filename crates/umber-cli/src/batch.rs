@@ -21,8 +21,8 @@ use anyhow::Result;
 use serde::Deserialize;
 
 use crate::{
-    inspect_mesh, preset_by_name, run_bake, run_bake_transfer, run_export, BakeFlags, BakeMap,
-    TransferMapName, TransferSettings, UDIM_GRID,
+    inspect_mesh, preset_by_name, print_skipped, run_bake, run_bake_transfer, run_export,
+    BakeFlags, BakeMap, TransferMapName, TransferSettings, UDIM_GRID,
 };
 
 /// The recipe format version this build reads.
@@ -82,11 +82,11 @@ impl BatchStep {
     }
 }
 
-fn default_size() -> u32 {
+pub(crate) fn default_size() -> u32 {
     BakeFlags::default().size
 }
 
-fn default_rays() -> u32 {
+pub(crate) fn default_rays() -> u32 {
     BakeFlags::default().rays
 }
 
@@ -105,8 +105,8 @@ fn default_offset() -> f32 {
 /// `inspect` — the `inspect` command.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct InspectStep {
-    mesh: PathBuf,
+pub(crate) struct InspectStep {
+    pub(crate) mesh: PathBuf,
 }
 
 /// `bake` — `bake-all`, filtered to `maps` (empty/absent = every map).
@@ -129,7 +129,7 @@ struct BakeStep {
 /// transfer map).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct BakeTransferStep {
+pub(crate) struct BakeTransferStep {
     low: PathBuf,
     high: PathBuf,
     #[serde(default)]
@@ -143,6 +143,26 @@ struct BakeTransferStep {
     back: f32,
     #[serde(default = "default_offset")]
     offset: f32,
+}
+
+impl BakeTransferStep {
+    /// Runs the step through [`run_bake_transfer`]. The batch and the
+    /// agent session share this, so they behave the same. Returns the
+    /// texture-set name and the written paths.
+    pub(crate) fn run(&self) -> Result<(String, Vec<PathBuf>)> {
+        let maps = if self.maps.is_empty() {
+            TransferMapName::ALL.to_vec()
+        } else {
+            self.maps.clone()
+        };
+        let settings = TransferSettings {
+            size: self.size,
+            front: self.front,
+            back: self.back,
+            offset: self.offset,
+        };
+        run_bake_transfer(&self.low, &self.high, &self.out_dir, &maps, &settings)
+    }
 }
 
 /// `export` — the `export` command (`tiles` empty/absent = every
@@ -247,18 +267,7 @@ fn run_step(step: &BatchStep) -> Result<String> {
             ))
         }
         BatchStep::BakeTransfer(s) => {
-            let maps = if s.maps.is_empty() {
-                TransferMapName::ALL.to_vec()
-            } else {
-                s.maps.clone()
-            };
-            let settings = TransferSettings {
-                size: s.size,
-                front: s.front,
-                back: s.back,
-                offset: s.offset,
-            };
-            let (set, written) = run_bake_transfer(&s.low, &s.high, &s.out_dir, &maps, &settings)?;
+            let (set, written) = s.run()?;
             Ok(format!(
                 "{} maps for '{set}' -> {}",
                 written.len(),
@@ -271,7 +280,14 @@ fn run_step(step: &BatchStep) -> Result<String> {
                 rays: s.rays,
                 dilate: 0,
             };
-            let (written, tiles) = run_export(&s.mesh, &s.out_dir, &s.preset, &flags, &s.tiles)?;
+            let (written, tiles) = run_export(
+                &s.mesh,
+                &s.out_dir,
+                &s.preset,
+                &flags,
+                &s.tiles,
+                &mut print_skipped,
+            )?;
             Ok(format!(
                 "{} outputs, preset '{}', tiles {tiles:?} -> {}",
                 written.len(),
