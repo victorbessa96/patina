@@ -12,6 +12,7 @@ pub mod id;
 pub mod normal_map;
 pub mod position;
 pub mod thickness;
+pub mod transfer;
 
 pub use ao::{AoBakeError, AoBakeParams, AoWithBent, BakeTarget, PlaneDesc};
 pub use curvature::{CurvatureBakeError, CurvatureParams};
@@ -19,6 +20,7 @@ pub use dilation::{DilateError, DilateParams};
 pub use id::{IdBakeError, IdBakeParams, IdFlavor};
 pub use normal_map::{TangentNormalBakeError, TangentNormalParams};
 pub use thickness::{ThicknessBakeError, ThicknessParams};
+pub use transfer::{bake_transfer_mesh, TransferError, TransferMap, TransferParams};
 
 /// The bake map types, named per Substance conventions for the
 /// `TextureSetName_map` import naming (requirements §7).

@@ -1430,3 +1430,270 @@ fn cs_main(@builtin(workgroup_id) workgroup_id: vec3<u32>) {
     textureStore(out_tex, coord, vec4<f32>(rgb, 1.0));
 }
 "#;
+
+/// High→low bake transfer: per-texel rays from the LOW mesh's UV map into
+/// the HIGH mesh's triangle soup (wave-4 item 4, final slice —
+/// `docs/specs/high-to-low-transfer-design.md` §"The architecture" point 3).
+///
+/// # Per-texel ray configuration
+///
+/// The LOW surface data comes from the EXISTING position pass, bound
+/// read-only exactly like the curvature/thickness passes consume it
+/// (`POSITION_BAKE_SHADER`'s output contract — `bake_shaders.rs` docs and
+/// `umber_bake::position::bake_position_map` agree):
+///
+/// - `low_pos_tex` (`Rgba32Float`): `rgb` = world-space position, `a` =
+///   coverage (`1.0` iff some LOW triangle's UV footprint covers this texel).
+/// - `low_normal_tex` (`Rgba32Float`): `xyz` = the LOW face normal (unit),
+///   `a` = coverage. The position pass emits this companion texture from the
+///   same dispatch (`position::bake_position_and_normal`) — the ray direction
+///   reads it, not a re-derived gradient.
+///
+/// Per covered texel:
+///
+/// ```text
+/// origin    = low_pos + low_normal * front_offset
+/// dir       = -low_normal                       // into the surface, toward the high
+/// t_surface = front_offset                      // the LOW surface along the ray (dir is unit)
+/// ```
+///
+/// Uncovered texels (`a <= 0.5`) skip the raycast and write background
+/// `(0, 0, 0, 0)` — the same alpha convention
+/// `AO_BAKE_SHADER::cs_main_from_position` uses.
+///
+/// # Intersection: brute force, no GPU BVH
+///
+/// The HIGH triangle buffer is walked flat, one Möller–Trumbore test per
+/// triangle, keeping the nearest hit — the `PlaneDesc` bakes' flat-brute-force
+/// precedent the design doc contracts (a GPU BVH is the deferred perf row;
+/// the CPU BVH in `umber_mesh::bvh` stays CPU-side for callers). The test
+/// mirrors `umber_mesh::raycast::ray_intersect`'s ground-truth semantics
+/// (see also `bvh::tri_hit`): double-sided (no culling), `1e-8` parallel
+/// epsilon, `u in 0..=1` / `v >= 0` / `u + v <= 1` barycentric bounds, `t >
+/// 1e-5` near-clip. Ties (two HIGH triangles reporting equal `t`, e.g. a
+/// shared edge) resolve to the FIRST triangle in buffer order (strict
+/// `<` replacement) — deterministic, documented here because the CPU BVH
+/// instead tie-breaks to the smallest triangle index.
+///
+/// The loop is bounded above by `t_surface + back_distance`: hits past the
+/// far clamp can never validate, so they are culled inside the intersection
+/// test itself (the "bounded early-out via the clamp distances").
+///
+/// # Clamp gate (mirrors `umber_mesh::bake_support::TransferClamps`)
+///
+/// A hit at ray parameter `hit_t` is valid iff
+/// `t_surface - front_distance <= hit_t <= t_surface + back_distance`
+/// (`TransferClamps::clamps_hit`). One nuance: the far bound inside the
+/// intersection loop is STRICT (`t < max_t`, the Möller–Trumbore open
+/// interval), while `clamps_hit` is inclusive on both sides — a hit landing
+/// bit-exactly on `t_surface + back_distance` is culled here but kept by the
+/// CPU gate. Only exact-boundary hits can observe the difference; every
+/// tested configuration keeps hits well clear of the bounds.
+///
+/// # Outputs (one shader, uniform-selected via `map_mode`)
+///
+/// - `0 = height`: `h = (hit_t - t_surface + front_distance) /
+///   (front_distance + back_distance)`, written grayscale with `a = 1`.
+///   Note the centering: a hit exactly ON the low surface reads
+///   `front_distance / (front_distance + back_distance)` — `0.5` only when
+///   `front_distance == back_distance`. (An early brief draft pinned `0.5`
+///   for asymmetric clamps; the shader implements the design doc's
+///   "normalized by `front_distance + back_distance`" formula, and the
+///   `umber_bake::transfer` tests derive their exact bytes from it.)
+/// - `1 = world normal`: the HIT triangle's face normal (`tri.normal`,
+///   normalized), encoded `rgb = n * 0.5 + 0.5`, `a = 1`. This is the
+///   "object/world space" normal-space option requirements §3 names.
+///   WORLD-space v1: the HIGH normal is written as-is, NOT transformed into
+///   the LOW's tangent frame — per-texel UV-derivative TBN is the deferred
+///   fold (see `TANGENT_NORMAL_BAKE_SHADER`'s screen-space-frame discussion
+///   for why a correct tangent frame needs per-texel UV derivatives this
+///   pass does not bind). Interpolated vertex normals are likewise deferred:
+///   like every other baker here, the triangle buffer carries the recomputed
+///   FACE normal (always available, even for UV-less IMPORTS without vertex
+///   normals), so a faceted HIGH bakes faceted normals.
+///
+/// A validated hit outside `map_mode ∈ {0, 1}` cannot occur (the Rust side
+/// only ever writes `0`/`1`); misses write background `(0, 0, 0, 0)`.
+///
+/// # The cage does NOT enter v1's GPU path
+///
+/// `Cage::lerp_at` needs per-vertex offsets interpolated mid-shader, which
+/// needs a cage buffer this binding set does not carry. Cage support lands
+/// when the app-wiring slice adds that buffer; the FRONT/BACK clamps DO
+/// enter v1 (see above).
+///
+/// # Layout contracts
+///
+/// - `Tri` must match `umber_bake::transfer`'s private `GpuTriangle`
+///   byte-for-byte (four `vec4<f32>`s: three HIGH vertex positions, then the
+///   HIGH face normal — byte-identical to `AO_BAKE_SHADER`'s/`THICKNESS_BAKE_SHADER`'s
+///   `Tri`, NOT `POSITION_BAKE_SHADER`'s 80-byte `PosTri`: the HIGH mesh
+///   needs no UVs per the design doc ("no UVs needed"), and the `PosTri`
+///   builder ERRORS on missing UVs, so the UV-free AO-style layout is the
+///   fitting reuse — only positions/normal are consumed here anyway).
+/// - `TransferParams` must match `umber_bake::transfer`'s private
+///   `TransferUniform` byte-for-byte (`front_distance`, `back_distance`,
+///   `front_offset`, `high_tri_count`, `map_mode`, `width`, `height`, one
+///   `u32` pad — 32 bytes, already a multiple of WGSL's 16-byte
+///   uniform-struct alignment). `width`/`height` document the target the
+///   dispatch was sized for; the shader itself needs no dims uniform
+///   (`workgroup_id.xy` IS the texel coordinate — the
+///   `cs_main_from_position` convention).
+/// - `low_pos_tex`/`low_normal_tex` are the two `Rgba32Float` outputs of
+///   `POSITION_BAKE_SHADER`'s `cs_main`, bound read-only and sampled with
+///   `textureLoad` (no sampler, no filtering).
+/// - `out_tex` is a write-only `Rgba8Unorm` storage texture (core WebGPU,
+///   no device feature — the same reason [`AO_BAKE_SHADER`] uses `write`,
+///   not `read_write`).
+///
+/// # Dispatch + workgroup shape
+///
+/// One workgroup (`@workgroup_size(1)`) per texel, dispatched as
+/// `dispatch_workgroups(width, height, 1)` — the same shape as
+/// `CURVATURE_BAKE_SHADER`, minus the neighborhood (per-texel work here is
+/// one serial brute-force ray loop; a minimum-*distance* plus nearest-hit
+/// record has no atomic form in core WGSL, so — like thickness — the loop
+/// stays serial and the output stays deterministic texel-to-texel).
+pub const TRANSFER_BAKE_SHADER: &str = r#"
+struct Tri {
+    v0: vec4<f32>,
+    v1: vec4<f32>,
+    v2: vec4<f32>,
+    normal: vec4<f32>,
+};
+
+struct TransferParams {
+    front_distance: f32,
+    back_distance: f32,
+    front_offset: f32,
+    high_tri_count: u32,
+    map_mode: u32,
+    width: u32,
+    height: u32,
+    _pad: u32,
+};
+
+@group(0) @binding(0) var<storage, read> high_tris: array<Tri>;
+@group(0) @binding(1) var out_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var<uniform> params: TransferParams;
+@group(0) @binding(3) var low_pos_tex: texture_2d<f32>;
+@group(0) @binding(4) var low_normal_tex: texture_2d<f32>;
+
+// Möller–Trumbore constants mirroring `umber_mesh::raycast::ray_intersect`
+// (see also `umber_mesh::bvh::tri_hit`): 1e-8 parallel epsilon, 1e-5
+// near-clip. (The AO/thickness shaders use a looser 1e-6 single EPS for
+// both roles; this pass tracks the raycast ground truth instead, since the
+// transfer tests derive exact hit parameters from it.)
+const MT_PARALLEL_EPS: f32 = 1e-8;
+const MT_T_EPS: f32 = 1e-5;
+
+/// Möller–Trumbore ray-triangle intersection returning the hit distance.
+/// Double-sided (no backface culling, matching `AO_BAKE_SHADER`). Returns the
+/// hit parameter `t` iff it lands in the open interval `(MT_T_EPS, max_t)`,
+/// otherwise `-1.0` — the distance-returning shape of
+/// `THICKNESS_BAKE_SHADER::ray_hit_distance`, so the caller can keep the
+/// nearest hit across the HIGH triangle list.
+fn ray_hit_distance(
+    orig: vec3<f32>,
+    dir: vec3<f32>,
+    v0: vec3<f32>,
+    v1: vec3<f32>,
+    v2: vec3<f32>,
+    max_t: f32,
+) -> f32 {
+    let e1 = v1 - v0;
+    let e2 = v2 - v0;
+    let h = cross(dir, e2);
+    let a = dot(e1, h);
+    if (abs(a) < MT_PARALLEL_EPS) {
+        return -1.0;
+    }
+    let f = 1.0 / a;
+    let s = orig - v0;
+    let u = f * dot(s, h);
+    if (u < 0.0 || u > 1.0) {
+        return -1.0;
+    }
+    let q = cross(s, e1);
+    let v = f * dot(dir, q);
+    if (v < 0.0 || u + v > 1.0) {
+        return -1.0;
+    }
+    let t = f * dot(e2, q);
+    if (t > MT_T_EPS && t < max_t) {
+        return t;
+    }
+    return -1.0;
+}
+
+/// Mesh-fed high→low transfer: per-texel ray origin and frame come from
+/// `low_pos_tex`/`low_normal_tex` (the two outputs of `POSITION_BAKE_SHADER`'s
+/// `cs_main`, baked from the LOW mesh). `low_pos_tex`'s alpha is the position
+/// pass's coverage flag: `<= 0.5` means no LOW UV triangle covered this texel,
+/// so there is no surface to cast from — the texel writes `(0, 0, 0, 0)`.
+/// Otherwise one ray (`origin = low_pos + n * front_offset` along `-n`) is
+/// brute-forced against the HIGH triangle list, gated by the front/back
+/// clamps, and the uniform-selected map is written (see this constant's doc
+/// comment for the ray math, the gate, and both encodings).
+@compute @workgroup_size(1)
+fn cs_main(@builtin(workgroup_id) workgroup_id: vec3<u32>) {
+    let coord = vec2<i32>(workgroup_id.xy);
+    let sample = textureLoad(low_pos_tex, coord, 0);
+    if (sample.w <= 0.5) {
+        textureStore(out_tex, coord, vec4<f32>(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    let low_pos = sample.xyz;
+    let n = normalize(textureLoad(low_normal_tex, coord, 0).xyz);
+    let origin = low_pos + n * params.front_offset;
+    let dir = -n;
+    // The LOW surface sits `front_offset` behind the origin along the unit
+    // ray (origin = surface + n * front_offset, dir = -n), so the surface
+    // parameter is exactly `front_offset`.
+    let t_surface = params.front_offset;
+    // Far-clamp early-out: hits at or past `t_surface + back_distance` can
+    // never validate (see this constant's "Clamp gate" doc comment for the
+    // strict-vs-inclusive nuance at the exact boundary).
+    let max_t = t_surface + params.back_distance;
+
+    var best_t = max_t;
+    var best_n = vec3<f32>(0.0, 0.0, 1.0);
+    var found = false;
+    for (var t: u32 = 0u; t < params.high_tri_count; t = t + 1u) {
+        let tri = high_tris[t];
+        let hit = ray_hit_distance(
+            origin, dir, tri.v0.xyz, tri.v1.xyz, tri.v2.xyz, max_t
+        );
+        // Strict `<`: ties keep the FIRST triangle in buffer order (see this
+        // constant's doc comment — deterministic, unlike an index-agnostic
+        // `<=` that would depend on traversal order).
+        if (hit > 0.0 && (!found || hit < best_t)) {
+            best_t = hit;
+            best_n = normalize(tri.normal.xyz);
+            found = true;
+        }
+    }
+    // Near-clamp gate (`TransferClamps::clamps_hit`'s lower half; the upper
+    // half was already enforced by `max_t` inside the loop).
+    if (!found || best_t < t_surface - params.front_distance) {
+        textureStore(out_tex, coord, vec4<f32>(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+
+    if (params.map_mode == 0u) {
+        let span = max(params.front_distance + params.back_distance, 1e-6);
+        let h = clamp(
+            (best_t - t_surface + params.front_distance) / span, 0.0, 1.0
+        );
+        textureStore(out_tex, coord, vec4<f32>(h, h, h, 1.0));
+    } else {
+        let enc = clamp(
+            best_n * 0.5 + vec3<f32>(0.5, 0.5, 0.5),
+            vec3<f32>(0.0, 0.0, 0.0),
+            vec3<f32>(1.0, 1.0, 1.0),
+        );
+        textureStore(out_tex, coord, vec4<f32>(enc, 1.0));
+    }
+}
+"#;
