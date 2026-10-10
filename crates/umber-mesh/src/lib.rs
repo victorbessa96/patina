@@ -6,6 +6,7 @@
 
 use glam::Vec3;
 
+pub mod bvh;
 pub mod fbx;
 pub mod gltf;
 pub mod mesh_maps;
