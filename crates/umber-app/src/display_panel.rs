@@ -28,6 +28,7 @@
 
 use crate::i18n;
 use egui::{Color32, Ui};
+use fluent::FluentValue;
 use umber_color::{
     apply_display_chain, build_display_lut, DisplaySettings, DisplayTransform, DISPLAY_LUT_BYTES,
 };
@@ -125,22 +126,25 @@ fn swatches(s: &DisplaySettings) -> [Color32; PREVIEW_STOPS] {
 /// LUT is being rebuilt (the frame loop uploads it this frame).
 fn chain_label(s: &DisplaySettings, live: bool) -> String {
     let chain = if s.is_identity() {
-        "identity (Raw, 0 EV, gamma 1)".to_owned()
+        i18n::tr("display.chain-identity")
     } else {
-        format!(
-            "exposure {:+.2} EV → {} → gamma {:.2}",
-            s.exposure,
-            s.view.label(),
-            s.gamma
-        )
+        let args = [
+            ("exposure", FluentValue::from(format!("{:+.2}", s.exposure))),
+            ("view", FluentValue::from(s.view.label())),
+            ("gamma", FluentValue::from(format!("{:.2}", s.gamma))),
+        ];
+        i18n::tr_args("display.chain", args)
     };
     let status = if live {
-        "Live in the 3D viewport (mesh pass) and the UV view (paint \
-         display) via the GPU display LUT."
+        i18n::tr("display.live")
     } else {
-        "Rebuilding the GPU display LUT for the 3D viewport and the UV view."
+        i18n::tr("display.rebuilding")
     };
-    format!("Active chain: {chain}. {status}")
+    let args = [
+        ("chain", FluentValue::from(chain)),
+        ("status", FluentValue::from(status)),
+    ];
+    i18n::tr_args("display.active-chain", args)
 }
 
 /// Draws the panel and edits `settings` in place; any change marks `lut`
@@ -149,7 +153,7 @@ fn chain_label(s: &DisplaySettings, live: bool) -> String {
 pub fn show(ui: &mut Ui, settings: &mut DisplaySettings, lut: &mut DisplayLutState) -> bool {
     let mut changed = false;
 
-    egui::ComboBox::from_label("View")
+    egui::ComboBox::from_label(i18n::tr("display.view"))
         .selected_text(settings.view.label())
         .show_ui(ui, |ui| {
             for candidate in DisplayTransform::ALL {
@@ -161,11 +165,14 @@ pub fn show(ui: &mut Ui, settings: &mut DisplaySettings, lut: &mut DisplayLutSta
     changed |= ui
         .add(
             egui::Slider::new(&mut settings.exposure, DisplaySettings::EXPOSURE_RANGE)
-                .text("Exposure (EV)"),
+                .text(i18n::tr("display.exposure")),
         )
         .changed();
     changed |= ui
-        .add(egui::Slider::new(&mut settings.gamma, DisplaySettings::GAMMA_RANGE).text("Gamma"))
+        .add(
+            egui::Slider::new(&mut settings.gamma, DisplaySettings::GAMMA_RANGE)
+                .text(i18n::tr("display.gamma")),
+        )
         .changed();
     if ui
         .add_enabled(
@@ -182,7 +189,7 @@ pub fn show(ui: &mut Ui, settings: &mut DisplaySettings, lut: &mut DisplayLutSta
     }
 
     ui.add_space(4.0);
-    ui.label("Preview (linear ramp, 1 EV per swatch):");
+    ui.label(i18n::tr("display.preview"));
     let width = ui.available_width().max(PREVIEW_STOPS as f32);
     let size = egui::vec2(width, SWATCH_HEIGHT);
     let (strip, _) = ui.allocate_exact_size(size, egui::Sense::hover());

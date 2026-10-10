@@ -99,12 +99,12 @@ impl BakeSelection {
     pub const ALL: [Self; 4] = [Self::Ao, Self::Curvature, Self::Thickness, Self::Position];
 
     /// The checkbox / record label.
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::Ao => "Ambient occlusion",
-            Self::Curvature => "Curvature",
-            Self::Thickness => "Thickness",
-            Self::Position => "Position",
+            Self::Ao => tr("bakes.map-ao"),
+            Self::Curvature => tr("bakes.map-curvature"),
+            Self::Thickness => tr("bakes.map-thickness"),
+            Self::Position => tr("bakes.map-position"),
         }
     }
 
@@ -225,10 +225,8 @@ pub fn skipped_note(skipped: &[(u16, BakeSelection)]) -> Option<String> {
         .iter()
         .map(|(tile, selection)| format!("{} {tile}", selection.label()))
         .collect();
-    Some(format!(
-        "skipped (v1 bakes only AO per tile; other maps tile 1001 only): {}",
-        parts.join(", ")
-    ))
+    let args = [("pairs", FluentValue::from(parts.join(", ")))];
+    Some(tr_args("bakes.skipped-note", args))
 }
 
 /// What [`BakesPanel::show`] needs from the app each frame.
@@ -343,7 +341,7 @@ impl BakesPanel {
             rays: DEFAULT_RAYS,
             dilation_iterations: DEFAULT_DILATION_ITERATIONS,
             output_dir,
-            status: String::from("No bake yet."),
+            status: tr("bakes.no-bake-yet"),
             last_records: Vec::new(),
             tiles: TileSelection::new(),
             mesh_tiles: MeshTilesCache::default(),
@@ -523,12 +521,12 @@ impl BakesPanel {
         let mesh_loaded = ctx.mesh.is_some();
         let gpu_ready = ctx.gpu.is_some();
         if !mesh_loaded {
-            ui.label("No mesh loaded — open a mesh to enable baking.");
+            ui.label(tr("bakes.no-mesh"));
         } else if !gpu_ready {
-            ui.label("No GPU device — baking needs the wgpu device.");
+            ui.label(tr("bakes.no-gpu"));
         }
 
-        crate::size_presets::size_combo(ui, "Resolution", &mut self.resolution);
+        crate::size_presets::size_combo(ui, &tr("bakes.resolution"), &mut self.resolution);
 
         ui.checkbox(&mut self.bake_ao, BakeSelection::Ao.label());
         ui.checkbox(&mut self.bake_curvature, BakeSelection::Curvature.label());
@@ -542,15 +540,16 @@ impl BakesPanel {
         }
         self.tiles.show(ui);
 
-        ui.add(egui::Slider::new(&mut self.rays, MIN_RAYS..=MAX_RAYS).text("Rays"));
+        ui.add(egui::Slider::new(&mut self.rays, MIN_RAYS..=MAX_RAYS).text(tr("bakes.rays")));
         ui.add(
             egui::Slider::new(&mut self.dilation_iterations, 0..=MAX_DILATION_ITERATIONS)
-                .text("Dilation"),
+                .text(tr("bakes.dilation")),
         );
 
         ui.horizontal(|ui| {
-            ui.label(format!("Out: {}", self.output_dir.display()));
-            if ui.button("Choose…").clicked() {
+            let dir = self.output_dir.display().to_string();
+            ui.label(tr_args("common.out-dir", [("dir", FluentValue::from(dir))]));
+            if ui.button(tr("button.choose")).clicked() {
                 if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                     self.output_dir = dir;
                 }
@@ -558,10 +557,10 @@ impl BakesPanel {
         });
 
         if !self.any_selected() {
-            ui.label("Select at least one map to bake.");
+            ui.label(tr("bakes.select-map"));
         }
         if self.tiles.nothing_selected() {
-            ui.label("Select at least one tile to bake.");
+            ui.label(tr("bakes.select-tile"));
         }
         let enabled = self.can_bake(mesh_loaded, gpu_ready) && !self.tiles.nothing_selected();
         if ui
@@ -649,7 +648,8 @@ impl BakesPanel {
             }
             Err(err) => {
                 log::error!("bake worker failed to start: {err}");
-                self.status = format!("Bake failed: could not start the bake worker: {err}");
+                let args = [("error", FluentValue::from(err.to_string()))];
+                self.status = tr_args("bakes.worker-failed", args);
                 false
             }
         }
@@ -672,12 +672,12 @@ impl BakesPanel {
                         format!("{name} ({} ms)", r.elapsed_ms)
                     })
                     .collect();
-                let noun = if records.len() == 1 { "map" } else { "maps" };
-                let mut status = format!(
-                    "Baked {} {noun} in {total} ms: {}",
-                    records.len(),
-                    parts.join(", ")
-                );
+                let args = [
+                    ("count", FluentValue::from(records.len())),
+                    ("ms", FluentValue::from(total.to_string())),
+                    ("files", FluentValue::from(parts.join(", "))),
+                ];
+                let mut status = tr_args("bakes.done", args);
                 if let Some(note) = skipped_note(skipped) {
                     status.push_str(&format!(" — {note}"));
                 }
@@ -686,7 +686,8 @@ impl BakesPanel {
             }
             Err(err) => {
                 log::error!("bake failed: {err:#}");
-                self.status = format!("Bake failed: {err:#}");
+                let args = [("error", FluentValue::from(format!("{err:#}")))];
+                self.status = tr_args("bakes.failed", args);
             }
         }
     }

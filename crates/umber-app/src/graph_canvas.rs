@@ -30,6 +30,7 @@ use umber_graph::mtlx::NodedefDecl;
 use umber_graph::Graph;
 
 use crate::graph_panel::GraphPanel;
+use crate::i18n::tr;
 
 /// Zoom clamp, lower bound (the design's 0.25..2.5).
 pub const ZOOM_MIN: f32 = 0.25;
@@ -852,7 +853,7 @@ pub fn canvas_ui(ui: &mut egui::Ui, panel: &mut GraphPanel) {
         painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
-            "Right-click to add a node",
+            tr("canvas.empty-hint"),
             egui::FontId::proportional(13.0),
             visuals.weak_text_color(),
         );
@@ -872,7 +873,7 @@ pub fn canvas_ui(ui: &mut egui::Ui, panel: &mut GraphPanel) {
             .fixed_pos(to_pos(menu.at))
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.strong("Add node");
+                    ui.strong(tr("canvas.add-node"));
                     egui::ScrollArea::vertical()
                         .max_height(220.0)
                         .show(ui, |ui| {

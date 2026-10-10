@@ -44,12 +44,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use fluent::FluentValue;
 use umber_graph::{
     eval_graph_cached, EvalCache, EvalContext, Graph, Node, NodeOutput, NodeRegistry, ParamValue,
 };
 
 use crate::graph_canvas::CanvasState;
-use crate::i18n::tr;
+use crate::i18n::{tr, tr_args};
 use crate::plugins::{self, PluginLoadReport};
 
 /// Default raster resolution (square) for a fresh panel.
@@ -109,6 +110,8 @@ pub struct GraphPanel {
     last_output: Option<NodeOutput>,
     selected: Option<u64>,
     status: String,
+    /// Whether `status` reports a failure (drawn in the error color).
+    status_is_error: bool,
     output_node: Option<u64>,
     next_id: u64,
     /// Add-Node combo selection (a `node_def` name).
@@ -151,7 +154,8 @@ impl GraphPanel {
             resolution: DEFAULT_RESOLUTION,
             last_output: None,
             selected: None,
-            status: String::from("No evaluation yet."),
+            status: tr("graph.no-eval-yet"),
+            status_is_error: false,
             output_node: None,
             next_id: 1,
             add_def,
@@ -395,7 +399,8 @@ impl GraphPanel {
         self.last_output = None;
         self.texture = None;
         self.texture_key = None;
-        self.status = String::from("Graph loaded — press Evaluate.");
+        self.status = tr("graph.loaded");
+        self.status_is_error = false;
     }
 
     /// Serializes the graph to a `.mtlx` document string (the
@@ -424,18 +429,16 @@ impl GraphPanel {
         match umber_graph::mtlx::from_mtlx(doc) {
             Ok((graph, _, warnings)) => {
                 self.load_graph(graph);
-                if warnings.is_empty() {
-                    self.status = String::from("Graph loaded — press Evaluate.");
-                } else {
-                    self.status = format!(
-                        "Graph loaded with {} unknown node type(s) — press Evaluate.",
-                        warnings.len()
-                    );
+                if !warnings.is_empty() {
+                    let args = [("count", FluentValue::from(warnings.len()))];
+                    self.status = tr_args("graph.loaded-unknown", args);
                 }
                 true
             }
             Err(err) => {
-                self.status = format!("Graph load failed: {err}");
+                let args = [("error", FluentValue::from(err.to_string()))];
+                self.status = tr_args("graph.load-failed", args);
+                self.status_is_error = true;
                 false
             }
         }
@@ -446,12 +449,14 @@ impl GraphPanel {
     /// output (if any) is kept. Never panics.
     pub fn evaluate(&mut self) {
         if self.graph.nodes.is_empty() {
-            self.status = String::from("Graph is empty — add a node first.");
+            self.status = tr("graph.empty");
+            self.status_is_error = false;
             self.last_output = None;
             return;
         }
         let Some(output_id) = self.output_node else {
-            self.status = String::from("No output node — select one first.");
+            self.status = tr("graph.no-output-node");
+            self.status_is_error = false;
             self.last_output = None;
             return;
         };
@@ -470,14 +475,18 @@ impl GraphPanel {
             Ok(outputs) => {
                 self.dirty.clear();
                 self.last_output = outputs.get(&output_id).cloned();
-                let n = outputs.len();
-                self.status = format!(
-                    "Evaluated {n} node(s) at {}x{}.",
-                    self.resolution.0, self.resolution.1
-                );
+                let args = [
+                    ("count", FluentValue::from(outputs.len())),
+                    ("width", FluentValue::from(self.resolution.0.to_string())),
+                    ("height", FluentValue::from(self.resolution.1.to_string())),
+                ];
+                self.status = tr_args("graph.evaluated", args);
+                self.status_is_error = false;
             }
             Err(err) => {
-                self.status = format!("Eval failed: {err}");
+                let args = [("error", FluentValue::from(err.to_string()))];
+                self.status = tr_args("graph.eval-failed", args);
+                self.status_is_error = true;
             }
         }
     }
@@ -547,17 +556,13 @@ impl GraphPanel {
     /// the output image.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.view, GraphView::Canvas, "Canvas");
-            ui.selectable_value(&mut self.view, GraphView::List, "List");
+            ui.selectable_value(&mut self.view, GraphView::Canvas, tr("graph.view-canvas"));
+            ui.selectable_value(&mut self.view, GraphView::List, tr("graph.view-list"));
         });
         match self.view {
             GraphView::Canvas => {
                 crate::graph_canvas::canvas_ui(ui, self);
-                ui.weak(
-                    "Drag empty space to pan, wheel to zoom, drag an output port \
-                     onto an input to connect, right-click to add, Delete removes \
-                     the selected edge.",
-                );
+                ui.weak(tr("graph.canvas-help"));
             }
             GraphView::List => self.node_list(ui),
         }
@@ -573,15 +578,14 @@ impl GraphPanel {
             if ui.button(tr("button.evaluate")).clicked() {
                 self.evaluate();
             }
-            ui.label(format!(
-                "Output: {}",
-                self.output_node
-                    .map(|id| id.to_string())
-                    .unwrap_or_else(|| "none".into())
-            ));
+            let node = self
+                .output_node
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| tr("common.none"));
+            ui.label(tr_args("graph.output", [("node", FluentValue::from(node))]));
         });
         let status = self.status.clone();
-        if status.starts_with("Eval failed") || status.starts_with("Graph load failed") {
+        if self.status_is_error {
             ui.label(egui::RichText::new(status).color(ui.visuals().error_fg_color));
         } else {
             ui.label(status);
@@ -593,7 +597,7 @@ impl GraphPanel {
 
     /// The v1 node list (the List view).
     fn node_list(&mut self, ui: &mut egui::Ui) {
-        ui.strong("Nodes");
+        ui.strong(tr("graph.nodes"));
         let mut ids: Vec<u64> = self.graph.nodes.iter().map(|n| n.id).collect();
         ids.sort_unstable();
         egui::ScrollArea::vertical()
@@ -621,7 +625,7 @@ impl GraphPanel {
                     }
                 }
                 if ids.is_empty() {
-                    ui.weak("No nodes yet — add one below.");
+                    ui.weak(tr("graph.no-nodes"));
                 }
             });
     }
@@ -631,21 +635,21 @@ impl GraphPanel {
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             let defs = self.registry.node_defs();
-            egui::ComboBox::from_label("Add Node")
+            egui::ComboBox::from_label(tr("graph.add-node"))
                 .selected_text(&self.add_def)
                 .show_ui(ui, |ui| {
                     for def in &defs {
                         ui.selectable_value(&mut self.add_def, (*def).to_string(), *def);
                     }
                 });
-            if ui.button("Add").clicked() {
+            if ui.button(tr("button.add")).clicked() {
                 let id = self.add_node(&self.add_def.clone());
                 self.selected = Some(id);
             }
             if ui
                 .add_enabled(
                     self.selected.is_some(),
-                    egui::Button::new("Remove selected"),
+                    egui::Button::new(tr("graph.remove-selected")),
                 )
                 .clicked()
             {
@@ -664,7 +668,7 @@ impl GraphPanel {
         if let Some(id) = self.selected {
             self.selected_editor(ui, id);
         } else {
-            ui.weak("Select a node to edit its params.");
+            ui.weak(tr("graph.select-node"));
         }
     }
 
@@ -676,8 +680,12 @@ impl GraphPanel {
         };
         let def = self.graph.nodes[pos].node_def.clone();
         ui.horizontal_wrapped(|ui| {
-            ui.strong(format!("Node {id}: {def}"));
-            if self.output_node != Some(id) && ui.small_button("Set as output").clicked() {
+            let args = [
+                ("id", FluentValue::from(id.to_string())),
+                ("def", FluentValue::from(def.as_str())),
+            ];
+            ui.strong(tr_args("graph.node-title", args));
+            if self.output_node != Some(id) && ui.small_button(tr("graph.set-output")).clicked() {
                 self.set_output_node(id);
             }
         });
@@ -694,7 +702,7 @@ impl GraphPanel {
         }
 
         ui.add_space(4.0);
-        ui.strong("Edges");
+        ui.strong(tr("graph.edges"));
         for (from, input) in self
             .graph
             .edges
@@ -704,11 +712,15 @@ impl GraphPanel {
             .collect::<Vec<_>>()
         {
             ui.horizontal(|ui| {
-                ui.label(format!("{input} ← node {from}"));
+                let args = [
+                    ("input", FluentValue::from(input.as_str())),
+                    ("from", FluentValue::from(from.to_string())),
+                ];
+                ui.label(tr_args("graph.edge", args));
             });
         }
         ui.horizontal_wrapped(|ui| {
-            ui.label("input");
+            ui.label(tr("graph.edge-input"));
             ui.add(
                 egui::TextEdit::singleline(&mut self.edge_input)
                     .hint_text("in")
@@ -727,8 +739,8 @@ impl GraphPanel {
             let from_label = self
                 .edge_from
                 .map(|f| f.to_string())
-                .unwrap_or_else(|| "none".into());
-            egui::ComboBox::from_label("from")
+                .unwrap_or_else(|| tr("common.none"));
+            egui::ComboBox::from_label(tr("graph.edge-from"))
                 .selected_text(from_label)
                 .show_ui(ui, |ui| {
                     for candidate in &others {
@@ -739,7 +751,7 @@ impl GraphPanel {
                         );
                     }
                 });
-            if ui.button("Add edge").clicked() {
+            if ui.button(tr("graph.add-edge")).clicked() {
                 if let Some(from) = self.edge_from {
                     let input = self.edge_input.clone();
                     let input = if input.trim().is_empty() {
@@ -758,7 +770,7 @@ impl GraphPanel {
     /// for `Uniform` values, or a hint when nothing evaluated yet.
     fn output_image(&mut self, ui: &mut egui::Ui) {
         let Some(output) = self.last_output.clone() else {
-            ui.weak("No output yet — press Evaluate.");
+            ui.weak(tr("graph.no-output"));
             return;
         };
         match output {
@@ -784,7 +796,8 @@ impl GraphPanel {
                 }
             }
             NodeOutput::Uniform(value) => {
-                ui.label(format!("Uniform output: {value:?}"));
+                let args = [("value", FluentValue::from(format!("{value:?}")))];
+                ui.label(tr_args("graph.uniform-output", args));
             }
         }
     }

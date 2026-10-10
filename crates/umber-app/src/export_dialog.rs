@@ -48,12 +48,13 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Context as _;
+use fluent::FluentValue;
 
 use crate::bake_sources::{self, BaseColorSource};
 use crate::bakes_panel;
 use crate::document::Document;
 use crate::graph_panel::GraphPanel;
-use crate::i18n::tr;
+use crate::i18n::{tr, tr_args};
 use crate::paint_state::PaintState;
 use crate::tile_selection::{MeshTilesCache, TileSelection};
 
@@ -244,7 +245,8 @@ pub fn selected_export_tiles(
 /// for a multi-tile session, `None` for the single-tile case (the badge
 /// reads exactly as before).
 pub fn tile_badge(tile_count: usize) -> Option<String> {
-    (tile_count > 1).then(|| format!("{tile_count} tiles"))
+    let args = [("count", FluentValue::from(tile_count))];
+    (tile_count > 1).then(|| tr_args("export.tile-badge", args))
 }
 
 /// The status line's Base Color note over every exported tile: one
@@ -253,25 +255,33 @@ pub fn tile_badge(tile_count: usize) -> Option<String> {
 pub fn base_note(sources: &[(u16, BaseColorSource)]) -> String {
     fn name(source: BaseColorSource) -> String {
         match source {
-            BaseColorSource::Painted => "painted".to_string(),
-            BaseColorSource::Graph(node) => format!("graph node {node}"),
-            BaseColorSource::FlatPlaceholder => "flat placeholder".to_string(),
+            BaseColorSource::Painted => tr("export.base-painted"),
+            BaseColorSource::Graph(node) => {
+                let args = [("node", FluentValue::from(node.to_string()))];
+                tr_args("export.base-graph", args)
+            }
+            BaseColorSource::FlatPlaceholder => tr("export.base-flat"),
         }
     }
     let Some((_, first)) = sources.first() else {
-        return "Base Color: none".to_string();
+        return tr("export.base-none");
     };
     if sources.iter().all(|(_, s)| s == first) {
+        let source = FluentValue::from(name(*first));
         match tile_badge(sources.len()) {
-            Some(tiles) => format!("Base Color: {} ({tiles})", name(*first)),
-            None => format!("Base Color: {}", name(*first)),
+            Some(tiles) => {
+                let args = [("source", source), ("tiles", FluentValue::from(tiles))];
+                tr_args("export.base-tiles", args)
+            }
+            None => tr_args("export.base", [("source", source)]),
         }
     } else {
         let parts: Vec<String> = sources
             .iter()
             .map(|(tile, s)| format!("{tile} {}", name(*s)))
             .collect();
-        format!("Base Color: {}", parts.join(", "))
+        let args = [("source", FluentValue::from(parts.join(", ")))];
+        tr_args("export.base", args)
     }
 }
 
@@ -330,7 +340,7 @@ impl ExportDialog {
             preset: PresetChoice::GltfMetalRough,
             size: crate::size_presets::DEFAULT_SIZE,
             output_dir,
-            status: String::from("No export yet."),
+            status: tr("export.no-export-yet"),
             last_written: Vec::new(),
             last_skipped: Vec::new(),
             tiles: TileSelection::new(),
@@ -430,24 +440,25 @@ impl ExportDialog {
         let mesh_loaded = ctx.mesh.is_some();
         let gpu_ready = ctx.gpu.is_some();
         if !mesh_loaded {
-            ui.label("No mesh loaded — open a mesh to enable export.");
+            ui.label(tr("export.no-mesh"));
         } else if !gpu_ready {
-            ui.label("No GPU device — export needs the wgpu device.");
+            ui.label(tr("export.no-gpu"));
         }
 
-        egui::ComboBox::from_label("Preset")
+        egui::ComboBox::from_label(tr("export.preset"))
             .selected_text(self.preset.label())
             .show_ui(ui, |ui| {
                 for candidate in PresetChoice::ALL {
                     ui.selectable_value(&mut self.preset, candidate, candidate.label());
                 }
             });
-        crate::size_presets::size_combo(ui, "Size", &mut self.size);
-        ui.checkbox(&mut self.materialx, "MaterialX (.mtlx)");
+        crate::size_presets::size_combo(ui, &tr("export.size"), &mut self.size);
+        ui.checkbox(&mut self.materialx, tr("export.materialx"));
 
         ui.horizontal(|ui| {
-            ui.label(format!("Out: {}", self.output_dir.display()));
-            if ui.button("Choose…").clicked() {
+            let dir = self.output_dir.display().to_string();
+            ui.label(tr_args("common.out-dir", [("dir", FluentValue::from(dir))]));
+            if ui.button(tr("button.choose")).clicked() {
                 if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                     self.output_dir = dir;
                 }
@@ -473,7 +484,7 @@ impl ExportDialog {
         if self.tiles.known_len() > 1 {
             self.tiles.show(ui);
             if self.tiles.nothing_selected() {
-                ui.label("Select at least one tile to export.");
+                ui.label(tr("export.select-tile"));
             }
         }
         let tiles_note = ctx
@@ -485,27 +496,27 @@ impl ExportDialog {
         match prospective_base_source(painted_at_size(paint_size, self.size), ctx.graph, self.size)
         {
             BaseColorSource::Painted => {
-                ui.label(format!(
-                    "Base Color source: painted{tiles_note} — what you painted is what exports."
-                ));
+                let args = [("tiles", FluentValue::from(tiles_note))];
+                ui.label(tr_args("export.source-painted", args));
             }
             BaseColorSource::Graph(node) => {
-                ui.label(format!(
-                    "Base Color source: graph node {node}{tiles_note} — the panel's evaluated output."
-                ));
+                let args = [
+                    ("node", FluentValue::from(node.to_string())),
+                    ("tiles", FluentValue::from(tiles_note)),
+                ];
+                ui.label(tr_args("export.source-graph", args));
             }
             BaseColorSource::FlatPlaceholder => match paint_size {
                 Some((w, h)) => {
-                    ui.label(format!(
-                        "Base Color source: flat placeholder — the paint target is {w} × {h}, \
-                         not the {size} × {size} export size.",
-                        size = self.size
-                    ));
+                    let args = [
+                        ("width", FluentValue::from(w.to_string())),
+                        ("height", FluentValue::from(h.to_string())),
+                        ("size", FluentValue::from(self.size.to_string())),
+                    ];
+                    ui.label(tr_args("export.source-flat-size", args));
                 }
                 None => {
-                    ui.label(
-                        "Base Color source: flat placeholder — no paint session or graph output live.",
-                    );
+                    ui.label(tr("export.source-flat-none"));
                 }
             },
         }
@@ -538,32 +549,38 @@ impl ExportDialog {
                     })
                     .collect();
                 let base_line = base_note(&outcome.base_sources);
-                let mut status = format!(
-                    "Exported {} outputs ({base_line}; bake {} ms, write {} ms): {}",
-                    outcome.written.len(),
-                    outcome.bake_ms,
-                    outcome.write_ms,
-                    names.join(", ")
-                );
+                let args = [
+                    ("count", FluentValue::from(outcome.written.len())),
+                    ("base", FluentValue::from(base_line)),
+                    ("bake-ms", FluentValue::from(outcome.bake_ms.to_string())),
+                    ("write-ms", FluentValue::from(outcome.write_ms.to_string())),
+                    ("files", FluentValue::from(names.join(", "))),
+                ];
+                let mut status = tr_args("export.done", args);
                 if !outcome.skipped.is_empty() {
                     let sources = skipped_display_sources(&outcome.texture_set);
                     let parts: Vec<String> = outcome
                         .skipped
                         .iter()
                         .map(|s| {
-                            let filename = sources.expand_static(&s.filename);
-                            format!("{filename} (missing {})", s.missing.join(", "))
+                            let args = [
+                                (
+                                    "file",
+                                    FluentValue::from(sources.expand_static(&s.filename)),
+                                ),
+                                ("maps", FluentValue::from(s.missing.join(", "))),
+                            ];
+                            tr_args("export.skipped-output", args)
                         })
                         .collect();
-                    status.push_str(&format!(" — skipped: {}", parts.join("; ")));
+                    let args = [("outputs", FluentValue::from(parts.join("; ")))];
+                    status.push_str(&format!(" — {}", tr_args("export.skipped", args)));
                 }
                 if !outcome.skipped_tiles.is_empty() {
                     let tiles: Vec<String> =
                         outcome.skipped_tiles.iter().map(u16::to_string).collect();
-                    status.push_str(&format!(
-                        " — tiles skipped (no mesh geometry): {}",
-                        tiles.join(", ")
-                    ));
+                    let args = [("tiles", FluentValue::from(tiles.join(", ")))];
+                    status.push_str(&format!(" — {}", tr_args("export.tiles-skipped", args)));
                 }
                 self.status = status;
                 self.last_written = outcome.written;
@@ -571,7 +588,8 @@ impl ExportDialog {
             }
             Err(err) => {
                 log::error!("export failed: {err:#}");
-                self.status = format!("Export failed: {err:#}");
+                let args = [("error", FluentValue::from(format!("{err:#}")))];
+                self.status = tr_args("export.failed", args);
             }
         }
     }

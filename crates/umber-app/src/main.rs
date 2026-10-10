@@ -131,11 +131,11 @@ impl TabViewer for PanelViewer<'_> {
                 self.brush.show(ui);
             }
             Panel::Assets => {
-                ui.label("Assets / shelf (Wave 4+)");
+                ui.label(tr("shell.assets-placeholder"));
             }
             Panel::History => document::history_ui(ui, self.doc),
             Panel::TextureSets => {
-                ui.label("Texture sets (Wave 2)");
+                ui.label(tr("shell.texture-sets-placeholder"));
             }
             Panel::Bakes => {
                 let ctx = BakesContext {
@@ -324,7 +324,7 @@ impl UmberApp {
     /// viewport swap. Failures log; the current environment is kept.
     fn load_environment(&mut self) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("Environment", &["png", "exr"])
+            .add_filter(&tr("shell.filter-environment"), &["png", "exr"])
             .pick_file()
         else {
             return;
@@ -639,7 +639,10 @@ impl eframe::App for UmberApp {
 /// swap pickers later).
 fn rfd_pick_mesh() -> Option<PathBuf> {
     rfd::FileDialog::new()
-        .add_filter("Meshes", &["obj", "gltf", "glb", "fbx", "usda", "usd"])
+        .add_filter(
+            &tr("shell.filter-meshes"),
+            &["obj", "gltf", "glb", "fbx", "usda", "usd"],
+        )
         .pick_file()
 }
 
