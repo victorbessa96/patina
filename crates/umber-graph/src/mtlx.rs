@@ -178,6 +178,32 @@ pub const KNOWN_STANDARD_NODES: &[&str] = &[
     "histogram",
     "triplanar_blend",
     "noise",
+    // Built-in family names from the merged node set (the
+    // registration surface — nodes/gradient|pattern|mask|spatial +
+    // the engine seeds): names that predate this list's v1 heuristic
+    // and surfaced via the plugin round-trip test's warning assert.
+    "gradient",
+    "checkerboard",
+    "brick_pattern",
+    "flood_fill",
+    "edge_detect",
+    "histogram_match",
+    "direction_warp",
+    "mesh_map_generator",
+    "noise_perlin",
+    "noise_value",
+    "noise_worley",
+    "passthrough",
+    "color_correct",
+    "hsv_adjust",
+    "triplanar_blend",
+    "curves",
+    "sharpen",
+    "dots",
+    "uniform",
+    "image_asset",
+    "levels",
+    "invert",
 ];
 
 /// Errors from `.mtlx` parsing.

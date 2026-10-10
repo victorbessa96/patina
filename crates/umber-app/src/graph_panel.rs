@@ -31,14 +31,25 @@
 //! out of the params into `Node::canvas`. Files without it — every
 //! pre-canvas `.umber` — load with `None`, which the canvas lays out with
 //! its deterministic id-hash scatter.
+//!
+//! # WASM plugins (wave-6 plugins slice 3)
+//!
+//! [`GraphPanel::load_plugins`] registers plugin nodes AFTER the
+//! built-ins (see [`crate::plugins`] for the dirs, the per-file
+//! tolerance, and the no-shadowing collision rule). They list in the
+//! Add-Node menu beside the built-ins (the registry's `node_defs` is the
+//! one listing), dispatch through the same `eval_graph_cached`, and save
+//! as custom nodedefs declared after [`umber_graph::mtlx::painter_nodedefs`].
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use umber_graph::{
     eval_graph_cached, EvalCache, EvalContext, Graph, Node, NodeOutput, NodeRegistry, ParamValue,
 };
 
 use crate::graph_canvas::CanvasState;
+use crate::plugins::{self, PluginLoadReport};
 
 /// Default raster resolution (square) for a fresh panel.
 const DEFAULT_RESOLUTION: (u32, u32) = (512, 512);
@@ -113,6 +124,11 @@ pub struct GraphPanel {
     view: GraphView,
     /// The canvas's session state (view, drag, edge selection, menu).
     pub(crate) canvas: CanvasState,
+    /// `.mtlx` declarations for the loaded plugin nodes (sorted by name).
+    plugin_decls: Vec<umber_graph::mtlx::NodedefDecl>,
+    /// The last plugin scan's summary line (kept apart from `status`,
+    /// which every evaluate overwrites).
+    plugin_status: Option<String>,
 }
 
 impl GraphPanel {
@@ -144,7 +160,31 @@ impl GraphPanel {
             texture_key: None,
             view: GraphView::Canvas,
             canvas: CanvasState::default(),
+            plugin_decls: Vec::new(),
+            plugin_status: None,
         }
+    }
+
+    /// Scans `dirs` for `*.wasm` plugins and registers them after the
+    /// built-ins ([`crate::plugins::load_plugins`]): failures are
+    /// warnings on the plugin status line, never fatal. Returns the
+    /// scan's report.
+    pub fn load_plugins(&mut self, dirs: &[PathBuf]) -> PluginLoadReport {
+        let report = plugins::load_plugins(&mut self.registry, dirs);
+        self.plugin_decls.extend(
+            report
+                .loaded
+                .iter()
+                .map(|name| plugins::plugin_nodedef(name)),
+        );
+        self.plugin_decls.sort_by(|a, b| a.name.cmp(&b.name));
+        self.plugin_status = report.status_line();
+        report
+    }
+
+    /// The last plugin scan's summary (`None` when no `.wasm` was found).
+    pub fn plugin_status(&self) -> Option<&str> {
+        self.plugin_status.as_deref()
     }
 
     /// The editable graph.
@@ -369,7 +409,9 @@ impl GraphPanel {
                     .push((CANVAS_POS_PARAM.to_string(), ParamValue::Vec2(pos)));
             }
         }
-        umber_graph::mtlx::to_mtlx(&carried, &umber_graph::mtlx::painter_nodedefs())
+        let mut decls = umber_graph::mtlx::painter_nodedefs();
+        decls.extend(self.plugin_decls.iter().cloned());
+        umber_graph::mtlx::to_mtlx(&carried, &decls)
     }
 
     /// Parses a `.mtlx` document string into the panel (the
@@ -519,6 +561,9 @@ impl GraphPanel {
             GraphView::List => self.node_list(ui),
         }
         self.add_remove_row(ui);
+        if let Some(line) = self.plugin_status() {
+            ui.weak(line);
+        }
         self.editor_section(ui);
 
         ui.add_space(4.0);
@@ -1227,5 +1272,86 @@ mod tests {
         assert!(!panel.set_output_node(999), "unknown output returns false");
         assert!(!panel.set_param(999, "x", ParamValue::Float(1.0)));
         assert!(!panel.add_edge(a, 999, "in"));
+    }
+
+    /// A panel with the repo's example plugins loaded (blur5, infinite,
+    /// vignette — git-tracked, so no skip path).
+    fn plugin_panel() -> GraphPanel {
+        let mut panel = GraphPanel::new();
+        let report = panel.load_plugins(&[crate::plugins::dev_plugin_dir()]);
+        assert!(report.failed.is_empty(), "examples load: {report:?}");
+        panel
+    }
+
+    #[test]
+    fn panel_registry_lists_and_dispatches_a_wasm_node() {
+        let mut panel = plugin_panel();
+        let defs = panel.registry().node_defs();
+        assert!(defs.contains(&"blur5"), "Add-Node lists blur5: {defs:?}");
+        assert!(defs.contains(&"blur"), "built-ins beside it: {defs:?}");
+        assert_eq!(panel.plugin_status(), Some("3 plugin(s) loaded, 0 failed"));
+
+        // Small odd raster (catches w/h swaps; keeps the guest cheap).
+        panel.set_resolution((33, 17));
+        let grad = panel.add_node("gradient");
+        panel.set_param(grad, "type", ParamValue::Int(1));
+        let wasm = panel.add_node("blur5");
+        let native = panel.add_node("blur");
+        panel.set_param(native, "radius", ParamValue::Int(2));
+        assert!(panel.connect(grad, wasm, "in"));
+        assert!(panel.connect(grad, native, "in"));
+
+        assert!(panel.set_output_node(wasm));
+        panel.evaluate();
+        assert!(
+            !panel.status().starts_with("Eval failed"),
+            "status: {}",
+            panel.status()
+        );
+        let wasm_out = panel.last_output().cloned().expect("blur5 output");
+        assert!(panel.set_output_node(native));
+        panel.evaluate();
+        let native_out = panel.last_output().cloned().expect("blur output");
+        assert!(matches!(wasm_out, NodeOutput::Image(_)));
+        assert_eq!(wasm_out, native_out, "panel-dispatched blur5 == blur r2");
+    }
+
+    #[test]
+    fn wasm_node_saves_as_declared_nodedef_and_round_trips() {
+        let mut saved = plugin_panel();
+        let grad = saved.add_node("gradient");
+        let vig = saved.add_node("vignette");
+        saved.set_param(vig, "strength", ParamValue::Float(0.3));
+        assert!(saved.connect(grad, vig, "in"));
+        let doc = saved.to_mtlx();
+        assert!(
+            doc.contains("<nodedef name=\"vignette\" node=\"vignette\">"),
+            "plugin nodedef declared: {doc}"
+        );
+        assert!(
+            doc.find("<nodedef name=\"vignette\"").unwrap() < doc.find("<node ").unwrap(),
+            "declarations precede nodes"
+        );
+
+        let (graph, decls, warnings) = umber_graph::mtlx::from_mtlx(&doc).expect("parses");
+        assert!(
+            warnings.is_empty(),
+            "declared type must not warn: {warnings:?}"
+        );
+        assert!(decls.iter().any(|d| d.name == "vignette"));
+        let node = graph.nodes.iter().find(|n| n.id == vig).expect("node kept");
+        assert_eq!(node.node_def, "vignette");
+        assert!(node
+            .params
+            .contains(&("strength".to_string(), ParamValue::Float(0.3))));
+        assert!(graph
+            .edges
+            .iter()
+            .any(|e| e.from == grad && e.to == vig && e.input == "in"));
+
+        let mut loaded = plugin_panel();
+        assert!(loaded.load_mtlx(&doc), "status: {}", loaded.status());
+        assert_eq!(loaded.status(), "Graph loaded — press Evaluate.");
+        assert_eq!(loaded.to_mtlx(), doc, "save/load/save is byte-stable");
     }
 }

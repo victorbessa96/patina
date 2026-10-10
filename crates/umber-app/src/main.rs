@@ -27,6 +27,7 @@ mod graph_panel;
 mod paint_state;
 #[cfg(test)]
 mod perf_soak;
+mod plugins;
 mod tile_selection;
 mod uv_view;
 mod viewport;
@@ -255,9 +256,13 @@ impl UmberApp {
             }
         };
 
+        let mut graph = GraphPanel::new();
+        graph.load_plugins(&plugins::plugin_paths());
+
         Ok(Self {
             state: AppState {
                 paint,
+                graph,
                 ..AppState::default()
             },
             dock,
