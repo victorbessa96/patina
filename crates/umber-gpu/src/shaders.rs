@@ -350,3 +350,180 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(color, opacity);
 }
 "#;
+
+/// Barycentric-edge wireframe overlay (Wave-4 item 7).
+///
+/// NOT a line list: the pass draws the same triangles (from the
+/// duplicated-vertex buffer `umber_mesh::wire_vertices_from_indices`
+/// builds — positions plus one unit-simplex corner each) and shades
+/// edges in the fragment stage via the standard `fwidth` technique, so
+/// lines stay ~1px at any zoom. Drawn AFTER the mesh in the same render
+/// pass with `LessEqual` depth and a clip-space z bias (see the vertex
+/// stage) so coplanar edges win the z-fight against the mesh surface.
+///
+/// Bindings: group 0 binding 0 is the SAME `Camera` uniform the mesh
+/// pass uses — the pipeline reuses the mesh's bind-group layout object,
+/// so the app hands the already-built camera bind group straight
+/// through. Group 1 binding 0 is the wire color (user-set, default 40%
+/// white — see `renderer::WireColor`).
+pub const WIREFRAME_SHADER: &str = r#"
+struct Camera {
+    view_proj: mat4x4<f32>,
+    light_dir: vec4<f32>,
+    eye: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> camera: Camera;
+
+struct WireColor {
+    color: vec4<f32>,
+};
+
+@group(1) @binding(0) var<uniform> wire_color: WireColor;
+
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) bary: vec3<f32>,
+};
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) bary: vec3<f32>,
+};
+
+@vertex
+fn vs_main(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    var clip = camera.view_proj * vec4<f32>(in.position, 1.0);
+    // Z-fight mitigation (the design's clip-space bias arm): nudge the
+    // edge toward the camera so it wins against the coplanar mesh
+    // surface under LessEqual depth. 1e-3 of clip.w sits far above f32
+    // depth noise (~1e-7 relative) yet far below any visible parallax.
+    clip.z -= 0.001 * clip.w;
+    out.clip_position = clip;
+    out.bary = in.bary;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let edge = min(min(in.bary.x, in.bary.y), in.bary.z);
+    let w = fwidth(edge);
+    let alpha = 1.0 - smoothstep(0.0, w * 1.0, edge);
+    if (alpha < 0.01) {
+        discard;
+    }
+    return vec4<f32>(wire_color.color.rgb, wire_color.color.a * alpha);
+}
+"#;
+
+/// Procedural infinite ground grid (Wave-4 item 7).
+///
+/// NOT a mesh: a fullscreen big-triangle pass whose fragment
+/// reconstructs the world position per pixel by unprojecting the NDC
+/// near/far points through the inverse view-proj and intersecting the
+/// resulting ray with the y=0 plane. `world_from_ndc` below is the
+/// shader-side copy of `crate::camera::world_from_ndc` (same formula —
+/// the language boundary forces the duplication, documented here so
+/// the next reader doesn't "dedupe" one side into drift); the Rust side
+/// is shared by viewport picking and the offscreen-test math.
+///
+/// Pattern: minor lines every 1 world unit (25% white), major every 10
+/// (thicker, 45% white), x-axis red-ish / z-axis blue-ish (the
+/// Maya/Blender convention), infinite-grid fade to zero ~30 units from
+/// the origin. Fragments below the alpha threshold discard so the clear
+/// color shows through untouched.
+///
+/// Drawn BEFORE the mesh with depth-write OFF and depth-compare Always:
+/// it is a reference plane, not geometry — the mesh overwrites it
+/// wherever geometry exists.
+pub const GRID_SHADER: &str = r#"
+struct GridUniform {
+    inv_view_proj: mat4x4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> grid: GridUniform;
+
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    // NDC passed through explicitly: `@builtin(position)` arrives in
+    // the FRAGMENT stage in window (pixel) space, not clip space, so
+    // the fragment cannot recover NDC from it — the vertex hands the
+    // big-triangle XY down directly (w=1, so clip.xy IS ndc.xy).
+    @location(0) ndc_xy: vec2<f32>,
+};
+
+/// Big-triangle fullscreen pass: no vertex buffer, positions from the
+/// vertex index. z=0 (near plane) — the fragment ignores the depth and
+/// re-derives world pos from NDC instead.
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
+    var positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0)
+    );
+    var out: VertexOutput;
+    out.clip_position = vec4<f32>(positions[vertex_index], 0.0, 1.0);
+    out.ndc_xy = positions[vertex_index];
+    return out;
+}
+
+/// Shader-side copy of `crate::camera::world_from_ndc` — see that
+/// function's doc comment for the sharing contract.
+fn world_from_ndc(inv: mat4x4<f32>, ndc: vec4<f32>) -> vec3<f32> {
+    let world = inv * ndc;
+    return world.xyz / world.w;
+}
+
+/// Line coverage for a 1-unit grid along one axis: 0 at cell centers,
+/// 1 on the line, ~1px wide via `fwidth` (screen-constant width).
+fn grid_factor(coord: f32, pixel_world: f32) -> f32 {
+    let dist = abs(fract(coord - 0.5) - 0.5);
+    return 1.0 - smoothstep(0.0, pixel_world * 1.0, dist);
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let ndc_xy = in.ndc_xy;
+    let ray_origin = world_from_ndc(grid.inv_view_proj, vec4<f32>(ndc_xy, 0.0, 1.0));
+    let ray_far = world_from_ndc(grid.inv_view_proj, vec4<f32>(ndc_xy, 1.0, 1.0));
+    let ray_dir = ray_far - ray_origin;
+    // Looking parallel to (or away from) the plane: no grid here.
+    if (abs(ray_dir.y) < 1e-6) {
+        discard;
+    }
+    let t = -ray_origin.y / ray_dir.y;
+    if (t < 0.0) {
+        discard;
+    }
+    let world = ray_origin + ray_dir * t;
+
+    let pixel_world = length(vec2<f32>(fwidth(world.x), fwidth(world.z)));
+    let minor = max(grid_factor(world.x, pixel_world), grid_factor(world.z, pixel_world));
+    // Major lines every 10 units: distance rescaled to world units so
+    // the same pixel width reads thicker and brighter.
+    let major_dist = abs(fract(world.x / 10.0 - 0.5) - 0.5) * 10.0;
+    let major_dist_z = abs(fract(world.z / 10.0 - 0.5) - 0.5) * 10.0;
+    let major = max(
+        1.0 - smoothstep(0.0, pixel_world * 1.5, major_dist),
+        1.0 - smoothstep(0.0, pixel_world * 1.5, major_dist_z)
+    );
+    // Axis highlight: the z=0 line runs along x (red-ish), the x=0
+    // line along z (blue-ish).
+    let axis_x = 1.0 - smoothstep(0.0, pixel_world * 1.5, abs(world.z));
+    let axis_z = 1.0 - smoothstep(0.0, pixel_world * 1.5, abs(world.x));
+
+    // Infinite-grid fade: full strength at the origin, gone by 30u.
+    let fade = 1.0 - smoothstep(0.0, 30.0, length(world.xz));
+
+    var color = vec3<f32>(0.25) * minor + vec3<f32>(0.45) * major;
+    color = mix(color, vec3<f32>(0.80, 0.25, 0.25), axis_x);
+    color = mix(color, vec3<f32>(0.25, 0.40, 0.90), axis_z);
+    let alpha = max(max(minor, major), max(axis_x, axis_z)) * fade;
+    if (alpha < 0.01) {
+        discard;
+    }
+    return vec4<f32>(color, alpha);
+}
+"#;

@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 glam = { workspace = true }
 thiserror = { workspace = true }
+bytemuck = { workspace = true }
 gltf = { workspace = true, features = ["names"] }
 tobj = { workspace = true }
 ufbx = { workspace = true }

@@ -5,6 +5,23 @@
 use glam::camera::rh::{proj, view};
 use glam::{Mat4, Vec3};
 
+/// Unprojects an NDC point (with explicit depth: z=0 near, z=1 far in
+/// wgpu's directx convention) back to world space through the inverse
+/// view-projection matrix.
+///
+/// Shared helper (Wave-4 item 7): viewport picking (`umber-app`'s
+/// `pick_uv`) builds its near/far ray endpoints through this, the ground
+/// grid's offscreen-test math ports it to predict world positions per
+/// pixel, and the grid shader carries its own WGSL copy (`GRID_SHADER`'s
+/// `world_from_ndc` — same formula, documented there). The shader copy
+/// can't be deduped across the language boundary; the two Rust call
+/// sites share this one function instead of each hand-rolling the
+/// perspective divide.
+pub fn world_from_ndc(inv_view_proj: Mat4, ndc: glam::Vec4) -> Vec3 {
+    let world = inv_view_proj * ndc;
+    world.truncate() / world.w
+}
+
 /// Keeps the camera from flipping over the pole (gimbal lock at the top).
 const PITCH_LIMIT: f32 = std::f32::consts::FRAC_PI_2 - 0.01;
 
@@ -184,5 +201,26 @@ mod tests {
         let cam = OrbitCamera::default();
         let m = cam.view_proj(16.0 / 9.0);
         assert!(m.to_cols_array().iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn world_from_ndc_roundtrips_through_view_proj() {
+        let cam = OrbitCamera::default();
+        let view_proj = cam.view_proj(1.0);
+        let inv = view_proj.inverse();
+        // World origin must survive the round trip at several depths.
+        for z in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            let clip = view_proj * glam::Vec4::new(0.0, 0.0, 0.0, 1.0);
+            let ndc = clip.truncate() / clip.w;
+            let back = world_from_ndc(inv, glam::Vec4::new(ndc.x, ndc.y, z, 1.0));
+            assert!(back.is_finite());
+            // At the projected depth the round trip is exact.
+            if (z - ndc.z).abs() < 1e-6 {
+                assert!(
+                    (back - Vec3::ZERO).length() < 1e-4,
+                    "round trip drifted: {back:?}"
+                );
+            }
+        }
     }
 }

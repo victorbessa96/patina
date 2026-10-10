@@ -27,7 +27,7 @@ pub mod shaders;
 pub mod texture_display;
 pub mod tile_pool;
 
-pub use camera::OrbitCamera;
+pub use camera::{world_from_ndc, OrbitCamera};
 pub use ibl::{EnvFlags, EnvFormat, EnvIrradiance, IblError};
 pub use paint::{Dab, DabBuffer, PaintCompositor, PaintError, PaintTarget};
 pub use paint_thread::{FrameStats, PaintThread, PaintThreadCommand};
@@ -37,7 +37,9 @@ pub use tile_pool::{texel_within_tile, tile_for, TileId, TilePool, TILE_SIZE};
 /// carries a depth attachment matching [`renderer::GpuContext`]'s pipeline.
 pub const DEPTH_FORMAT_BITS: u8 = 32;
 pub use renderer::{
-    mesh_paint_shape, CameraUniform, GpuContext, GpuError, MeshBuffers, MeshPaintCallback, Vertex,
+    grid_paint_shape, mesh_paint_shape, wire_paint_shape, CameraUniform, GpuContext, GpuError,
+    GridPaintCallback, GridUniform, MeshBuffers, MeshPaintCallback, Vertex, WireColor,
+    WireframePaintCallback,
 };
 // App-facing handle re-exports: umber-app must not name wgpu types
 // directly (architecture rule — GPU objects stay behind umber-gpu), but it

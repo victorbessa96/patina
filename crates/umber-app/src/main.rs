@@ -158,6 +158,12 @@ pub struct UmberApp {
     /// dab-throughput delta (`perf` feature only).
     #[cfg(feature = "perf")]
     last_dabs_composited: u64,
+    /// Wireframe overlay toggle (View menu, W). Synced into the
+    /// viewport each frame; off by default (off renders byte-identical
+    /// to the mesh-only frame).
+    show_wireframe: bool,
+    /// Ground-grid toggle (View menu, G). Same sync + off contract.
+    show_grid: bool,
 }
 
 impl UmberApp {
@@ -229,6 +235,8 @@ impl UmberApp {
             last_frame_time: None,
             #[cfg(feature = "perf")]
             last_dabs_composited: 0,
+            show_wireframe: false,
+            show_grid: false,
         })
     }
 }
@@ -373,6 +381,22 @@ impl UmberApp {
 impl eframe::App for UmberApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         profiling::scope!("frame");
+        // Overlay keybinds (Wave-4 item 7): W toggles the wireframe, G
+        // the ground grid. Skipped while a text edit has focus (brush
+        // preset names, save-as dialog) so typing never flips the
+        // viewport.
+        if !ui.ctx().text_edit_focused() {
+            let (wire_key, grid_key) =
+                ui.input(|i| (i.key_pressed(egui::Key::W), i.key_pressed(egui::Key::G)));
+            if wire_key {
+                self.show_wireframe = !self.show_wireframe;
+            }
+            if grid_key {
+                self.show_grid = !self.show_grid;
+            }
+        }
+        self.state.viewport.set_show_wireframe(self.show_wireframe);
+        self.state.viewport.set_show_grid(self.show_grid);
         // Top bar: MenuBar container (egui 0.36 API).
         MenuBar::new().ui(ui, |ui| {
             MenuButton::new("File").ui(ui, |ui| {
@@ -419,6 +443,8 @@ impl eframe::App for UmberApp {
                 ui.checkbox(&mut self.show_perf_hud, "Show Perf HUD");
                 #[cfg(not(feature = "perf"))]
                 ui.label("Perf HUD needs --features perf");
+                ui.checkbox(&mut self.show_wireframe, "Show Wireframe (W)");
+                ui.checkbox(&mut self.show_grid, "Show Grid (G)");
             });
             MenuButton::new("Help").ui(ui, |ui| {
                 if ui.button("About Umber").clicked() {

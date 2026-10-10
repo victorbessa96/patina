@@ -33,6 +33,13 @@ pub struct Viewport {
     /// so `load_mesh` (which rebuilds the GPU buffers from scratch)
     /// re-applies it instead of silently dropping back to procedural.
     env: Option<EnvIrradiance>,
+    /// Barycentric-edge wireframe overlay (View menu / W). Off by
+    /// default: the off path draws nothing extra and renders
+    /// byte-identical to the mesh-only frame.
+    show_wireframe: bool,
+    /// Procedural ground grid (View menu / G). Off by default, same
+    /// byte-identical-off contract.
+    show_grid: bool,
 }
 
 impl Viewport {
@@ -64,6 +71,18 @@ impl Viewport {
         if let Some(mesh) = self.mesh.as_mut() {
             mesh.set_environment(gpu, self.env.as_ref());
         }
+    }
+
+    /// Shows or hides the wireframe overlay (View menu `Show Wireframe`,
+    /// W). Synced from the app shell each frame before `ui`.
+    pub fn set_show_wireframe(&mut self, on: bool) {
+        self.show_wireframe = on;
+    }
+
+    /// Shows or hides the ground grid (View menu `Show Grid`, G).
+    /// Synced from the app shell each frame before `ui`.
+    pub fn set_show_grid(&mut self, on: bool) {
+        self.show_grid = on;
     }
 
     /// Draws the viewport and handles orbit/pan/zoom/paint input.
@@ -111,15 +130,29 @@ impl Viewport {
             // per-fragment defensively, but the uniform arrives clean.
             let light_dir = glam::Vec3::new(-0.4, -1.0, -0.3).normalize();
             let uniform = umber_gpu::CameraUniform::new(view_proj, light_dir);
+            // Overlay order (Wave-4 item 7): grid BEFORE the mesh so
+            // geometry occludes the reference plane, wireframe AFTER so
+            // its LessEqual edges win. Either toggle off adds no shape
+            // at all — the off frame is byte-identical to mesh-only.
+            if self.show_grid {
+                let grid = gpu.grid_callback(view_proj);
+                ui.painter().add(umber_gpu::grid_paint_shape(rect, grid));
+            }
             let callback = mesh.paint_callback(gpu, uniform);
             let shape = umber_gpu::mesh_paint_shape(rect, callback);
             ui.painter().add(shape);
+            if self.show_wireframe {
+                let wire = gpu.wire_callback(mesh, uniform, umber_gpu::WireColor::default());
+                ui.painter().add(umber_gpu::wire_paint_shape(rect, wire));
+            }
         }
     }
 
     /// Casts a ray through the pointer position and returns the mesh UV
     /// at the nearest hit (or `None` on miss). NDC Y matches the
-    /// directx/wgpu convention (up = +1).
+    /// directx/wgpu convention (up = +1). The NDC→world unprojection is
+    /// the shared [`umber_gpu::world_from_ndc`] helper (deduped with the
+    /// ground grid's test math — same function, not a copy).
     fn pick_uv(
         &self,
         rect: egui::Rect,
@@ -133,10 +166,8 @@ impl Viewport {
         let inv = view_proj.inverse();
         // Unproject the near (z=0) and far (z=1) NDC points (directx
         // depth convention) to build the ray.
-        let near = inv * glam::Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
-        let far = inv * glam::Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
-        let near = near.truncate() / near.w;
-        let far = far.truncate() / far.w;
+        let near = umber_gpu::world_from_ndc(inv, glam::Vec4::new(ndc_x, ndc_y, 0.0, 1.0));
+        let far = umber_gpu::world_from_ndc(inv, glam::Vec4::new(ndc_x, ndc_y, 1.0, 1.0));
         let dir = far - near;
         let hit = umber_mesh::ray_intersect(mesh, self.camera.eye(), dir)?;
         umber_mesh::uv_at(mesh, hit)

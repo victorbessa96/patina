@@ -15,7 +15,7 @@ use std::num::NonZeroU64;
 use wgpu::util::DeviceExt as _;
 
 use crate::ibl::{EnvFlags, EnvIrradiance};
-use crate::shaders::MESH_SHADER;
+use crate::shaders::{GRID_SHADER, MESH_SHADER, WIREFRAME_SHADER};
 
 /// Errors raised while preparing GPU-side mesh data.
 #[derive(Debug, thiserror::Error)]
@@ -90,6 +90,46 @@ impl CameraUniform {
     }
 }
 
+/// Wireframe overlay color (group 1 binding 0 of
+/// `shaders::WIREFRAME_SHADER`): rgb + premultiplied-style alpha the
+/// fragment scales by the edge coverage.
+///
+/// Default is 40% white (the design's default); user-settable through
+/// the app, which passes its choice per draw — no pipeline rebuild.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WireColor {
+    /// Linear-space rgba.
+    pub color: [f32; 4],
+}
+
+impl Default for WireColor {
+    fn default() -> Self {
+        Self {
+            color: [0.4, 0.4, 0.4, 0.4],
+        }
+    }
+}
+
+/// Ground-grid uniforms (group 0 binding 0 of `shaders::GRID_SHADER`):
+/// the inverse view-projection matrix the fragment unprojects NDC
+/// through to find the y=0 plane hit per pixel.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GridUniform {
+    /// Inverse of the current `CameraUniform::view_proj`, column-major.
+    pub inv_view_proj: [[f32; 4]; 4],
+}
+
+impl GridUniform {
+    /// Builds the uniform from a view-projection matrix.
+    pub fn new(view_proj: glam::Mat4) -> Self {
+        Self {
+            inv_view_proj: view_proj.inverse().to_cols_array_2d(),
+        }
+    }
+}
+
 /// The single device context + mesh render pipeline for the viewport.
 ///
 /// Owns no surface or frame-loop state — eframe/egui own the surface and
@@ -121,6 +161,20 @@ pub struct GpuContext {
     openpbr_pipeline: wgpu::RenderPipeline,
     /// Bind-group layout shared by OpenPBR draw calls (camera + params).
     openpbr_layout: wgpu::BindGroupLayout,
+    /// Barycentric-edge wireframe pipeline (Wave-4 item 7): same
+    /// triangles as the mesh, shaded as 1px edges, drawn after the mesh
+    /// with `LessEqual` depth + clip-space bias. Group 0 reuses the
+    /// mesh's camera bind-group layout object, so the mesh bind group
+    /// binds straight through; group 1 is the [`WireColor`] uniform.
+    wire_pipeline: wgpu::RenderPipeline,
+    /// Group-1 layout for the wireframe pass ([`WireColor`]).
+    wire_color_layout: wgpu::BindGroupLayout,
+    /// Procedural ground-grid pipeline (Wave-4 item 7): big-triangle
+    /// fullscreen pass, inverse-VP unprojection in the fragment, drawn
+    /// before the mesh with depth-write off / compare Always.
+    grid_pipeline: wgpu::RenderPipeline,
+    /// Group-0 layout for the grid pass ([`GridUniform`]).
+    grid_layout: wgpu::BindGroupLayout,
 }
 
 /// Depth format used by the viewport mesh pipeline when depth is enabled.
@@ -221,6 +275,83 @@ impl GpuContext {
             vertex_buffer: buffers.vertex_buffer.clone(),
             index_buffer: buffers.index_buffer.clone(),
             index_count: buffers.index_count,
+        }
+    }
+
+    /// Builds the wireframe overlay callback (Wave-4 item 7): draws
+    /// `buffers`' duplicated-vertex buffer through the wire pipeline
+    /// AFTER the mesh draw, in the same render pass, reusing the mesh's
+    /// camera bind group at group 0 and a fresh per-frame color uniform
+    /// at group 1.
+    ///
+    /// The app calls this only when the wireframe toggle is on —
+    /// skip-draw when off is cheaper than a uniform flag, and renders
+    /// byte-identical to the mesh-only path.
+    pub fn wire_callback(
+        &self,
+        buffers: &MeshBuffers,
+        uniform: CameraUniform,
+        color: WireColor,
+    ) -> WireframePaintCallback {
+        let color_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("umber_wire_color_buffer"),
+                contents: bytemuck::bytes_of(&color),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let color_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("umber_wire_color_bind_group"),
+            layout: &self.wire_color_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &color_buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            }],
+        });
+        WireframePaintCallback {
+            pipeline: self.wire_pipeline.clone(),
+            bind_group: buffers.bind_group.clone(),
+            color_bind_group,
+            vertex_buffer: buffers.wire_buffer.clone(),
+            vertex_count: buffers.wire_count,
+            uniform_buffer: buffers.uniform_buffer.clone(),
+            uniform,
+        }
+    }
+
+    /// Builds the ground-grid callback (Wave-4 item 7): a fullscreen
+    /// big-triangle pass unprojecting through `view_proj`'s inverse.
+    /// The app adds its shape BEFORE the mesh shape so the mesh
+    /// occludes the reference plane; skipped entirely when the grid
+    /// toggle is off.
+    pub fn grid_callback(&self, view_proj: glam::Mat4) -> GridPaintCallback {
+        let uniform = GridUniform::new(view_proj);
+        let uniform_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("umber_grid_uniform_buffer"),
+                contents: bytemuck::bytes_of(&uniform),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("umber_grid_bind_group"),
+            layout: &self.grid_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &uniform_buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            }],
+        });
+        GridPaintCallback {
+            pipeline: self.grid_pipeline.clone(),
+            bind_group,
         }
     }
 
@@ -436,6 +567,155 @@ impl GpuContext {
 
         let (fallback_env_view, env_sampler) = Self::fallback_env_resources(&device);
 
+        // Wireframe overlay pipeline (Wave-4 item 7): the SAME group-0
+        // layout object as the mesh pass (the shader only declares
+        // binding 0 — unused layout entries are legal), plus a group-1
+        // color uniform. Depth: no writes (an overlay must not poison
+        // later draws), LessEqual so the clip-space-biased edges win
+        // against the coplanar surface. Alpha blending: the fragment's
+        // edge coverage is smooth, not binary.
+        let wire_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("umber_wireframe_shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(WIREFRAME_SHADER)),
+        });
+        let wire_color_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("umber_wire_color_bind_group_layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(size_of::<WireColor>() as u64),
+                },
+                count: None,
+            }],
+        });
+        let wire_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("umber_wire_pipeline_layout"),
+            bind_group_layouts: &[Some(&bind_group_layout), Some(&wire_color_layout)],
+            immediate_size: 0,
+        });
+        let wire_depth_stencil = depth_format.map(|format| wgpu::DepthStencilState {
+            format,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        });
+        let wire_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("umber_wire_pipeline"),
+            layout: Some(&wire_pipeline_layout),
+            vertex: wgpu::VertexState {
+                entry_point: Some("vs_main"),
+                module: &wire_shader,
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: size_of::<umber_mesh::WireVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3],
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                unclipped_depth: false,
+                conservative: false,
+                cull_mode: Some(wgpu::Face::Back),
+                front_face: wgpu::FrontFace::default(),
+                polygon_mode: wgpu::PolygonMode::default(),
+                strip_index_format: None,
+            },
+            depth_stencil: wire_depth_stencil,
+            multisample: wgpu::MultisampleState {
+                alpha_to_coverage_enabled: false,
+                count: 1,
+                mask: !0,
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &wire_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // Ground-grid pipeline (Wave-4 item 7): the vertex stage needs
+        // no buffers (big triangle from `vertex_index`); depth-write OFF
+        // and compare Always — a reference plane drawn first, which the
+        // mesh then occludes.
+        let grid_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("umber_grid_shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(GRID_SHADER)),
+        });
+        let grid_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("umber_grid_bind_group_layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: NonZeroU64::new(size_of::<GridUniform>() as u64),
+                },
+                count: None,
+            }],
+        });
+        let grid_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("umber_grid_pipeline_layout"),
+            bind_group_layouts: &[Some(&grid_layout)],
+            immediate_size: 0,
+        });
+        let grid_depth_stencil = depth_format.map(|format| wgpu::DepthStencilState {
+            format,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Always),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        });
+        let grid_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("umber_grid_pipeline"),
+            layout: Some(&grid_pipeline_layout),
+            vertex: wgpu::VertexState {
+                entry_point: Some("vs_main"),
+                module: &grid_shader,
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                unclipped_depth: false,
+                conservative: false,
+                cull_mode: None,
+                front_face: wgpu::FrontFace::default(),
+                polygon_mode: wgpu::PolygonMode::default(),
+                strip_index_format: None,
+            },
+            depth_stencil: grid_depth_stencil,
+            multisample: wgpu::MultisampleState {
+                alpha_to_coverage_enabled: false,
+                count: 1,
+                mask: !0,
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &grid_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         Self {
             device,
             queue,
@@ -448,6 +728,10 @@ impl GpuContext {
             openpbr_layout,
             fallback_env_view,
             env_sampler,
+            wire_pipeline,
+            wire_color_layout,
+            grid_pipeline,
+            grid_layout,
         }
     }
 
@@ -531,6 +815,14 @@ pub struct MeshBuffers {
     uniform_buffer: wgpu::Buffer,
     flags_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    /// Duplicated-vertex wireframe buffer (Wave-4 item 7): 3 verts per
+    /// triangle with barycentric corners, built once at upload from the
+    /// index list. Drawn non-indexed through the wire pipeline.
+    wire_buffer: wgpu::Buffer,
+    /// Number of wire verts (3x the valid-triangle count; may be 0 for
+    /// an index-less mesh — the buffer then holds one padding vert and
+    /// every wire draw is a 0..0 no-op).
+    wire_count: u32,
 }
 
 impl MeshBuffers {
@@ -569,9 +861,18 @@ impl MeshBuffers {
             contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
+        // An index-less mesh uploads a one-index padding buffer while
+        // `index_count` stays 0: slicing a zero-sized wgpu buffer
+        // panics at draw time, so the padding keeps the no-op draw
+        // (0..0) valid — same pattern as the wire buffer below.
+        let index_upload: &[u32] = if mesh.indices.is_empty() {
+            &[0]
+        } else {
+            &mesh.indices
+        };
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("umber_mesh_index_buffer"),
-            contents: bytemuck::cast_slice(&mesh.indices),
+            contents: bytemuck::cast_slice(index_upload),
             usage: wgpu::BufferUsages::INDEX,
         });
 
@@ -600,6 +901,28 @@ impl MeshBuffers {
         let index_count = u32::try_from(mesh.indices.len())
             .map_err(|_| GpuError::IndexCountOverflow(mesh.indices.len()))?;
 
+        // Wireframe overlay buffer (Wave-4 item 7): duplicated verts, one
+        // triangle's worth per index-triple. A zero-sized wgpu buffer is
+        // not portable, so an index-less mesh uploads one padding vert
+        // while `wire_count` stays 0 — every wire draw is then 0..0.
+        let wire_vertices = umber_mesh::wire_vertices_from_indices(mesh);
+        let wire_count = u32::try_from(wire_vertices.len())
+            .map_err(|_| GpuError::IndexCountOverflow(mesh.indices.len()))?;
+        let padding = [umber_mesh::WireVertex {
+            position: [0.0; 3],
+            bary: [1.0, 0.0, 0.0],
+        }];
+        let wire_upload: &[umber_mesh::WireVertex] = if wire_vertices.is_empty() {
+            &padding
+        } else {
+            &wire_vertices
+        };
+        let wire_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("umber_wire_vertex_buffer"),
+            contents: bytemuck::cast_slice(wire_upload),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
         Ok(Self {
             vertex_buffer,
             index_buffer,
@@ -607,6 +930,8 @@ impl MeshBuffers {
             uniform_buffer,
             flags_buffer,
             bind_group,
+            wire_buffer,
+            wire_count,
         })
     }
 
@@ -634,6 +959,11 @@ impl MeshBuffers {
     /// Number of indices in this mesh's index buffer (3x the triangle count).
     pub fn index_count(&self) -> u32 {
         self.index_count
+    }
+
+    /// Number of wireframe verts (3x the valid-triangle count).
+    pub fn wire_count(&self) -> u32 {
+        self.wire_count
     }
 
     /// Builds this frame's paint callback. `uniform` is computed by the
@@ -742,6 +1072,101 @@ impl egui_wgpu::CallbackTrait for OpenPbrPaintCallback {
     }
 }
 
+/// Per-frame egui paint callback for the wireframe overlay.
+///
+/// Structural mirror of [`MeshPaintCallback`]: cloned handles, the mesh's
+/// camera bind group rebound at group 0 of the wire layout (the layout
+/// object is shared, so this is the identical bind group — no rebuild),
+/// the per-frame color at group 1.
+pub struct WireframePaintCallback {
+    pipeline: wgpu::RenderPipeline,
+    bind_group: wgpu::BindGroup,
+    color_bind_group: wgpu::BindGroup,
+    vertex_buffer: wgpu::Buffer,
+    vertex_count: u32,
+    uniform_buffer: wgpu::Buffer,
+    uniform: CameraUniform,
+}
+
+impl WireframePaintCallback {
+    /// Draws the wireframe into `render_pass` — the exact state the egui
+    /// `CallbackTrait::paint` applies, reusable by offscreen tests. Uses
+    /// a non-indexed draw over the duplicated-vertex buffer.
+    pub(crate) fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, &self.bind_group, &[]);
+        render_pass.set_bind_group(1, &self.color_bind_group, &[]);
+        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        render_pass.draw(0..self.vertex_count, 0..1);
+    }
+}
+
+impl egui_wgpu::CallbackTrait for WireframePaintCallback {
+    fn prepare(
+        &self,
+        _device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        _egui_encoder: &mut wgpu::CommandEncoder,
+        _callback_resources: &mut egui_wgpu::CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        // Same camera uniform bytes the mesh pass writes this frame.
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&self.uniform));
+        Vec::new()
+    }
+
+    fn paint(
+        &self,
+        _info: epaint::PaintCallbackInfo,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        _callback_resources: &egui_wgpu::CallbackResources,
+    ) {
+        self.draw(render_pass);
+    }
+}
+
+/// Per-frame egui paint callback for the procedural ground grid.
+///
+/// Buffer-less fullscreen pass: the only per-frame state is the inverse
+/// view-proj uniform, baked at creation (like the OpenPBR params), so
+/// `prepare` stages nothing.
+pub struct GridPaintCallback {
+    pipeline: wgpu::RenderPipeline,
+    bind_group: wgpu::BindGroup,
+}
+
+impl GridPaintCallback {
+    /// Draws the grid into `render_pass` — the exact state the egui
+    /// `CallbackTrait::paint` applies, reusable by offscreen tests.
+    pub(crate) fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, &self.bind_group, &[]);
+        render_pass.draw(0..3, 0..1);
+    }
+}
+
+impl egui_wgpu::CallbackTrait for GridPaintCallback {
+    fn prepare(
+        &self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        _egui_encoder: &mut wgpu::CommandEncoder,
+        _callback_resources: &mut egui_wgpu::CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        Vec::new()
+    }
+
+    fn paint(
+        &self,
+        _info: epaint::PaintCallbackInfo,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        _callback_resources: &egui_wgpu::CallbackResources,
+    ) {
+        self.draw(render_pass);
+    }
+}
+
 /// Wraps `callback` into an `epaint::Shape` ready for `ui.painter().add(..)`.
 ///
 /// Kept in `umber-gpu` (rather than calling `egui_wgpu::Callback` from
@@ -749,6 +1174,22 @@ impl egui_wgpu::CallbackTrait for OpenPbrPaintCallback {
 /// egui-wgpu/wgpu type itself — it only ever holds opaque values handed
 /// back by this crate.
 pub fn mesh_paint_shape(rect: epaint::emath::Rect, callback: MeshPaintCallback) -> epaint::Shape {
+    egui_wgpu::Callback::new_paint_callback(rect, callback).into()
+}
+
+/// Wraps the wireframe overlay `callback` into an `epaint::Shape` — the
+/// app adds it AFTER the mesh shape, in the same render pass, when the
+/// wireframe toggle is on.
+pub fn wire_paint_shape(
+    rect: epaint::emath::Rect,
+    callback: WireframePaintCallback,
+) -> epaint::Shape {
+    egui_wgpu::Callback::new_paint_callback(rect, callback).into()
+}
+
+/// Wraps the ground-grid `callback` into an `epaint::Shape` — the app
+/// adds it BEFORE the mesh shape so geometry occludes the plane.
+pub fn grid_paint_shape(rect: epaint::emath::Rect, callback: GridPaintCallback) -> epaint::Shape {
     egui_wgpu::Callback::new_paint_callback(rect, callback).into()
 }
 
@@ -1049,6 +1490,580 @@ mod tests {
                 dielectric, metallic,
                 "metalness=1 must shade differently from metalness=0"
             );
+        }
+
+        // --- Wave-4 item 7 (overlays) tests. Same offscreen pattern as
+        // the IBL tests below: real pipelines, real bind groups, linear
+        // Rgba8Unorm target, padded-row readback. The camera math is
+        // derived IN RUST via the shared `crate::world_from_ndc` helper
+        // (the mirrored-math pattern) — never hardcoded pixels.
+
+        /// What one overlay-test frame draws: grid first (when
+        /// `grid_view_proj` is `Some`), then the mesh (when `buffers` is
+        /// `Some`), then the wireframe (when `wire_color` is `Some`) —
+        /// the app's frame order.
+        struct OverlayFrame<'a> {
+            buffers: Option<&'a MeshBuffers>,
+            uniform: CameraUniform,
+            grid_view_proj: Option<glam::Mat4>,
+            wire_color: Option<super::WireColor>,
+            w: u32,
+            h: u32,
+            clear: wgpu::Color,
+        }
+
+        /// Renders one [`OverlayFrame`] into a linear target and returns
+        /// tightly-packed RGBA8 bytes — in ONE pass with an optional
+        /// depth attachment matching the context's depth format.
+        fn render_overlays(gpu: &GpuContext, frame: OverlayFrame<'_>) -> Vec<u8> {
+            let OverlayFrame {
+                buffers,
+                uniform,
+                grid_view_proj,
+                wire_color,
+                w,
+                h,
+                clear,
+            } = frame;
+            let device = &gpu.device;
+            if let Some(buffers) = buffers {
+                gpu.queue
+                    .write_buffer(&buffers.uniform_buffer, 0, bytemuck::bytes_of(&uniform));
+            }
+            let target = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("umber_overlay_test_target"),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+            let depth_view = gpu.depth_format().map(|format| {
+                device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("umber_overlay_test_depth"),
+                        size: wgpu::Extent3d {
+                            width: w,
+                            height: h,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                        view_formats: &[],
+                    })
+                    .create_view(&wgpu::TextureViewDescriptor::default())
+            });
+
+            let grid_callback = grid_view_proj.map(|vp| gpu.grid_callback(vp));
+            let wire_callback = wire_color.map(|color| {
+                let buffers = buffers.expect("wireframe draw needs mesh buffers");
+                gpu.wire_callback(buffers, uniform, color)
+            });
+
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("umber_overlay_test_encoder"),
+            });
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("umber_overlay_test_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(clear),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: depth_view.as_ref().map(|depth| {
+                        wgpu::RenderPassDepthStencilAttachment {
+                            view: depth,
+                            depth_ops: Some(wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(1.0),
+                                store: wgpu::StoreOp::Store,
+                            }),
+                            stencil_ops: None,
+                        }
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                if let Some(grid) = &grid_callback {
+                    grid.draw(&mut pass);
+                }
+                if let Some(buffers) = buffers {
+                    // The exact state `MeshPaintCallback::paint` applies.
+                    pass.set_pipeline(&gpu.pipeline);
+                    pass.set_bind_group(0, &buffers.bind_group, &[]);
+                    pass.set_vertex_buffer(0, buffers.vertex_buffer.slice(..));
+                    pass.set_index_buffer(
+                        buffers.index_buffer.slice(..),
+                        wgpu::IndexFormat::Uint32,
+                    );
+                    pass.draw_indexed(0..buffers.index_count, 0, 0..1);
+                }
+                if let Some(wire) = &wire_callback {
+                    wire.draw(&mut pass);
+                }
+            }
+            gpu.queue.submit(Some(encoder.finish()));
+            readback_packed(device, &gpu.queue, &target, w, h)
+        }
+
+        /// Padded-row readback into tightly-packed RGBA8 (the IBL tests'
+        /// pattern, factored so the overlay tests share it).
+        fn readback_packed(
+            device: &wgpu::Device,
+            queue: &wgpu::Queue,
+            target: &wgpu::Texture,
+            w: u32,
+            h: u32,
+        ) -> Vec<u8> {
+            const PADDED_ROW: u32 = 256;
+            assert!(
+                w * 4 <= PADDED_ROW,
+                "overlay test targets must fit one row per 256-byte stride"
+            );
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("umber_overlay_test_readback"),
+                size: PADDED_ROW as u64 * h as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("umber_overlay_test_readback_encoder"),
+            });
+            enc.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: target,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(PADDED_ROW),
+                        rows_per_image: Some(h),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit(Some(enc.finish()));
+
+            let (sx, rx) = std::sync::mpsc::channel();
+            readback
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    let _ = sx.send(result);
+                });
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                })
+                .expect("poll succeeds");
+            rx.recv().expect("map callback ran").expect("map ok");
+            let padded = readback
+                .slice(..)
+                .get_mapped_range()
+                .expect("mapped range available")
+                .to_vec();
+            readback.unmap();
+            let mut data = Vec::with_capacity((w * h * 4) as usize);
+            for row in padded.chunks_exact(PADDED_ROW as usize) {
+                data.extend_from_slice(&row[..(w * 4) as usize]);
+            }
+            data
+        }
+
+        /// Projects a world point to the CONTAINING pixel in a W×H
+        /// target (NDC Y-up → row 0 at top, matching `pick_uv`):
+        /// float-pixel coords truncated toward the pixel origin and
+        /// clamped into range (a point exactly at the far edge lands in
+        /// the last pixel, never one past it).
+        fn world_to_pixel(view_proj: glam::Mat4, world: glam::Vec3, w: u32, h: u32) -> (u32, u32) {
+            let (fx, fy) = world_to_pixel_f(view_proj, world, w, h);
+            (
+                (fx.floor() as u32).min(w - 1),
+                (fy.floor() as u32).min(h - 1),
+            )
+        }
+
+        /// Float-pixel projection (pixel centers at half-integers).
+        fn world_to_pixel_f(
+            view_proj: glam::Mat4,
+            world: glam::Vec3,
+            w: u32,
+            h: u32,
+        ) -> (f32, f32) {
+            let clip = view_proj * world.extend(1.0);
+            let ndc = clip.truncate() / clip.w;
+            (
+                (ndc.x + 1.0) * 0.5 * w as f32,
+                (1.0 - ndc.y) * 0.5 * h as f32,
+            )
+        }
+
+        /// The Rust mirror of the grid shader's fragment math: NDC
+        /// near/far unprojected via the shared `world_from_ndc`, ray
+        /// intersected with the y=0 plane. Lets the test prove a pixel
+        /// really contains a world target before asserting on its bytes.
+        fn grid_pixel_world(
+            inv_view_proj: glam::Mat4,
+            i: u32,
+            j: u32,
+            w: u32,
+            h: u32,
+        ) -> glam::Vec3 {
+            let ndc_x = (i as f32 + 0.5) / w as f32 * 2.0 - 1.0;
+            let ndc_y = 1.0 - (j as f32 + 0.5) / h as f32 * 2.0;
+            let near =
+                crate::world_from_ndc(inv_view_proj, glam::Vec4::new(ndc_x, ndc_y, 0.0, 1.0));
+            let far = crate::world_from_ndc(inv_view_proj, glam::Vec4::new(ndc_x, ndc_y, 1.0, 1.0));
+            let dir = far - near;
+            near + dir * (-near.y / dir.y)
+        }
+
+        /// GRID TEST (the design's test 1): camera straight down at
+        /// height 10. World (0.5, 0, 0.5) is a cell center (NOT a line);
+        /// world (1.0, 0, 0.5) sits ON a minor line. Both pixel positions
+        /// are derived from the camera math in Rust (never hardcoded),
+        /// and each is forward-checked through `grid_pixel_world` to
+        /// prove the world target really falls inside that pixel.
+        #[test]
+        fn grid_cell_center_vs_line_pixels() {
+            let Some((adapter, device, queue)) = try_request_device() else {
+                eprintln!("skipping grid_cell_center_vs_line_pixels: no wgpu adapter available");
+                return;
+            };
+            let gpu = GpuContext::new(
+                adapter,
+                device,
+                queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                None,
+            );
+            // Straight down: eye +Y over the origin. Up is -Z — up=+Y
+            // would be parallel to the view direction (degenerate
+            // look_at). Same `rh` camera modules `camera.rs` uses.
+            let eye = glam::Vec3::new(0.0, 10.0, 0.0);
+            let view =
+                glam::camera::rh::view::look_at_mat4(eye, glam::Vec3::ZERO, glam::Vec3::NEG_Z);
+            let proj = glam::camera::rh::proj::directx::perspective(
+                45.0_f32.to_radians(),
+                1.0,
+                0.1,
+                100.0,
+            );
+            let view_proj = proj * view;
+            let inv = view_proj.inverse();
+
+            const W: u32 = 64;
+            const H: u32 = 64;
+            // World-per-pixel ≈ 2*10*tan(22.5°)/64 ≈ 0.13 — the half-
+            // pixel corpului: a target within 0.065 world units of a
+            // pixel's ray hit provably lies in that pixel.
+            let (ci, cj) = world_to_pixel(view_proj, glam::Vec3::new(0.5, 0.0, 0.5), W, H);
+            let (li, lj) = world_to_pixel(view_proj, glam::Vec3::new(1.0, 0.0, 0.5), W, H);
+            let center_hit = grid_pixel_world(inv, ci, cj, W, H);
+            assert!(
+                (center_hit.x - 0.5).abs() < 0.065 && (center_hit.z - 0.5).abs() < 0.065,
+                "cell-center pixel ({ci},{cj}) must contain (0.5,0,0.5), hit {center_hit:?}"
+            );
+            let line_hit = grid_pixel_world(inv, li, lj, W, H);
+            assert!(
+                (line_hit.x - 1.0).abs() < 0.065 && line_hit.y.abs() < 0.065,
+                "line pixel ({li},{lj}) must contain the x=1 line at y=0, hit {line_hit:?}"
+            );
+
+            // Grid OFF renders exactly the clear color (byte-identical —
+            // the design's test 2): nothing is drawn, so every pixel
+            // must equal the clear bytes, not merely resemble them.
+            let off = render_overlays(
+                &gpu,
+                OverlayFrame {
+                    buffers: None,
+                    uniform: CameraUniform::new(view_proj, glam::Vec3::NEG_Y),
+                    grid_view_proj: None,
+                    wire_color: None,
+                    w: W,
+                    h: H,
+                    clear: wgpu::Color::BLACK,
+                },
+            );
+            assert_eq!(off.len(), (W * H * 4) as usize);
+            for (i, px) in off.chunks_exact(4).enumerate() {
+                assert_eq!(
+                    px,
+                    &[0, 0, 0, 255],
+                    "grid-off pixel {i} must equal the clear color exactly"
+                );
+            }
+
+            let on = render_overlays(
+                &gpu,
+                OverlayFrame {
+                    buffers: None,
+                    uniform: CameraUniform::new(view_proj, glam::Vec3::NEG_Y),
+                    grid_view_proj: Some(view_proj),
+                    wire_color: None,
+                    w: W,
+                    h: H,
+                    clear: wgpu::Color::BLACK,
+                },
+            );
+            let at = |bytes: &[u8], i: u32, j: u32| {
+                let base = ((j * W + i) * 4) as usize;
+                [
+                    bytes[base],
+                    bytes[base + 1],
+                    bytes[base + 2],
+                    bytes[base + 3],
+                ]
+            };
+            // Cell center: the fragment discards below the alpha
+            // threshold (line distance 0.5 world units >> fwidth), so
+            // the pixel is the clear color EXACTLY.
+            assert_eq!(
+                at(&on, ci, cj),
+                [0, 0, 0, 255],
+                "cell-center pixel must stay the clear color with the grid on"
+            );
+            // On the line: the pixel is brighter — the line pixel sits
+            // within half a pixel-world of x=1, so coverage ≥ 0.5 and
+            // the 25%-white minor line lands ≥31 LSB over black; the
+            // assert pins half that (2× margin for adapter variance).
+            let line_px = at(&on, li, lj);
+            assert_ne!(
+                line_px,
+                [0, 0, 0, 255],
+                "on-line pixel ({li},{lj}) must differ from the clear color"
+            );
+            assert!(
+                line_px[0].max(line_px[1]).max(line_px[2]) >= 16,
+                "on-line pixel ({li},{lj}) must be visibly brighter, got {line_px:?}"
+            );
+        }
+
+        /// Distance from a float-pixel point to a float-pixel segment.
+        fn seg_distance(px: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+            let ab = (b.0 - a.0, b.1 - a.1);
+            let len_sq = ab.0 * ab.0 + ab.1 * ab.1;
+            let t = if len_sq < 1e-9 {
+                0.0
+            } else {
+                (((px.0 - a.0) * ab.0 + (px.1 - a.1) * ab.1) / len_sq).clamp(0.0, 1.0)
+            };
+            let closest = (a.0 + ab.0 * t, a.1 + ab.1 * t);
+            ((px.0 - closest.0).powi(2) + (px.1 - closest.1).powi(2)).sqrt()
+        }
+
+        /// WIREFRAME TEST (the design's test pin): a single quad (two
+        /// triangles sharing a diagonal), wireframe on. The diagonal
+        /// edge pixel row MUST exist (byte-diff vs wireframe-off at the
+        /// diagonal), and mesh shading elsewhere MUST be unchanged —
+        /// every differing pixel must lie in the edge neighborhood, whose
+        /// count E is derived from the projected edge geometry (the
+        /// bound: differing_total ≤ E).
+        #[test]
+        fn wireframe_diagonal_exists_and_interior_unchanged() {
+            let Some((adapter, device, queue)) = try_request_device() else {
+                eprintln!(
+                    "skipping wireframe_diagonal_exists_and_interior_unchanged: no wgpu adapter available"
+                );
+                return;
+            };
+            // Real depth range (the app's configuration): the
+            // clip-space bias must resolve inside [near, far] — with an
+            // identity view-proj the mesh depth sits exactly at 0 and any
+            // negative bias clips away, so the test needs perspective.
+            let gpu = GpuContext::new(
+                adapter,
+                device,
+                queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                Some(wgpu::TextureFormat::Depth32Float),
+            );
+            let mesh = umber_mesh::MeshData {
+                positions: vec![
+                    [-1.0, -1.0, 0.0],
+                    [1.0, -1.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                    [-1.0, 1.0, 0.0],
+                ],
+                normals: vec![[0.0, 0.0, 1.0]; 4],
+                uvs: vec![],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                material_names: vec![],
+            };
+            let buffers = MeshBuffers::upload(&gpu, &mesh).expect("upload succeeds");
+            // Builder→GPU plumbing pin: 2 triangles → 6 wire verts.
+            assert_eq!(buffers.wire_count(), 6);
+
+            // Perspective camera framing the quad (the orbit camera's own
+            // framing math — same matrices the live viewport uses).
+            let (min, max) = mesh.bounds().expect("quad has bounds");
+            let cam = crate::OrbitCamera::framing(min, max, 0.6, 0.4);
+            const W: u32 = 32;
+            const H: u32 = 32;
+            let view_proj = cam.view_proj(W as f32 / H as f32);
+            let uniform = CameraUniform::new(view_proj, glam::Vec3::NEG_Y);
+
+            let off = render_overlays(
+                &gpu,
+                OverlayFrame {
+                    buffers: Some(&buffers),
+                    uniform,
+                    grid_view_proj: None,
+                    wire_color: None,
+                    w: W,
+                    h: H,
+                    clear: wgpu::Color::BLACK,
+                },
+            );
+            let on = render_overlays(
+                &gpu,
+                OverlayFrame {
+                    buffers: Some(&buffers),
+                    uniform,
+                    grid_view_proj: None,
+                    wire_color: Some(super::WireColor::default()),
+                    w: W,
+                    h: H,
+                    clear: wgpu::Color::BLACK,
+                },
+            );
+            assert_eq!(off.len(), on.len());
+
+            // Projected edge segments in float-pixel space: the 4
+            // perimeter edges plus the shared diagonal (corner 0→2).
+            let corners = [
+                world_to_pixel_f(view_proj, glam::Vec3::new(-1.0, -1.0, 0.0), W, H),
+                world_to_pixel_f(view_proj, glam::Vec3::new(1.0, -1.0, 0.0), W, H),
+                world_to_pixel_f(view_proj, glam::Vec3::new(1.0, 1.0, 0.0), W, H),
+                world_to_pixel_f(view_proj, glam::Vec3::new(-1.0, 1.0, 0.0), W, H),
+            ];
+            let segments = [
+                (corners[0], corners[1]),
+                (corners[1], corners[2]),
+                (corners[2], corners[3]),
+                (corners[3], corners[0]),
+                (corners[0], corners[2]),
+            ];
+            // Edge neighborhood E: every pixel whose center lies within
+            // 1.5px of ANY triangle edge. fwidth 1px lines can only touch
+            // these pixels — anything differing beyond E is mesh-shading
+            // corruption, not wire.
+            let mut edge_neighborhood = vec![false; (W * H) as usize];
+            for j in 0..H {
+                for i in 0..W {
+                    let px = (i as f32 + 0.5, j as f32 + 0.5);
+                    if segments.iter().any(|&(a, b)| seg_distance(px, a, b) <= 1.5) {
+                        edge_neighborhood[(j * W + i) as usize] = true;
+                    }
+                }
+            }
+            let bound = edge_neighborhood.iter().filter(|&&b| b).count();
+
+            let mut differing_total = 0usize;
+            let mut diag_differ = 0usize;
+            for (idx, (a, b)) in off.chunks_exact(4).zip(on.chunks_exact(4)).enumerate() {
+                if a == b {
+                    continue;
+                }
+                differing_total += 1;
+                let i = (idx as u32) % W;
+                let j = (idx as u32) / W;
+                assert!(
+                    edge_neighborhood[idx],
+                    "pixel ({i},{j}) differs outside the edge neighborhood — wireframe corrupted mesh shading"
+                );
+                // Strictly on-diagonal: within 0.75px of the shared edge.
+                let px = (i as f32 + 0.5, j as f32 + 0.5);
+                if seg_distance(px, corners[0], corners[2]) <= 0.75 {
+                    diag_differ += 1;
+                }
+            }
+            // Existence: the diagonal row renders (a boundary-only
+            // implementation would leave diag_differ at 0).
+            assert!(
+                diag_differ >= 3,
+                "the shared diagonal must shade on-diagonal pixels (got {diag_differ})"
+            );
+            // Unchanged elsewhere: every differing pixel is inside E by
+            // construction of the assert above; this pins the total
+            // against the geometry-derived estimate so the bound can't
+            // silently inflate (E ≈ perimeter+diagonal pixels here).
+            assert!(
+                differing_total <= bound,
+                "differing pixels ({differing_total}) must stay within the edge-neighborhood estimate ({bound})"
+            );
+            assert!(
+                bound < (W * H) as usize / 2,
+                "neighborhood estimate ({bound}) must be a small fraction of the frame"
+            );
+        }
+
+        /// UPLOAD PLUMBING: an index-less mesh uploads fine with an empty
+        /// wire draw (padding vert, count 0) — the overlay path must not
+        /// make index-less meshes uploadable-today fail.
+        #[test]
+        fn wire_upload_handles_index_less_mesh() {
+            let Some((adapter, device, queue)) = try_request_device() else {
+                eprintln!(
+                    "skipping wire_upload_handles_index_less_mesh: no wgpu adapter available"
+                );
+                return;
+            };
+            let gpu = GpuContext::new(
+                adapter,
+                device,
+                queue,
+                wgpu::TextureFormat::Rgba8Unorm,
+                None,
+            );
+            let mesh = umber_mesh::MeshData {
+                positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                normals: vec![],
+                uvs: vec![],
+                indices: vec![],
+                material_names: vec![],
+            };
+            let buffers = MeshBuffers::upload(&gpu, &mesh).expect("upload succeeds");
+            assert_eq!(buffers.wire_count(), 0);
+            // And the mesh-only draw still works through the overlay
+            // helper with both toggles off.
+            let uniform = CameraUniform::new(glam::Mat4::IDENTITY, glam::Vec3::NEG_Y);
+            let bytes = render_overlays(
+                &gpu,
+                OverlayFrame {
+                    buffers: Some(&buffers),
+                    uniform,
+                    grid_view_proj: None,
+                    wire_color: None,
+                    w: 8,
+                    h: 8,
+                    clear: wgpu::Color::BLACK,
+                },
+            );
+            assert_eq!(bytes.len(), 8 * 8 * 4);
         }
 
         // --- Wave-4 item 6 (IBL) mesh-pass tests. `golden::RenderTarget`
