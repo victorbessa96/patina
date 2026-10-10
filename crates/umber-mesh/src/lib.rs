@@ -15,6 +15,7 @@ pub mod overlay;
 pub mod raycast;
 pub mod seam;
 pub mod seam_mirror;
+pub mod udim;
 
 pub use fbx::load_fbx;
 pub use gltf::load_gltf;
@@ -24,6 +25,7 @@ pub use mesh_maps::{
 };
 pub use overlay::{wire_vertices_from_indices, WireVertex};
 pub use raycast::{ray_intersect, uv_at, RayHit};
+pub use udim::{tile_of_triangle, tile_of_uv, FIRST_TILE};
 
 /// Interleaved mesh data as imported, before any GPU upload.
 #[derive(Debug, Clone, Default, PartialEq)]
