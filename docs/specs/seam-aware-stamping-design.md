@@ -137,15 +137,61 @@ consumes it.
 5. **Perf floor**: a seam-blind stroke must add ZERO dab emissions
    (count the batch) — the common case pays nothing.
 
-## Build order (claw-dispatchable slices)
+## Build order (claw-dispatchable)
 
 1. `SeamGraph` (umber-mesh, pure CPU, no deps) — smallest, unblocks
    everything. Claw-friendly: self-contained, testable headless.
+   **[DONE — fb984d1, merged]**
 2. Mirror-dab emission (umber-brush + app wiring) — depends on 1.
+   **[slice 2 DONE — aca7f8d, seam_mirror.rs, merged; the claw
+   corrected the brief's along-edge parameter (dot/La², not dot/La —
+   endpoints must correspond under UV stretch). Slice 3 = the app
+   wiring below, still open.]**
 3. `SeamLink` texture + seam-aware dilate (umber-gpu + bake) —
    depends on 1; parallel to 2.
 4. Golden seam-stroke test + the perf-floor assertion — lands with
    its slice, not after.
+
+## Slice 3 — the app wiring (the seam-aware stroke path)
+
+The wiring point is `PaintState::push_event` (umber-app/paint_state.rs
+:115). Today: pointer UV → texel → `StrokeEvent` → conditioner →
+`DabAdapter::stamps_to_dabs` → `PaintThreadCommand::Stage`. The
+seam-aware change is ONE expansion at the UV layer, before texel
+conversion:
+
+1. `PaintState` gains `seam_graph: Option<SeamGraph>` (None until a
+   mesh loads; the app builds it once per mesh load via
+   `build_seam_graph`, alongside the existing mesh handoff).
+2. In `push_event`, after computing the pointer's UV: if
+   `seam_graph.is_some()`, call
+   `mirror_positions(&[uv], graph, max_dist)` — ONE position per
+   event, the same `max_dist` = the brush's UV-space footprint
+   (`BRUSH_RADIUS_TEXELS / texels_per_uv` + margin). The returned
+   `MirrorMapping`s become ADDITIONAL `push_event` calls at the
+   mirrored UVs — they recurse through the SAME texel conversion +
+   conditioning path, so mirror dabs get spacing, one-euro, and
+   lazy-mouse identical to their originals. Recursion terminates:
+   `mirror_positions` is called only on the ORIGINAL event's UV, not
+   on mirrored UVs (the call site guards with a `seam_expanded: bool`
+   flag threaded through `push_event`'s private signature — public
+   API unchanged).
+3. `max_dist` must exceed the dab radius in UV units: a mirror point
+   is emitted only if the dab's footprint can reach the seam's
+   opposite island; radius/texels_per_uv is the natural scale. One
+   config const to tune: `SEAM_MIRROR_MARGIN` (start 1.5×).
+4. Stroke START is the right place for the seam-check, not per-dab:
+   `begin_stroke` queries `seam_edges_near` for the whole stroke's
+   neighborhood once; strokes far from any seam (the common case)
+   skip the per-event mirror call entirely (zero cost — the perf
+   contract from the design's test plan, now enforced by an assert
+   in the wiring test).
+5. Tests: the two-island quad mesh fixture from seam.rs, a stroke
+   crossing the seam → BOTH islands receive dabs (assert the staged
+   command count and that mirrored dabs carry the mirrored UV
+   positions from test b of the mirror suite); a stroke far from the
+   seam → mirror path never fires (assert count == 1 per event).
+
 
 Estimated size: 1 is a day-slice for a claw; 2 and 3 are each
 claw-sized; 4 rides along. The `SeamGraph` slice can dispatch
