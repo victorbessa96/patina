@@ -11,6 +11,7 @@ pub mod gltf;
 pub mod mesh_maps;
 pub mod raycast;
 pub mod seam;
+pub mod seam_mirror;
 
 pub use fbx::load_fbx;
 pub use gltf::load_gltf;
