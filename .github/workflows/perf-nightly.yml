@@ -1,0 +1,59 @@
+name: perf-nightly
+
+# The §12 protocol's regression gate (docs/perf/protocol.md): the nightly
+# job runs the perf harnesses headless and compares against
+# perf/baseline.json — a >10% regression on any budget fails the job.
+# NOT per-commit (the load directive): failures here don't block merges;
+# they surface the drift the protocol tracks.
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # 03:00 UTC nightly
+  workflow_dispatch: {} # manual runs for the baseline refresh
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  perf:
+    runs-on: [self-hosted] # the 3070 runner when Bessa adds it; falls back to hosted with lavapipe
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install lavapipe (headless Vulkan)
+        if: runner.environment != 'self-hosted'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers libvulkan1 vulkan-tools
+
+      - name: Build the perf harnesses
+        run: cargo build --release -p umber-app -p umber-gpu --features perf
+
+      - name: Run the perf harnesses (JSON out)
+        env:
+          UMBER_REF_SCENE_FRAMES: "1000"
+          UMBER_REF_SCENE_JSON: /tmp/ref-scene.json
+          UMBER_I2P_EVENTS: "5000"
+          UMBER_I2P_JSON: /tmp/i2p.json
+          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lxd/lavapipe.icd.json # CI's headless adapter; the 3070 runner overrides
+        run: |
+          cargo test -p umber-gpu --features perf --release ref_scene -- --nocapture --ignored || true
+          cargo test -p umber-app --features perf --release input_photon perf_soak -- --nocapture --ignored || true
+
+      - name: Compare against perf/baseline.json (>10% fails)
+        run: python3 scripts/perf_compare.py /tmp/ref-scene.json /tmp/i2p.json perf/baseline.json
+
+      - name: Upload the fresh numbers as the artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-nightly-${{ github.run_id }}
+          path: |
+            /tmp/ref-scene.json
+            /tmp/i2p.json
+          retention-days: 30
