@@ -147,6 +147,7 @@ pub fn filter_satisfiable(
         umber_export::ExportPreset {
             name: preset.name.clone(),
             outputs: kept,
+            materialx: preset.materialx,
         },
         skipped,
     )
@@ -317,6 +318,8 @@ pub struct ExportDialog {
     tiles: TileSelection,
     /// The loaded mesh's present tiles, cached across frames.
     mesh_tiles: MeshTilesCache,
+    /// Also write `<textureSet>.mtlx` (the preset's `materialx` toggle).
+    materialx: bool,
 }
 
 impl ExportDialog {
@@ -332,6 +335,7 @@ impl ExportDialog {
             last_skipped: Vec::new(),
             tiles: TileSelection::new(),
             mesh_tiles: MeshTilesCache::default(),
+            materialx: false,
         }
     }
 
@@ -350,6 +354,24 @@ impl ExportDialog {
     /// Changes the selected preset.
     pub fn set_preset(&mut self, preset: PresetChoice) {
         self.preset = preset;
+    }
+
+    /// Whether an export also writes the MaterialX document.
+    pub fn materialx(&self) -> bool {
+        self.materialx
+    }
+
+    /// Turns the MaterialX document output on/off.
+    pub fn set_materialx(&mut self, on: bool) {
+        self.materialx = on;
+    }
+
+    /// The preset an Export click runs: the chosen engine preset with the
+    /// dialog's MaterialX toggle applied.
+    pub fn build_preset(&self) -> umber_export::ExportPreset {
+        let mut preset = self.preset.build();
+        preset.materialx = self.materialx;
+        preset
     }
 
     /// The square export size in texels.
@@ -421,6 +443,7 @@ impl ExportDialog {
                 }
             });
         crate::size_presets::size_combo(ui, "Size", &mut self.size);
+        ui.checkbox(&mut self.materialx, "MaterialX (.mtlx)");
 
         ui.horizontal(|ui| {
             ui.label(format!("Out: {}", self.output_dir.display()));
@@ -625,7 +648,7 @@ impl ExportDialog {
         // Every tile's set carries the same kinds (AO + normal + Base
         // Color), so one filter serves all tiles.
         let available: Vec<umber_export::MapKind> = first.set.maps_iter().collect();
-        let full_preset = self.preset.build();
+        let full_preset = self.build_preset();
         let (filtered, skipped) = filter_satisfiable(&full_preset, &available);
         if filtered.outputs.is_empty() {
             anyhow::bail!(
@@ -715,6 +738,29 @@ mod tests {
         assert!(!d.can_export(false, true));
         assert!(!d.can_export(true, false));
         assert!(!d.can_export(false, false));
+    }
+
+    #[test]
+    fn materialx_toggle_reaches_the_run_preset() {
+        let mut d = dialog();
+        assert!(!d.materialx(), "off by default");
+        assert!(!d.build_preset().materialx);
+        d.set_materialx(true);
+        assert!(d.build_preset().materialx);
+        // The satisfiable-outputs filter keeps the toggle.
+        let (filtered, _) = filter_satisfiable(&d.build_preset(), &[]);
+        assert!(filtered.materialx);
+    }
+
+    #[test]
+    fn viewport_material_unpacks_to_the_mtlx_surface_defaults() {
+        // The app renders `OpenPbrParams::default()`; its six GPU slots
+        // unpack to exactly the values the .mtlx carries by default.
+        let p = umber_gpu::material::OpenPbrParams::default();
+        let surface = umber_export::SurfaceParams::from_gpu_slots(
+            p.base, p.surface, p.specular, p.coat, p.emission, p.iors,
+        );
+        assert_eq!(surface, umber_export::SurfaceParams::default());
     }
 
     #[test]

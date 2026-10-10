@@ -414,6 +414,7 @@ mod tests {
                 normal_convention: umber_export::presets::NormalConvention::Opengl,
                 format: umber_export::presets::OutputFormat::Png8,
             }],
+            materialx: false,
         };
         let out = std::env::temp_dir().join(format!(
             "umber-bake-sources-flat-base-{}",
@@ -697,6 +698,7 @@ mod tests {
                 normal_convention: umber_export::presets::NormalConvention::Opengl,
                 format: umber_export::presets::OutputFormat::Png8,
             }],
+            materialx: false,
         };
         let out = std::env::temp_dir().join(format!(
             "umber-bake-sources-assemble-{}",

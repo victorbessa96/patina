@@ -61,6 +61,40 @@ file_name)], udim: Option<u32>) -> String`
    toggle produces the .mtlx next to the PNGs, referencing
    the exact filenames written.
 
+## As built (2026-10-10)
+
+- **Generator**: `umber-graph/src/mtlx_doc.rs` `to_mtlx_document(name,
+  &SurfaceParams, &[MtlxTexture])`. Graph-local types, NOT
+  `OpenPbrParams`/`MapKind`: `MapKind` lives in umber-export (which now
+  depends on umber-graph — a cycle otherwise) and `OpenPbrParams` in
+  umber-gpu (wgpu; umber-graph also feeds umber-wasm).
+  `SurfaceParams::from_gpu_slots` unpacks the GPU struct's six slots.
+  `TextureMap` mirrors `MapKind`, and the driver's exhaustive match pins that.
+- **Inputs** (vendored nodedef lines): base_color L10, base_metalness
+  L14, specular_roughness L20, emission_color L76, geometry_opacity L78,
+  geometry_normal L82 (through a stdlib `<normalmap>`, which isn't in the
+  vendored file). AO and height have no OpenPBR input, so they're not wired.
+- **UDIM**: tiled runs emit MaterialX's own `<UDIM>` filename token,
+  NOT `$udim`. `$udim` is this app's export token, and no MaterialX
+  consumer resolves it. Lone-1001 runs emit the concrete names.
+  UNVERIFIED: `<UDIM>` and the `srgb_texture`/`lin_rec709` names come
+  from recall of the MaterialX spec ("Filename Substitutions",
+  "Color Spaces"). Check them against
+  `documents/Specification/MaterialX.Specification.md` upstream.
+- **Colorspace**: `srgb_texture` / `lin_rec709`, taken from the bytes
+  actually written (`driver::output_transfer`: PNG follows §9, TIFF is
+  always sRGB, EXR/JPEG are as-is). Packed scalar channels read through `<extract>`.
+  DirectX normals aren't wired, because `normalmap` expects +Y.
+- **Reader boundary**: `from_mtlx` parses the document as an EMPTY
+  graph (the doc has no painter `<node>`s). Structure is asserted by
+  walking the same reader's element tree.
+- **App**: the Export dialog has a "MaterialX (.mtlx)" checkbox, off by
+  default. Preset JSON takes `"materialx": true`, and the CLI honours it.
+  The viewport renders `OpenPbrParams::default()`, which a pin test
+  shows unpacks to `SurfaceParams::default()`, so the default-carrying
+  `run_preset*` entry points ARE the app's material today.
+  `run_preset_with_surface` is for when the material becomes editable.
+
 ## Build
 
 One claw slice: the generator (graph-side pure fn — no new

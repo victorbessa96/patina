@@ -152,6 +152,11 @@ pub struct ExportPreset {
     pub name: String,
     /// Output files this preset produces.
     pub outputs: Vec<OutputSpec>,
+    /// Also write `<textureSet>.mtlx` — a MaterialX OpenPBR material
+    /// referencing the written files (`docs/specs/mtlx-export-design.md`).
+    /// Absent in older preset files → off.
+    #[serde(default)]
+    pub materialx: bool,
 }
 
 /// Export-configuration errors.
@@ -192,6 +197,7 @@ impl ExportPreset {
         };
         Self {
             name: "glTF metal-rough".into(),
+            materialx: false,
             outputs: vec![
                 OutputSpec {
                     filename: "$textureSet_baseColor.png".into(),
@@ -254,6 +260,7 @@ impl ExportPreset {
         };
         Self {
             name: "Unreal ORM".into(),
+            materialx: false,
             outputs: vec![
                 OutputSpec {
                     filename: "$textureSet_basecolor.png".into(),
@@ -306,6 +313,7 @@ impl ExportPreset {
         };
         Self {
             name: "Unity HDRP/URP".into(),
+            materialx: false,
             outputs: vec![
                 OutputSpec {
                     filename: "$textureSet_BaseMap.png".into(),
@@ -354,6 +362,7 @@ impl ExportPreset {
         };
         Self {
             name: "Blender Principled".into(),
+            materialx: false,
             outputs: vec![
                 passthrough(MapKind::BaseColor, "$textureSet_basecolor.png"),
                 passthrough(MapKind::Roughness, "$textureSet_roughness.png"),
@@ -597,5 +606,7 @@ mod tests {
         let preset = ExportPreset::from_json(raw).unwrap();
         assert_eq!(preset.name, "Unity HDRP");
         assert_eq!(preset.outputs[0].maps[0].0, MapKind::BaseColor);
+        // Pre-MaterialX preset files (no `materialx` key) parse with it off.
+        assert!(!preset.materialx);
     }
 }

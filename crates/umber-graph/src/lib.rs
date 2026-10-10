@@ -17,6 +17,7 @@
 
 pub mod eval;
 pub mod mtlx;
+pub mod mtlx_doc;
 pub mod nodes;
 pub mod topo;
 pub mod value;

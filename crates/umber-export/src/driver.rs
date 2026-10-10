@@ -15,8 +15,13 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::png::Transfer;
+use umber_graph::mtlx_doc::{
+    to_mtlx_document, MtlxColorSpace, MtlxTexture, SurfaceParams, TextureMap, UDIM_TOKEN,
+};
+
 use crate::presets::{
-    convert_normal, pack_texel, ExportPreset, MapKind, NormalConvention, OutputFormat, Texel,
+    convert_normal, pack_texel, ChannelSlot, ChannelWiring, ExportPreset, MapKind,
+    NormalConvention, OutputFormat, OutputSpec, Texel,
 };
 use crate::{exr, formats};
 
@@ -284,6 +289,26 @@ pub fn output_color_space(output: &crate::presets::OutputSpec) -> &'static str {
     }
 }
 
+/// The transfer one output's bytes are ACTUALLY written with — the
+/// single source for both the writers and the `.mtlx` image colorspace.
+/// PNG follows the §9 per-channel rule at the output level (any
+/// color-managed input — baseColor/emissive — takes the sRGB curve; pure
+/// data outputs — rough/metal/normal/AO — stay linear); TIFF is always
+/// sRGB-curved; EXR and JPEG write the source bytes as-is.
+fn output_transfer(output: &OutputSpec) -> Transfer {
+    match output.format {
+        OutputFormat::Png8 | OutputFormat::Png16 => {
+            if output.maps.iter().any(|(kind, _)| map_kind_is_color(*kind)) {
+                Transfer::Srgb
+            } else {
+                Transfer::Linear
+            }
+        }
+        OutputFormat::Tiff => Transfer::Srgb,
+        OutputFormat::Exr32F | OutputFormat::Jpeg => Transfer::Linear,
+    }
+}
+
 /// JPEG quality used when a preset output picks JPEG (§6 previews).
 pub const DEFAULT_JPEG_QUALITY: u8 = 90;
 
@@ -299,6 +324,11 @@ pub const WORKING_NORMAL_CONVENTION: NormalConvention = NormalConvention::Opengl
 /// / `$colorSpace` derived by the driver); unknown or empty-valued
 /// tokens pass through verbatim per the template engine's contract.
 ///
+/// With [`ExportPreset::materialx`] on, `<textureSet>.mtlx` is written
+/// last (and listed last) — see [`run_preset_with_surface`]; this entry
+/// point carries the OpenPBR nodedef defaults for the untextured inputs
+/// (this crate cannot see the app's material).
+///
 /// # Errors
 ///
 /// [`ExportError::MissingMap`] when an output needs a map the set
@@ -310,10 +340,36 @@ pub fn run_preset(
     sources: &TokenSources<'_>,
     out_dir: &Path,
 ) -> Result<Vec<PathBuf>, ExportError> {
+    run_preset_with_surface(preset, set, sources, out_dir, &SurfaceParams::default())
+}
+
+/// [`run_preset`] with the material's untextured OpenPBR values for the
+/// `.mtlx` (the app passes its viewport material via
+/// [`SurfaceParams::from_gpu_slots`]). Without
+/// [`ExportPreset::materialx`] identical to [`run_preset`].
+///
+/// # Errors
+///
+/// As [`run_preset`].
+pub fn run_preset_with_surface(
+    preset: &ExportPreset,
+    set: &MapSet,
+    sources: &TokenSources<'_>,
+    out_dir: &Path,
+    surface: &SurfaceParams,
+) -> Result<Vec<PathBuf>, ExportError> {
     std::fs::create_dir_all(out_dir).map_err(|e| ExportError::Write(e.to_string()))?;
     validate_set(preset, set)?;
     let mut written = Vec::new();
     write_outputs(preset, set, sources, out_dir, false, &mut written)?;
+    if preset.materialx {
+        // The same expansion write_outputs used: the document names the
+        // exact files just written.
+        let doc = materialx_document(preset, sources.texture_set, surface, |output| {
+            sources.expand_output(output)
+        });
+        written.push(write_materialx(out_dir, sources.texture_set, &doc)?);
+    }
     Ok(written)
 }
 
@@ -331,6 +387,12 @@ pub fn run_preset(
 /// `[(1001, set)]` writes exactly the files [`run_preset`] writes
 /// (pinned by test). An empty `tiles` writes nothing.
 ///
+/// With [`ExportPreset::materialx`] on, ONE `<textureSet>.mtlx` is
+/// written after every tile: tile-named runs reference the files through
+/// MaterialX's `<UDIM>` token (the renderer resolves it per UV tile); the
+/// lone-1001 run references the concrete names. Untextured inputs carry
+/// the nodedef defaults (see [`run_preset_tiled_with_surface`]).
+///
 /// # Errors
 ///
 /// As [`run_preset`] — validated across EVERY tile before any file is
@@ -341,6 +403,22 @@ pub fn run_preset_tiled(
     tiles: &[(u16, &MapSet)],
     sources: &TokenSources<'_>,
     out_dir: &Path,
+) -> Result<Vec<PathBuf>, ExportError> {
+    run_preset_tiled_with_surface(preset, tiles, sources, out_dir, &SurfaceParams::default())
+}
+
+/// [`run_preset_tiled`] with the material's untextured OpenPBR values
+/// for the `.mtlx` (as [`run_preset_with_surface`]).
+///
+/// # Errors
+///
+/// As [`run_preset_tiled`].
+pub fn run_preset_tiled_with_surface(
+    preset: &ExportPreset,
+    tiles: &[(u16, &MapSet)],
+    sources: &TokenSources<'_>,
+    out_dir: &Path,
+    surface: &SurfaceParams,
 ) -> Result<Vec<PathBuf>, ExportError> {
     for (i, (tile, _)) in tiles.iter().enumerate() {
         if tiles[..i].iter().any(|(seen, _)| seen == tile) {
@@ -368,7 +446,122 @@ pub fn run_preset_tiled(
             &mut written,
         )?;
     }
+    if preset.materialx && !tiles.is_empty() {
+        let doc = if tile_names {
+            let udim_sources = TokenSources {
+                udim: UDIM_TOKEN,
+                ..*sources
+            };
+            materialx_document(preset, sources.texture_set, surface, |output| {
+                udim_sources.expand_output_from(output, &tiled_template(&output.filename))
+            })
+        } else {
+            // The lone 1001 tile: its files carry concrete names.
+            let udim = tiles[0].0.to_string();
+            let tile_sources = TokenSources {
+                udim: &udim,
+                ..*sources
+            };
+            materialx_document(preset, sources.texture_set, surface, |output| {
+                tile_sources.expand_output(output)
+            })
+        };
+        written.push(write_materialx(out_dir, sources.texture_set, &doc)?);
+    }
     Ok(written)
+}
+
+/// The `.mtlx` side of a run: one [`MtlxTexture`] per OpenPBR-wirable
+/// map of every output, `file_name` resolving each output's file name
+/// (relative to `out_dir`, where the document is written).
+///
+/// Per output map: a passthrough output (R/G/B straight from that map)
+/// references the whole image; a packed output (ORM, metallicRoughness)
+/// references one channel through an `<extract>` — scalar maps only.
+/// The colorspace is the output's real transfer ([`output_transfer`]).
+/// A DirectX-convention normal is NOT wired: MaterialX's `normalmap`
+/// expects +Y (OpenGL) tangent space and has no green-flip input.
+fn materialx_document(
+    preset: &ExportPreset,
+    texture_set: &str,
+    surface: &SurfaceParams,
+    file_name: impl Fn(&OutputSpec) -> String,
+) -> String {
+    let mut textures = Vec::new();
+    for output in &preset.outputs {
+        let file = file_name(output);
+        let colorspace = match output_transfer(output) {
+            Transfer::Srgb => MtlxColorSpace::SrgbTexture,
+            Transfer::Linear => MtlxColorSpace::LinRec709,
+        };
+        for (index, (kind, _)) in output.maps.iter().enumerate() {
+            let map = texture_map(*kind);
+            let Some((_, ty)) = map.openpbr_input() else {
+                continue; // AO / height: no OpenPBR input.
+            };
+            if map == TextureMap::Normal && output.normal_convention != NormalConvention::Opengl {
+                continue;
+            }
+            let channel = if is_passthrough(output, index) {
+                None
+            } else if ty == "float" {
+                match packed_channel(output, index) {
+                    Some(c) => Some(c),
+                    None => continue, // wired in no channel.
+                }
+            } else {
+                continue; // a color/vector map can't be one channel.
+            };
+            textures.push(MtlxTexture {
+                map,
+                file: file.clone(),
+                colorspace,
+                channel,
+            });
+        }
+    }
+    to_mtlx_document(texture_set, surface, &textures)
+}
+
+/// Writes `<textureSet>.mtlx` under `out_dir`, returning its path.
+fn write_materialx(out_dir: &Path, texture_set: &str, doc: &str) -> Result<PathBuf, ExportError> {
+    let path = out_dir.join(format!("{texture_set}.mtlx"));
+    std::fs::write(&path, doc).map_err(|e| ExportError::Write(e.to_string()))?;
+    Ok(path)
+}
+
+/// The graph-side mirror of a [`MapKind`] (exhaustive: a new kind fails
+/// to compile here until it is mapped).
+fn texture_map(kind: MapKind) -> TextureMap {
+    match kind {
+        MapKind::BaseColor => TextureMap::BaseColor,
+        MapKind::Roughness => TextureMap::Roughness,
+        MapKind::Metallic => TextureMap::Metallic,
+        MapKind::AmbientOcclusion => TextureMap::AmbientOcclusion,
+        MapKind::Normal => TextureMap::Normal,
+        MapKind::Height => TextureMap::Height,
+        MapKind::Opacity => TextureMap::Opacity,
+        MapKind::Emissive => TextureMap::Emissive,
+    }
+}
+
+/// Whether output R/G/B are map `index`'s own R/G/B (the file IS the map).
+fn is_passthrough(output: &OutputSpec, index: usize) -> bool {
+    output.channels[0] == ChannelWiring::new(index, ChannelSlot::R)
+        && output.channels[1] == ChannelWiring::new(index, ChannelSlot::G)
+        && output.channels[2] == ChannelWiring::new(index, ChannelSlot::B)
+}
+
+/// The output channel carrying map `index` in a packed output: its Gray
+/// slot first (the packing presets' scalar wire — glTF roughness = B, not
+/// the R it also feeds), then any of R/G/B, then A.
+fn packed_channel(output: &OutputSpec, index: usize) -> Option<u8> {
+    let ch = &output.channels;
+    (0..4)
+        .find(|&i| ch[i].map == index && ch[i].slot == ChannelSlot::Gray)
+        .or_else(|| (0..3).find(|&i| ch[i].map == index))
+        .or_else(|| (ch[3].map == index).then_some(3))
+        .map(|i| i as u8)
 }
 
 /// Tile 1001 as a number — the single tile whose lone export keeps
@@ -459,16 +652,7 @@ fn write_outputs(
         };
         let path = out_dir.join(filename);
 
-        // Per-output transfer: color-managed maps (baseColor/emissive)
-        // take the sRGB curve; data maps pass through linear — the §9
-        // per-channel color-management rule applied at the output
-        // level (a packed output with any color input is sRGB; pure
-        // data outputs — rough/metal/normal/AO — stay linear).
-        let transfer = if output.maps.iter().any(|(kind, _)| map_kind_is_color(*kind)) {
-            Transfer::Srgb
-        } else {
-            Transfer::Linear
-        };
+        let transfer = output_transfer(output);
 
         match output.format {
             OutputFormat::Png8 => crate::png::write_png(&path, size, size, &packed, transfer)?,
@@ -491,9 +675,7 @@ fn write_outputs(
                 }
                 exr::write_exr_f32(&path, size, size, &f32s)?;
             }
-            OutputFormat::Tiff => {
-                formats::write_tiff_rgba8(&path, size, size, &packed, Transfer::Srgb)?
-            }
+            OutputFormat::Tiff => formats::write_tiff_rgba8(&path, size, size, &packed, transfer)?,
             OutputFormat::Jpeg => {
                 formats::write_jpeg_rgba8(&path, size, size, &packed, DEFAULT_JPEG_QUALITY)?
             }
@@ -645,6 +827,7 @@ mod tests {
         set.set(MapKind::Metallic, vec![20, 20, 20, 255]);
         let preset = ExportPreset {
             name: "wiring probe".into(),
+            materialx: false,
             outputs: vec![crate::presets::OutputSpec {
                 filename: "$textureSet_wiring.png".into(),
                 maps: vec![(MapKind::Roughness, vec![]), (MapKind::Metallic, vec![])],
@@ -698,6 +881,7 @@ mod tests {
         set.set(MapKind::BaseColor, solid(size, 200));
         let preset = ExportPreset {
             name: "token probe".into(),
+            materialx: false,
             outputs: vec![passthrough_output(
                 "$mesh_$textureSet_$srcMap_$colorSpace_$layerName_$udim.png",
                 MapKind::BaseColor,
@@ -731,6 +915,7 @@ mod tests {
         set.set(MapKind::BaseColor, solid(size, 200));
         let preset = ExportPreset {
             name: "token probe".into(),
+            materialx: false,
             outputs: vec![passthrough_output(
                 "$mesh_$textureSet_$srcMap_$colorSpace_$layerName_$udim.png",
                 MapKind::BaseColor,
@@ -760,6 +945,7 @@ mod tests {
         set.set(MapKind::Metallic, vec![64, 64, 64, 255]);
         let preset = ExportPreset {
             name: "orm probe".into(),
+            materialx: false,
             outputs: vec![crate::presets::OutputSpec {
                 filename: "$textureSet_$srcMap_$colorSpace.png".into(),
                 maps: vec![
@@ -896,6 +1082,7 @@ mod tests {
         set_b.set(MapKind::BaseColor, solid(size, 20));
         let preset = ExportPreset {
             name: "udim probe".into(),
+            materialx: false,
             outputs: vec![passthrough_output(
                 "$textureSet_$srcMap_$udim.png",
                 MapKind::BaseColor,
@@ -984,6 +1171,7 @@ mod tests {
         let set = gltf_ready_set(size, 200);
         let udim_preset = ExportPreset {
             name: "token probe".into(),
+            materialx: false,
             outputs: vec![passthrough_output(
                 "$mesh_$textureSet_$srcMap_$colorSpace_$layerName_$udim.png",
                 MapKind::BaseColor,
@@ -1092,5 +1280,210 @@ mod tests {
         // No extension (or a dotted folder only): appended.
         assert_eq!(tiled_template("v1.0/$textureSet"), "v1.0/$textureSet_$udim");
         assert_eq!(tiled_template(".hidden"), ".hidden_$udim");
+    }
+
+    // --- MaterialX document (docs/specs/mtlx-export-design.md) ---
+
+    /// Every image `file` value in a `.mtlx`, unescaped, in document order.
+    fn mtlx_files(doc: &str) -> Vec<String> {
+        let key = "type=\"filename\" value=\"";
+        doc.match_indices(key)
+            .map(|(at, _)| {
+                let rest = &doc[at + key.len()..];
+                rest[..rest.find('"').unwrap()]
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&amp;", "&")
+            })
+            .collect()
+    }
+
+    /// The `<extract>` body reading channel `index` of image `image`.
+    fn extract_of(image: &str, index: u8) -> String {
+        format!(
+            "<input name=\"in\" type=\"color3\" nodename=\"{image}\" />\n    \
+             <input name=\"index\" type=\"integer\" value=\"{index}\" />"
+        )
+    }
+
+    fn with_materialx(mut preset: ExportPreset) -> ExportPreset {
+        preset.materialx = true;
+        preset
+    }
+
+    #[test]
+    fn materialx_run_writes_the_mtlx_naming_the_written_files() {
+        // (e) The preset integration: the .mtlx lands beside the PNGs and
+        // every image file it names is a file this run wrote.
+        let set = gltf_ready_set(2, 200);
+        let out =
+            std::env::temp_dir().join(format!("umber-export-drv-mtlx-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let written = run_preset(
+            &with_materialx(ExportPreset::gltf_metal_rough()),
+            &set,
+            &TokenSources::new("Sword"),
+            &out,
+        )
+        .unwrap();
+        assert_eq!(
+            file_names(&written),
+            vec![
+                "Sword_baseColor.png",
+                "Sword_metallicRoughness.png",
+                "Sword_normal.png",
+                "Sword.mtlx",
+            ]
+        );
+        let doc = std::fs::read_to_string(&written[3]).unwrap();
+        // base_color, base_metalness (G), specular_roughness (B), normal.
+        assert_eq!(
+            mtlx_files(&doc),
+            vec![
+                "Sword_baseColor.png",
+                "Sword_metallicRoughness.png",
+                "Sword_metallicRoughness.png",
+                "Sword_normal.png",
+            ]
+        );
+        for file in mtlx_files(&doc) {
+            assert!(out.join(&file).is_file(), "{file} was not written");
+        }
+        // The packed channels follow the preset's wiring (glTF: G = metal,
+        // B = rough); the colorspaces follow the written transfer.
+        assert!(doc.contains(&extract_of("Sword_base_metalness_image", 1)));
+        assert!(doc.contains(&extract_of("Sword_specular_roughness_image", 2)));
+        assert!(doc.contains("value=\"Sword_baseColor.png\" colorspace=\"srgb_texture\""));
+        assert!(doc.contains("value=\"Sword_metallicRoughness.png\" colorspace=\"lin_rec709\""));
+        assert!(doc.contains("value=\"Sword_normal.png\" colorspace=\"lin_rec709\""));
+        // The graph reader accepts it (no painter nodes inside → empty).
+        let (graph, _, _) = umber_graph::mtlx::from_mtlx(&doc).expect("parses");
+        assert!(graph.nodes.is_empty());
+        std::fs::remove_dir_all(&out).unwrap();
+    }
+
+    #[test]
+    fn materialx_off_writes_no_mtlx() {
+        let set = gltf_ready_set(2, 200);
+        let out =
+            std::env::temp_dir().join(format!("umber-export-drv-mtlxoff-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        run_preset(
+            &ExportPreset::gltf_metal_rough(),
+            &set,
+            &TokenSources::new("Sword"),
+            &out,
+        )
+        .unwrap();
+        assert!(!out.join("Sword.mtlx").exists());
+        std::fs::remove_dir_all(&out).unwrap();
+    }
+
+    #[test]
+    fn materialx_tiled_run_uses_the_udim_token_and_single_tile_stays_concrete() {
+        // (d) through the real driver: a two-tile run's document names the
+        // files with MaterialX's <UDIM> token — each tile's substitution is
+        // a file the run wrote; the lone-1001 run names concrete files.
+        let set_a = gltf_ready_set(2, 10);
+        let set_b = gltf_ready_set(2, 20);
+        let preset = with_materialx(ExportPreset::gltf_metal_rough());
+        let out =
+            std::env::temp_dir().join(format!("umber-export-drv-mtlxudim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let written = run_preset_tiled(
+            &preset,
+            &[(1001, &set_a), (1002, &set_b)],
+            &TokenSources::new("Sword"),
+            &out,
+        )
+        .unwrap();
+        assert_eq!(written.len(), 7, "6 tile files + one .mtlx");
+        assert!(written[6].ends_with("Sword.mtlx"));
+        let doc = std::fs::read_to_string(&written[6]).unwrap();
+        let files = mtlx_files(&doc);
+        assert_eq!(files[0], "Sword_baseColor_<UDIM>.png");
+        assert!(doc.contains("value=\"Sword_baseColor_&lt;UDIM&gt;.png\""));
+        for file in &files {
+            assert!(file.contains(UDIM_TOKEN), "{file} must be tiled");
+            for tile in ["1001", "1002"] {
+                let concrete = file.replace(UDIM_TOKEN, tile);
+                assert!(out.join(&concrete).is_file(), "{concrete} was not written");
+            }
+        }
+        std::fs::remove_dir_all(&out).unwrap();
+
+        let written = run_preset_tiled(
+            &preset,
+            &[(1001, &set_a)],
+            &TokenSources::new("Sword"),
+            &out,
+        )
+        .unwrap();
+        let doc = std::fs::read_to_string(written.last().unwrap()).unwrap();
+        assert!(!doc.contains("UDIM"));
+        assert_eq!(mtlx_files(&doc)[0], "Sword_baseColor.png");
+        for file in mtlx_files(&doc) {
+            assert!(out.join(&file).is_file(), "{file} was not written");
+        }
+        std::fs::remove_dir_all(&out).unwrap();
+    }
+
+    #[test]
+    fn materialx_orm_skips_ao_and_the_directx_normal() {
+        // Unreal: AO has no OpenPBR input; ORM's G/B carry rough/metal;
+        // the DirectX normal is not wired (normalmap expects +Y).
+        let size = 2;
+        let mut set = gltf_ready_set(size, 100);
+        set.set(MapKind::AmbientOcclusion, solid(size, 230));
+        let out =
+            std::env::temp_dir().join(format!("umber-export-drv-mtlxorm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let written = run_preset(
+            &with_materialx(ExportPreset::unreal_orm()),
+            &set,
+            &TokenSources::new("Hull"),
+            &out,
+        )
+        .unwrap();
+        let doc = std::fs::read_to_string(written.last().unwrap()).unwrap();
+        assert_eq!(
+            mtlx_files(&doc),
+            vec![
+                "Hull_basecolor.png",
+                "Hull_OpenglORM.png",
+                "Hull_OpenglORM.png"
+            ]
+        );
+        assert!(doc.contains(&extract_of("Hull_specular_roughness_image", 1)));
+        assert!(doc.contains(&extract_of("Hull_base_metalness_image", 2)));
+        assert!(!doc.contains("geometry_normal"));
+        assert!(!doc.contains("normalmap"));
+        std::fs::remove_dir_all(&out).unwrap();
+    }
+
+    #[test]
+    fn materialx_colorspace_follows_the_written_transfer() {
+        // TIFF is always sRGB-curved; EXR never — a roughness map in each
+        // is tagged by its bytes, not by the §9 kind default.
+        let mut tiff = passthrough_output("$textureSet_rough.tif", MapKind::Roughness);
+        tiff.format = OutputFormat::Tiff;
+        let mut exr = passthrough_output("$textureSet_base.exr", MapKind::BaseColor);
+        exr.format = OutputFormat::Exr32F;
+        let preset = ExportPreset {
+            name: "transfer probe".into(),
+            outputs: vec![tiff, exr],
+            materialx: true,
+        };
+        let mut set = MapSet::new(2);
+        set.set(MapKind::Roughness, solid(2, 64));
+        set.set(MapKind::BaseColor, solid(2, 64));
+        let out =
+            std::env::temp_dir().join(format!("umber-export-drv-mtlxcs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let written = run_preset(&preset, &set, &TokenSources::new("T"), &out).unwrap();
+        let doc = std::fs::read_to_string(written.last().unwrap()).unwrap();
+        assert!(doc.contains("value=\"T_rough.tif\" colorspace=\"srgb_texture\""));
+        assert!(doc.contains("value=\"T_base.exr\" colorspace=\"lin_rec709\""));
+        std::fs::remove_dir_all(&out).unwrap();
     }
 }

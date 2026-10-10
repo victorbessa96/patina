@@ -15,3 +15,4 @@ bytemuck = { workspace = true }
 image = { workspace = true }
 png = "0.17"
 ag-psd = "0.3.0"
+umber-graph = { workspace = true }

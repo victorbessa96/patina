@@ -22,9 +22,9 @@ pub mod psd;
 pub use dither::dither_quantize_rgba8;
 
 pub use driver::{
-    mesh_stem, output_color_space, run_preset, run_preset_tiled, src_map_token, tiled_template,
-    ExportError, MapSet, TokenSources, DEFAULT_JPEG_QUALITY, SINGLE_TILE_UDIM,
-    WORKING_NORMAL_CONVENTION,
+    mesh_stem, output_color_space, run_preset, run_preset_tiled, run_preset_tiled_with_surface,
+    run_preset_with_surface, src_map_token, tiled_template, ExportError, MapSet, TokenSources,
+    DEFAULT_JPEG_QUALITY, SINGLE_TILE_UDIM, WORKING_NORMAL_CONVENTION,
 };
 pub use formats::{write_jpeg_rgba8, write_tiff_rgba8, JpegError, TiffError};
 pub use icc::{embed_iccp, embed_srgb_iccp, SRGB_ICC_PROFILE};
@@ -32,6 +32,7 @@ pub use presets::{
     convert_normal, pack_texel, ChannelSlot, ExportPreset, ExportPresetError, MapKind,
     NormalConvention, OutputFormat, OutputSpec, Texel,
 };
+pub use umber_graph::mtlx_doc::SurfaceParams;
 
 /// Substitute `$token` placeholders in an export path template.
 ///

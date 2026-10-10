@@ -854,6 +854,7 @@ fn export_mesh(
     let preset = umber_export::ExportPreset {
         name: full_preset.name.clone(),
         outputs: filtered_outputs,
+        materialx: full_preset.materialx,
     };
     if preset.outputs.is_empty() {
         return Err(anyhow::anyhow!(

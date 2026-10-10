@@ -230,7 +230,7 @@ pub enum MtlxError {
     },
 }
 
-fn esc(s: &str) -> String {
+pub(crate) fn esc(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -252,11 +252,11 @@ fn unesc(s: &str) -> String {
         .replace("&amp;", "&")
 }
 
-fn fmt_float(v: f32) -> String {
+pub(crate) fn fmt_float(v: f32) -> String {
     v.to_string()
 }
 
-fn fmt_vec(vs: &[f32]) -> String {
+pub(crate) fn fmt_vec(vs: &[f32]) -> String {
     vs.iter()
         .map(|v| v.to_string())
         .collect::<Vec<_>>()
@@ -367,15 +367,15 @@ pub fn to_mtlx(graph: &Graph, custom_nodedefs: &[NodedefDecl]) -> String {
 // Minimal tolerant XML reader (the subset we emit; documented, not general).
 // ---------------------------------------------------------------------------
 
-struct Elem {
-    name: String,
-    attrs: Vec<(String, String)>,
-    children: Vec<Elem>,
-    line: usize,
+pub(crate) struct Elem {
+    pub(crate) name: String,
+    pub(crate) attrs: Vec<(String, String)>,
+    pub(crate) children: Vec<Elem>,
+    pub(crate) line: usize,
 }
 
 impl Elem {
-    fn attr(&self, key: &str) -> Option<&str> {
+    pub(crate) fn attr(&self, key: &str) -> Option<&str> {
         self.attrs
             .iter()
             .find(|(k, _)| k == key)
@@ -602,7 +602,7 @@ impl<'a> Cursor<'a> {
     }
 }
 
-fn parse_doc(s: &str) -> Result<Elem, MtlxError> {
+pub(crate) fn parse_doc(s: &str) -> Result<Elem, MtlxError> {
     let mut c = Cursor::new(s);
     let mut root: Option<Elem> = None;
     loop {
