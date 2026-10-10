@@ -123,6 +123,17 @@ impl MapSet {
     pub fn maps_iter(&self) -> impl Iterator<Item = MapKind> + '_ {
         self.maps.iter().map(|(k, _)| *k)
     }
+
+    /// The set's square resolution.
+    pub fn size(&self) -> u32 {
+        self.size
+    }
+
+    /// Every held map with its bytes, in insertion order — the
+    /// document-format writers (PSD) need the full set.
+    pub fn maps_with_bytes(&self) -> impl Iterator<Item = (MapKind, &[u8])> + '_ {
+        self.maps.iter().map(|(k, b)| (*k, b.as_slice()))
+    }
 }
 
 /// The single-tile `$udim` value: tile 1001, the default every
