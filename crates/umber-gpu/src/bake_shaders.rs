@@ -1503,6 +1503,10 @@ fn cs_main(@builtin(workgroup_id) workgroup_id: vec3<u32>) {
 /// - `1 = world normal`: the HIT triangle's face normal (`tri.normal`,
 ///   normalized), encoded `rgb = n * 0.5 + 0.5`, `a = 1`. This is the
 ///   "object/world space" normal-space option requirements §3 names.
+/// - `2 = tangent normal`: the HIT normal transformed into the LOW's
+///   per-texel UV-derivative TBN frame (`transfer_tbn` below), encoded
+///   `rgb = transpose(TBN) * n * 0.5 + 0.5`, `a = 1` — the Mikktspace-style
+///   tangent-space fold (green = +Y up, OpenGL).
 ///   WORLD-space v1: the HIGH normal is written as-is, NOT transformed into
 ///   the LOW's tangent frame — per-texel UV-derivative TBN is the deferred
 ///   fold (see `TANGENT_NORMAL_BAKE_SHADER`'s screen-space-frame discussion
@@ -1512,8 +1516,8 @@ fn cs_main(@builtin(workgroup_id) workgroup_id: vec3<u32>) {
 ///   FACE normal (always available, even for UV-less IMPORTS without vertex
 ///   normals), so a faceted HIGH bakes faceted normals.
 ///
-/// A validated hit outside `map_mode ∈ {0, 1}` cannot occur (the Rust side
-/// only ever writes `0`/`1`); misses write background `(0, 0, 0, 0)`.
+/// A validated hit outside `map_mode ∈ {0, 1, 2}` cannot occur (the Rust side
+/// only ever writes `0`/`1`/`2`); misses write background `(0, 0, 0, 0)`.
 ///
 /// # The cage does NOT enter v1's GPU path
 ///
@@ -1626,6 +1630,81 @@ fn ray_hit_distance(
     return -1.0;
 }
 
+/// Mikktspace-style per-texel UV-derivative frame; green = +Y up (OpenGL/Mikktspace).
+struct TbnFrame {
+    T: vec3<f32>,
+    B: vec3<f32>,
+};
+
+fn transfer_tbn(coord: vec2<i32>, p0: vec3<f32>, N: vec3<f32>) -> TbnFrame {
+    let dims = vec2<i32>(i32(params.width), i32(params.height));
+    var p_px = vec3<f32>(0.0, 0.0, 0.0);
+    var p_nx = vec3<f32>(0.0, 0.0, 0.0);
+    var p_py = vec3<f32>(0.0, 0.0, 0.0);
+    var p_ny = vec3<f32>(0.0, 0.0, 0.0);
+    var has_px = false;
+    var has_nx = false;
+    var has_py = false;
+    var has_ny = false;
+    var len_px = 0.0;
+    var len_nx = 0.0;
+    var len_py = 0.0;
+    var len_ny = 0.0;
+    if (coord.x + 1 < dims.x) {
+        let s = textureLoad(low_pos_tex, coord + vec2<i32>(1, 0), 0);
+        if (s.w > 0.5) { p_px = s.xyz; has_px = true; len_px = length(s.xyz - p0); }
+    }
+    if (coord.x - 1 >= 0) {
+        let s = textureLoad(low_pos_tex, coord + vec2<i32>(-1, 0), 0);
+        if (s.w > 0.5) { p_nx = s.xyz; has_nx = true; len_nx = length(s.xyz - p0); }
+    }
+    if (coord.y + 1 < dims.y) {
+        let s = textureLoad(low_pos_tex, coord + vec2<i32>(0, 1), 0);
+        if (s.w > 0.5) { p_py = s.xyz; has_py = true; len_py = length(s.xyz - p0); }
+    }
+    if (coord.y - 1 >= 0) {
+        let s = textureLoad(low_pos_tex, coord + vec2<i32>(0, -1), 0);
+        if (s.w > 0.5) { p_ny = s.xyz; has_ny = true; len_ny = length(s.xyz - p0); }
+    }
+    // Local texel scale = smallest valid neighbor jump; a jump > 4x it
+    // crossed a UV seam, so that neighbor is skipped (opposite side used).
+    var scale = 1e30;
+    if (has_px) { scale = min(scale, len_px); }
+    if (has_nx) { scale = min(scale, len_nx); }
+    if (has_py) { scale = min(scale, len_py); }
+    if (has_ny) { scale = min(scale, len_ny); }
+    scale = max(scale, 1e-6);
+    if (has_px && len_px > 4.0 * scale) { has_px = false; }
+    if (has_nx && len_nx > 4.0 * scale) { has_nx = false; }
+    if (has_py && len_py > 4.0 * scale) { has_py = false; }
+    if (has_ny && len_ny > 4.0 * scale) { has_ny = false; }
+    // Texel +x is +u; texel +y is -v (position pass's `(1 - v)` flip), so
+    // the v-derivative raw vector is (ny - py), not (py - ny).
+    var has_du = false;
+    var has_dv = false;
+    var du = vec3<f32>(0.0, 0.0, 0.0);
+    var dv = vec3<f32>(0.0, 0.0, 0.0);
+    if (has_px && has_nx) { du = (p_px - p_nx) * 0.5; has_du = true; }
+    else if (has_px) { du = p_px - p0; has_du = true; }
+    else if (has_nx) { du = p0 - p_nx; has_du = true; }
+    if (has_py && has_ny) { dv = (p_ny - p_py) * 0.5; has_dv = true; }
+    else if (has_ny) { dv = p_ny - p0; has_dv = true; }
+    else if (has_py) { dv = p0 - p_py; has_dv = true; }
+    // Zero-derivative texel: fall back to whichever derivative axis is
+    // nonzero, else the (1,0,0) Gram-Schmidt fallback below.
+    var t_raw = vec3<f32>(1.0, 0.0, 0.0);
+    if (has_du && length(du) > 1e-6) { t_raw = du; }
+    else if (has_dv && length(dv) > 1e-6) { t_raw = dv; }
+    var t = t_raw - N * dot(N, t_raw);
+    var tl = length(t);
+    if (!(tl > 1e-6)) {
+        t = vec3<f32>(1.0, 0.0, 0.0) - N * dot(N, vec3<f32>(1.0, 0.0, 0.0));
+        tl = length(t);
+    }
+    let T = t / max(tl, 1e-6);
+    return TbnFrame(T, cross(N, T));
+}
+
 /// Mesh-fed high→low transfer: per-texel ray origin and frame come from
 /// `low_pos_tex`/`low_normal_tex` (the two outputs of `POSITION_BAKE_SHADER`'s
 /// `cs_main`, baked from the LOW mesh). `low_pos_tex`'s alpha is the position
@@ -1687,13 +1766,35 @@ fn cs_main(@builtin(workgroup_id) workgroup_id: vec3<u32>) {
             (best_t - t_surface + params.front_distance) / span, 0.0, 1.0
         );
         textureStore(out_tex, coord, vec4<f32>(h, h, h, 1.0));
-    } else {
+    } else if (params.map_mode == 1u) {
         let enc = clamp(
             best_n * 0.5 + vec3<f32>(0.5, 0.5, 0.5),
             vec3<f32>(0.0, 0.0, 0.0),
             vec3<f32>(1.0, 1.0, 1.0),
         );
         textureStore(out_tex, coord, vec4<f32>(enc, 1.0));
+    } else {
+        // Tangent-space hit normal: transpose(TBN) * n, +Y-up green.
+        var axis = textureLoad(low_normal_tex, coord, 0).xyz;
+        let axis_len = length(axis);
+        if (!(axis_len > 1e-6)) { axis = vec3<f32>(0.0, 0.0, 1.0); }
+        else { axis = axis / axis_len; }
+        let frame = transfer_tbn(coord, low_pos, axis);
+        var hn = best_n;
+        let hn_len = length(hn);
+        if (!(hn_len > 1e-6)) { hn = axis; }
+        else { hn = hn / hn_len; }
+        var tn = vec3<f32>(dot(frame.T, hn), dot(frame.B, hn), dot(axis, hn));
+        tn = clamp(tn, vec3<f32>(-1.0, -1.0, -1.0), vec3<f32>(1.0, 1.0, 1.0));
+        var rgb = clamp(
+            tn * 0.5 + vec3<f32>(0.5, 0.5, 0.5),
+            vec3<f32>(0.0, 0.0, 0.0),
+            vec3<f32>(1.0, 1.0, 1.0),
+        );
+        if (!(abs(rgb.x) <= 1.0)) { rgb.x = 0.5; }
+        if (!(abs(rgb.y) <= 1.0)) { rgb.y = 0.5; }
+        if (!(abs(rgb.z) <= 1.0)) { rgb.z = 0.5; }
+        textureStore(out_tex, coord, vec4<f32>(rgb, 1.0));
     }
 }
 "#;

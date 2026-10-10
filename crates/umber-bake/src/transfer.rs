@@ -18,11 +18,13 @@
 //! # What v1 is (read this before extending)
 //!
 //! - **Uniform-selected map**: one shader, one output texture per bake
-//!   invocation; [`TransferParams::map`] picks height vs. world normal —
-//!   simpler than two shaders, and the bake fn runs the pass once per map.
-//! - **World-space normals**: the HIGH face normal is written as-is. The
-//!   tangent-space transform (per-texel UV-derivative TBN) is the deferred
-//!   fold — see `TRANSFER_BAKE_SHADER`'s doc comment.
+//!   invocation; [`TransferParams::map`] picks height vs. world vs. tangent
+//!   normal — simpler than two shaders, and the bake fn runs the pass once
+//!   per map.
+//! - **World-space normals**: the HIGH face normal is written as-is under
+//!   [`TransferMap::WorldNormal`]; [`TransferMap::TangentNormal`] folds it
+//!   through the per-texel UV-derivative TBN (the deferred fold
+//!   `TRANSFER_BAKE_SHADER`'s doc comment used to note — now closed).
 //! - **No cage buffer**: [`umber_mesh::bake_support::Cage`] stays CPU-side
 //!   for callers; lerping per-vertex offsets mid-shader needs a cage buffer
 //!   the app-wiring slice adds later. The front/back
@@ -63,18 +65,23 @@ pub enum TransferMap {
     /// surface value is `front / (front + back)`, not unconditionally 0.5).
     Height,
     /// The HIGH face normal at the hit, WORLD-space (`n * 0.5 + 0.5`) — the
-    /// "object space" normal-space option; tangent-space is the deferred TBN
-    /// fold.
+    /// "object space" normal-space option.
     WorldNormal,
+    /// The HIGH face normal at the hit, transformed into the LOW's per-texel
+    /// UV-derivative TBN frame (`transpose(TBN) * n * 0.5 + 0.5`, green = +Y
+    /// up/OpenGL Mikktspace-style) — closes the tangent-space defer noted in
+    /// this module's header.
+    TangentNormal,
 }
 
 impl TransferMap {
     /// The `map_mode` uniform word (`TRANSFER_BAKE_SHADER`'s contract:
-    /// `0 = height`, `1 = world normal`).
+    /// `0 = height`, `1 = world normal`, `2 = tangent normal`).
     fn as_u32(self) -> u32 {
         match self {
             TransferMap::Height => 0,
             TransferMap::WorldNormal => 1,
+            TransferMap::TangentNormal => 2,
         }
     }
 }
@@ -100,8 +107,8 @@ pub struct TransferParams {
 
 impl TransferParams {
     /// Builds params baking the [`TransferMap::Height`] map; chain
-    /// [`TransferParams::with_map`] for the world-normal output — the same
-    /// `new` + `with_*` convention [`crate::ao::AoBakeParams`] uses for its
+    /// [`TransferParams::with_map`] for the world/tangent-normal outputs — the
+    /// same `new` + `with_*` convention [`crate::ao::AoBakeParams`] uses for its
     /// bent-normal toggle.
     pub fn new(
         front_distance: f32,
@@ -348,7 +355,8 @@ fn build_high_triangles(high: &MeshData) -> Result<Vec<GpuTriangle>, TransferErr
 /// Returns the full `width * height * 4` RGBA8 bytes in row-major order:
 /// height bakes grayscale `h` (`0` is the front-clamp extreme, `1` the back;
 /// a hit exactly on the LOW surface reads `front / (front + back)`);
-/// world-normal bakes `n * 0.5 + 0.5`. Alpha is coverage-or-hit (`0` means
+/// world-normal bakes `n * 0.5 + 0.5`; tangent-normal bakes
+/// `transpose(TBN) * n * 0.5 + 0.5` in the LOW's per-texel frame. Alpha is coverage-or-hit (`0` means
 /// the position pass found no LOW triangle covering that texel, or the ray
 /// missed/failed the clamps; `255` means HIGH data transferred). Collapsing
 /// to fewer channels would make "background" indistinguishable from real
@@ -586,6 +594,7 @@ mod tests {
     fn transfer_map_selects_the_documented_uniform_words() {
         assert_eq!(TransferMap::Height.as_u32(), 0);
         assert_eq!(TransferMap::WorldNormal.as_u32(), 1);
+        assert_eq!(TransferMap::TangentNormal.as_u32(), 2);
     }
 
     #[test]
@@ -852,6 +861,131 @@ mod tests {
             }
         }
 
+        /// LOW quad with UVs rotated 90°: texture `+u` maps to world `+Y`
+        /// (positions/winding untouched, so the face normal stays `+z`).
+        /// The UV-derivative tangent must follow the UVs (`T = +Y`), not the
+        /// screen axes.
+        fn low_rotated_uv() -> MeshData {
+            MeshData {
+                positions: vec![
+                    [-1.0, -1.0, 0.0],
+                    [1.0, -1.0, 0.0],
+                    [1.0, 1.0, 0.0],
+                    [-1.0, 1.0, 0.0],
+                ],
+                normals: vec![[0.0, 0.0, 1.0]; 4],
+                uvs: vec![[0.0, 1.0], [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                material_names: vec![],
+            }
+        }
+
+        /// Steep HIGH ramp in `x`: plane `z = -20x`, face normal
+        /// `(20, 0, 1)/√401 = (0.99875…, 0, 0.04994…)`. An EXACT `(1, 0, 0)`
+        /// high normal is unhittable by `-z` transfer rays (its plane contains
+        /// the ray direction, so Möller–Trumbore's parallel epsilon rejects
+        /// every ray — zero projected area), so this is the steepest honest
+        /// proxy: `t` pins the top byte while the `n` leak (`134`) stays
+        /// derived-exact below.
+        fn high_steep_x_ramp() -> MeshData {
+            MeshData {
+                positions: vec![
+                    [-1.0, -1.0, 20.0],
+                    [1.0, -1.0, -20.0],
+                    [1.0, 1.0, -20.0],
+                    [-1.0, 1.0, 20.0],
+                ],
+                normals: vec![],
+                uvs: vec![],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                material_names: vec![],
+            }
+        }
+
+        /// Steep HIGH ramp in `y`: plane `z = -20y`, face normal
+        /// `(0, 20, 1)/√401` — the `y` mirror of [`high_steep_x_ramp`], for the
+        /// rotated-UV test (same unhittability note applies to `(0, 1, 0)`).
+        fn high_steep_y_ramp() -> MeshData {
+            MeshData {
+                positions: vec![
+                    [-1.0, -1.0, 20.0],
+                    [1.0, -1.0, 20.0],
+                    [1.0, 1.0, -20.0],
+                    [-1.0, 1.0, -20.0],
+                ],
+                normals: vec![],
+                uvs: vec![],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                material_names: vec![],
+            }
+        }
+
+        /// Flat HIGH quad at `z = -0.5` spanning the LOW quad's footprint
+        /// (face normal `+z`): every `-z` ray hits at `t = 1.0`.
+        fn high_flat_at_minus_half() -> MeshData {
+            MeshData {
+                positions: vec![
+                    [-1.0, -1.0, -0.5],
+                    [1.0, -1.0, -0.5],
+                    [1.0, 1.0, -0.5],
+                    [-1.0, 1.0, -0.5],
+                ],
+                normals: vec![],
+                uvs: vec![],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                material_names: vec![],
+            }
+        }
+
+        /// Two-island LOW: quad A (`x ∈ [-1, 0]`) owns `u ∈ [0, 0.5]`, quad B
+        /// (`x ∈ [10, 11]`) owns `u ∈ [0.5, 1]`. Texel columns 15/16 straddle
+        /// the island boundary in texture space but sit ~10 world units apart,
+        /// so the seam-jump guard must reject that neighbor pair.
+        fn two_island_low() -> MeshData {
+            MeshData {
+                positions: vec![
+                    [-1.0, -1.0, 0.0],
+                    [0.0, -1.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [-1.0, 1.0, 0.0],
+                    [10.0, -1.0, 0.0],
+                    [11.0, -1.0, 0.0],
+                    [11.0, 1.0, 0.0],
+                    [10.0, 1.0, 0.0],
+                ],
+                normals: vec![[0.0, 0.0, 1.0]; 8],
+                uvs: vec![
+                    [0.0, 0.0],
+                    [0.5, 0.0],
+                    [0.5, 1.0],
+                    [0.0, 1.0],
+                    [0.5, 0.0],
+                    [1.0, 0.0],
+                    [1.0, 1.0],
+                    [0.5, 1.0],
+                ],
+                indices: vec![0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7],
+                material_names: vec![],
+            }
+        }
+
+        /// Wide flat HIGH at `z = -0.5` covering both islands of
+        /// [`two_island_low`] (`x ∈ [-1, 11]`, face normal `+z`).
+        fn high_wide_flat() -> MeshData {
+            MeshData {
+                positions: vec![
+                    [-1.0, -1.0, -0.5],
+                    [11.0, -1.0, -0.5],
+                    [11.0, 1.0, -0.5],
+                    [-1.0, 1.0, -0.5],
+                ],
+                normals: vec![],
+                uvs: vec![],
+                indices: vec![0, 1, 2, 0, 2, 3],
+                material_names: vec![],
+            }
+        }
+
         /// Quantizes one `0..=1` float channel the way `Rgba8Unorm` storage
         /// does away from exact `.5`-in-byte-units boundaries:
         /// `(v * 255 + 0.5).floor()`. Every height expectation below pins its
@@ -1068,6 +1202,186 @@ mod tests {
                     );
                     assert_eq!(px[2], 218, "ramp texel ({x}, {y}) z should be 218: {px:?}");
                     assert_eq!(px[3], 255, "ramp texel ({x}, {y}) alpha: {px:?}");
+                }
+            }
+        }
+
+        /// Tangent-normal map, standard UVs (`u -> +X`, `T = +X`, `B = +Y`,
+        /// `N = +Z`): the steep-x ramp's hit normal
+        /// `n = (20, 0, 1)/√401 = (0.99875…, 0, 0.04994…)` bakes
+        /// `t = 0.99875… -> (0.99937… * 255 = 254.84) -> 255` (0.34 clear of
+        /// the 254.5 boundary), `b = 0 -> 127..=128` band,
+        /// `n = 0.04994… -> (0.52497… * 255 = 133.87) -> 134` (0.37 clear of
+        /// either boundary) — each `encode_unorm` mirror asserts the literal
+        /// first, so a derivation slip fails before the GPU byte does. The
+        /// coplanar half of the pair (`n = +z`) bakes `(band, band, 255)`.
+        /// Clamps `front = 1, back = 25, offset = 0.5`: a ray at world `x`
+        /// hits the `z = -20x` ramp at `t = 0.5 + 20x`, in front of the origin
+        /// (`t > 0`) iff `x > -0.025`, i.e. columns 16..32 hit, 0..16 see the
+        /// ramp behind the origin and bake background.
+        #[test]
+        fn tangent_normal_map_encodes_steep_and_flat_hits() {
+            let Some((device, queue)) = try_request_device() else {
+                return;
+            };
+            // Derivation mirror (f64 ground truth for the WGSL f32 frame).
+            let nx = 20.0 / 401.0f64.sqrt();
+            let nz = 1.0 / 401.0f64.sqrt();
+            assert_eq!(encode_unorm(nx * 0.5 + 0.5), 255);
+            assert_eq!(encode_unorm(nz * 0.5 + 0.5), 134);
+            assert!(((nx * 0.5 + 0.5) * 255.0 - 254.5).abs() > 0.3);
+            assert!(((nz * 0.5 + 0.5) * 255.0 - 134.0).abs() < 0.5);
+
+            let steep = bake_transfer_mesh(
+                &device,
+                &queue,
+                &low_quad(),
+                &high_steep_x_ramp(),
+                &TransferParams::new(1.0, 25.0, 0.5, 32, 32).with_map(TransferMap::TangentNormal),
+            )
+            .expect("bake should succeed");
+            assert_eq!(steep.len(), 32 * 32 * 4);
+            for y in 0..32 {
+                for x in 0..16 {
+                    assert_eq!(
+                        texel(&steep, 32, x, y),
+                        [0, 0, 0, 0],
+                        "steep-ramp texel ({x}, {y}): ramp behind ray origin -> background"
+                    );
+                }
+                for x in 16..32 {
+                    let px = texel(&steep, 32, x, y);
+                    assert_eq!(px[0], 255, "steep texel ({x}, {y}) t should be 255: {px:?}");
+                    assert!(
+                        (127..=128).contains(&px[1]),
+                        "steep texel ({x}, {y}) b should be ~128: {px:?}"
+                    );
+                    assert_eq!(px[2], 134, "steep texel ({x}, {y}) n should be 134: {px:?}");
+                    assert_eq!(px[3], 255, "steep texel ({x}, {y}) alpha: {px:?}");
+                }
+            }
+
+            let flat = bake_transfer_mesh(
+                &device,
+                &queue,
+                &low_quad(),
+                &high_flat_at_minus_half(),
+                &TransferParams::new(1.0, 2.0, 0.5, 32, 32).with_map(TransferMap::TangentNormal),
+            )
+            .expect("bake should succeed");
+            assert_eq!(flat.len(), 32 * 32 * 4);
+            for y in 0..32 {
+                for x in 0..32 {
+                    let px = texel(&flat, 32, x, y);
+                    assert!(
+                        (127..=128).contains(&px[0]) && (127..=128).contains(&px[1]),
+                        "flat texel ({x}, {y}) tb should be ~128 (+z hit): {px:?}"
+                    );
+                    assert_eq!(px[2], 255, "flat texel ({x}, {y}) n should be 255: {px:?}");
+                    assert_eq!(px[3], 255, "flat texel ({x}, {y}) alpha: {px:?}");
+                }
+            }
+        }
+
+        /// Tangent frame follows rotated UVs: with `u -> +Y` the frame is
+        /// `T = +Y`, `B = cross(+Z, +Y) = -X`, so the steep-y ramp's hit
+        /// normal `n = (0, 20, 1)/√401` bakes `t = 0.99875… -> 255`,
+        /// `b = 0 -> 127..=128` band, `n = 0.04994… -> 134` — the same bytes
+        /// as the standard-UV x-ramp test, moved by the UV rotation (a
+        /// screen-space `dP/dx` frame would keep `T = +X` and bake
+        /// `(band, 1, 134)` here instead). Hit columns are 16..32
+        /// (`t = 0.5 + 20y > 0` iff texture-`u > 0.5`).
+        #[test]
+        fn tangent_normal_frame_follows_rotated_uvs() {
+            let Some((device, queue)) = try_request_device() else {
+                return;
+            };
+            let ny = 20.0 / 401.0f64.sqrt();
+            let nz = 1.0 / 401.0f64.sqrt();
+            assert_eq!(encode_unorm(ny * 0.5 + 0.5), 255);
+            assert_eq!(encode_unorm(nz * 0.5 + 0.5), 134);
+
+            let map = bake_transfer_mesh(
+                &device,
+                &queue,
+                &low_rotated_uv(),
+                &high_steep_y_ramp(),
+                &TransferParams::new(1.0, 25.0, 0.5, 32, 32).with_map(TransferMap::TangentNormal),
+            )
+            .expect("bake should succeed");
+            assert_eq!(map.len(), 32 * 32 * 4);
+            for y in 0..32 {
+                for x in 0..16 {
+                    assert_eq!(
+                        texel(&map, 32, x, y),
+                        [0, 0, 0, 0],
+                        "rotated texel ({x}, {y}): ramp behind ray origin -> background"
+                    );
+                }
+                for x in 16..32 {
+                    let px = texel(&map, 32, x, y);
+                    assert_eq!(
+                        px[0], 255,
+                        "rotated texel ({x}, {y}) t should be 255: {px:?}"
+                    );
+                    assert!(
+                        (127..=128).contains(&px[1]),
+                        "rotated texel ({x}, {y}) b should be ~128: {px:?}"
+                    );
+                    assert_eq!(
+                        px[2], 134,
+                        "rotated texel ({x}, {y}) n should be 134: {px:?}"
+                    );
+                    assert_eq!(px[3], 255, "rotated texel ({x}, {y}) alpha: {px:?}");
+                }
+            }
+        }
+
+        /// Seam finiteness scan: the two-island LOW puts a ~10-unit world jump
+        /// between texture-adjacent columns 15/16 (the guard's >4x-scale skip
+        /// path, falling back to the one-sided derivative). The bake must
+        /// carry a hit on BOTH seam columns (no dropped frame) and every
+        /// output byte must decode to a finite `0..=1` float — NaN can never
+        /// reach an `Rgba8Unorm` store through the `max(len, 1e-6)`
+        /// denominators, and this scan pins that.
+        #[test]
+        fn tangent_normal_seam_stays_finite_with_no_dropped_frames() {
+            let Some((device, queue)) = try_request_device() else {
+                return;
+            };
+            let map = bake_transfer_mesh(
+                &device,
+                &queue,
+                &two_island_low(),
+                &high_wide_flat(),
+                &TransferParams::new(1.0, 2.0, 0.5, 32, 32).with_map(TransferMap::TangentNormal),
+            )
+            .expect("bake should succeed");
+            assert_eq!(map.len(), 32 * 32 * 4);
+            for (i, b) in map.iter().enumerate() {
+                let v = f32::from(*b) / 255.0;
+                assert!(
+                    v.is_finite() && (0.0..=1.0).contains(&v),
+                    "byte {i} out of range: {b}"
+                );
+            }
+            for y in 0..32 {
+                for x in 0..32 {
+                    let px = texel(&map, 32, x, y);
+                    assert_eq!(
+                        px[3], 255,
+                        "two-island texel ({x}, {y}) must carry a hit: {px:?}"
+                    );
+                }
+                // Seam columns specifically: one-sided fallback frames over a
+                // coplanar hit still bake (band, band, 255).
+                for x in [15, 16] {
+                    let px = texel(&map, 32, x, y);
+                    assert!(
+                        (127..=128).contains(&px[0]) && (127..=128).contains(&px[1]),
+                        "seam texel ({x}, {y}) tb should be ~128: {px:?}"
+                    );
+                    assert_eq!(px[2], 255, "seam texel ({x}, {y}) n should be 255: {px:?}");
                 }
             }
         }
